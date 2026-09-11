@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --brand-soft: #eff6ff;
+    --brand-wash: #dbeafe;
+    --brand-glow: #bfdbfe;
+    --brand-primary: #2563eb;
+  }
+
+  .dark {
+    --brand-soft: #0f172a;
+    --brand-wash: #1e293b;
+    --brand-glow: #172554;
+    --brand-primary: #3b82f6;
+  }
+}
+
+/* Ambient dynamic background matching iBookTrack */
+.ambient-bg {
+  background-color: #f8fafc;
+  background-image:
+    radial-gradient(ellipse 800px 450px at -2% -2%, rgba(219, 234, 254, 0.7), transparent 58%),
+    radial-gradient(ellipse 650px 500px at 100% 95%, rgba(191, 219, 254, 0.5), transparent 52%),
+    radial-gradient(ellipse 500px 350px at 50% 50%, rgba(239, 246, 255, 0.9), transparent 65%);
+  background-attachment: fixed;
+}
+
+.dark .ambient-bg {
+  background-color: #030712;
+  background-image:
+    radial-gradient(ellipse 800px 450px at -2% -2%, rgba(30, 58, 138, 0.25), transparent 58%),
+    radial-gradient(ellipse 650px 500px at 100% 95%, rgba(30, 41, 59, 0.35), transparent 52%),
+    radial-gradient(ellipse 500px 350px at 50% 50%, rgba(15, 23, 42, 0.4), transparent 65%);
+  background-attachment: fixed;
+}
+
+/* Glass card styling */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(226, 232, 240, 0.8);
+}
+
+.dark .glass-panel {
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(51, 65, 85, 0.6);
+}
+
+/* Custom smooth scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.7);
+}
+
+/* Keyframe for camera shutter flash */
+@keyframes cameraFlash {
+  0% { opacity: 0; }
+  25% { opacity: 0.95; }
+  100% { opacity: 0; }
+}
+
+.animate-shutter-flash {
+  animation: cameraFlash 0.35s ease-out forwards;
+}
