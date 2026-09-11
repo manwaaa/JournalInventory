@@ -147,6 +147,59 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </span>
               </div>
             </label>
+
+            {/* Audit Watermark & Stamp */}
+            <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/40 space-y-2.5">
+              <label className="flex items-center space-x-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={config.watermarkEnabled ?? true}
+                  onChange={(e) => setConfig({ ...config, watermarkEnabled: e.target.checked })}
+                  className="w-4 h-4 rounded text-brand-600 focus:ring-brand-500 border-slate-300"
+                />
+                <div className="text-xs">
+                  <span className="font-semibold text-slate-800 dark:text-slate-200 block">
+                    Embed Audit Watermark & Timestamp
+                  </span>
+                  <span className="text-slate-400 text-[11px]">
+                    Burn ISBN, timestamp, and workstation ID into the corner of proof photos
+                  </span>
+                </div>
+              </label>
+
+              {(config.watermarkEnabled ?? true) && (
+                <div className="pl-7 pt-1">
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1">
+                    Workstation ID / Station Label
+                  </label>
+                  <input
+                    type="text"
+                    value={config.watermarkStation || 'Station-01'}
+                    onChange={(e) => setConfig({ ...config, watermarkStation: e.target.value })}
+                    className="w-full px-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-brand-500 font-mono"
+                    placeholder="Station-01"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Blur & Quality Warning */}
+            <label className="flex items-center space-x-3 cursor-pointer p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/40 hover:bg-slate-100/50 dark:hover:bg-slate-800/60 transition-colors">
+              <input
+                type="checkbox"
+                checked={config.blurCheckEnabled ?? true}
+                onChange={(e) => setConfig({ ...config, blurCheckEnabled: e.target.checked })}
+                className="w-4 h-4 rounded text-brand-600 focus:ring-brand-500 border-slate-300"
+              />
+              <div className="text-xs">
+                <span className="font-semibold text-slate-800 dark:text-slate-200 block">
+                  Instant Blur & Motion Sharpness Detection
+                </span>
+                <span className="text-slate-400 text-[11px]">
+                  Alert operator when captured photo is out of focus or motion-blurred
+                </span>
+              </div>
+            </label>
           </div>
 
           {/* LAN Connection helper info */}

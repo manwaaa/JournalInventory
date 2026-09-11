@@ -9,7 +9,13 @@ import {
   ShieldCheck, 
   CheckCircle2, 
   AlertCircle,
-  Keyboard
+  Keyboard,
+  BookOpen,
+  Layers,
+  Plus,
+  Eye,
+  AlertTriangle,
+  Loader2
 } from 'lucide-react';
 
 import { Navbar } from './components/Navbar';
@@ -23,7 +29,15 @@ import { useCamera } from './hooks/useCamera';
 import { useBarcodeScanner } from './hooks/useBarcodeScanner';
 import { useSoundEffects } from './hooks/useSoundEffects';
 
-import { CaptureStep, ShotInfo, JournalMetadata, SystemStatus } from './types';
+import { 
+  CaptureStep, 
+  ShotInfo, 
+  JournalMetadata, 
+  SystemStatus, 
+  SystemConfig, 
+  BookDetails, 
+  ExistingCopy 
+} from './types';
 
 export function App() {
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -31,6 +45,7 @@ export function App() {
   });
 
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
   const [isbnInput, setIsbnInput] = useState<string>('');
   const [activeIsbn, setActiveIsbn] = useState<string>('');
   const [currentStep, setCurrentStep] = useState<CaptureStep>('SCAN_ISBN');
@@ -38,13 +53,24 @@ export function App() {
   const [shot1, setShot1] = useState<ShotInfo | null>(null);
   const [shot2, setShot2] = useState<ShotInfo | null>(null);
   const [metadata, setMetadata] = useState<JournalMetadata | null>(null);
+  const [bookDetails, setBookDetails] = useState<BookDetails | null>(null);
+  const [isLookingUpMeta, setIsLookingUpMeta] = useState<boolean>(false);
 
   const [isCapturing, setIsCapturing] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Modals
+  // Modals & Dialogs
   const [recentModalOpen, setRecentModalOpen] = useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [duplicateModal, setDuplicateModal] = useState<{
+    baseIsbn: string;
+    existingCopies: ExistingCopy[];
+  } | null>(null);
+  const [blurWarning, setBlurWarning] = useState<{
+    shotNumber: 1 | 2;
+    base64Data: string;
+    sharpnessScore: number;
+  } | null>(null);
 
   const isbnInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -71,25 +97,51 @@ export function App() {
     }
   }, [darkMode]);
 
-  // Fetch system status
+  // Fetch system status & config
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/system/status');
-      const data = await res.json();
-      setSystemStatus(data);
+      const [resStatus, resConfig] = await Promise.all([
+        fetch('/api/system/status'),
+        fetch('/api/system/config')
+      ]);
+      if (resStatus.ok) {
+        const data = await resStatus.json();
+        setSystemStatus(data);
+      }
+      if (resConfig.ok) {
+        const cfg = await resConfig.json();
+        setSystemConfig(cfg);
+      }
     } catch (err) {
-      console.error('Failed to fetch system status:', err);
+      console.error('Failed to fetch system status/config:', err);
     }
   }, []);
 
   useEffect(() => {
     fetchStatus();
-    // Focus ISBN input on start
     setTimeout(() => isbnInputRef.current?.focus(), 300);
   }, [fetchStatus]);
 
+  // Auto-lookup Book/Journal Metadata
+  const lookupMetadata = async (isbn: string) => {
+    setIsLookingUpMeta(true);
+    try {
+      const res = await fetch(`/api/lookup/isbn/${encodeURIComponent(isbn)}`);
+      const data = await res.json();
+      if (data.success && data.data) {
+        setBookDetails(data.data);
+      } else {
+        setBookDetails(null);
+      }
+    } catch (e) {
+      console.error('Metadata lookup error:', e);
+    } finally {
+      setIsLookingUpMeta(false);
+    }
+  };
+
   // Handle ISBN submission (from input or physical barcode scanner)
-  const handleProcessIsbn = async (code: string) => {
+  const handleProcessIsbn = async (code: string, forceNewCopy: boolean = false, targetIdentifier?: string) => {
     const clean = code.trim();
     if (!clean) return;
 
@@ -100,7 +152,11 @@ export function App() {
       const res = await fetch('/api/capture/init-isbn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isbn: clean })
+        body: JSON.stringify({ 
+          isbn: clean,
+          forceNewCopy,
+          targetIdentifier
+        })
       });
 
       const data = await res.json();
@@ -108,15 +164,29 @@ export function App() {
         throw new Error(data.error || 'Failed to initialize ISBN');
       }
 
+      // Check if duplicate copies exist and this is an initial scan
+      if (data.hasDuplicateCopies && data.existingCopies?.some((c: ExistingCopy) => c.isComplete)) {
+        setDuplicateModal({
+          baseIsbn: data.baseIsbn,
+          existingCopies: data.existingCopies
+        });
+        return;
+      }
+
+      setDuplicateModal(null);
       setActiveIsbn(data.isbn);
       setIsbnInput(data.isbn);
+
+      // Trigger automatic bibliographic lookup
+      lookupMetadata(data.baseIsbn || data.isbn);
 
       // Check if shots already exist
       if (data.existingShots && data.existingShots.includes('1_front_spine.jpg')) {
         setShot1({
           filename: '1_front_spine.jpg',
           savedAt: data.metadata?.shots?.['1']?.savedAt || new Date().toISOString(),
-          type: 'Front Cover & Spine Angle'
+          type: 'Front Cover & Spine Angle',
+          blurScore: data.metadata?.shots?.['1']?.blurScore
         });
       } else {
         setShot1(null);
@@ -126,7 +196,8 @@ export function App() {
         setShot2({
           filename: '2_author_title.jpg',
           savedAt: data.metadata?.shots?.['2']?.savedAt || new Date().toISOString(),
-          type: 'Author & Title Page Angle'
+          type: 'Author & Title Page Angle',
+          blurScore: data.metadata?.shots?.['2']?.blurScore
         });
       } else {
         setShot2(null);
@@ -134,6 +205,9 @@ export function App() {
 
       if (data.metadata) {
         setMetadata(data.metadata);
+        if (data.metadata.bookDetails) {
+          setBookDetails(data.metadata.bookDetails);
+        }
       }
 
       if (data.existingShots?.length >= 2) {
@@ -160,19 +234,12 @@ export function App() {
     enabled: currentStep === 'SCAN_ISBN' || currentStep === 'COMPLETE'
   });
 
-  // Handle Photo Capture
-  const handleCapturePhoto = async () => {
-    if (!activeIsbn || isCapturing) return;
-
-    const shotNumber = currentStep === 'CAPTURE_SHOT_1' ? 1 : 2;
-    const base64Data = captureSnapshot(0.95);
-
-    if (!base64Data) {
-      setErrorMessage('Could not capture frame from camera.');
-      return;
-    }
-
-    playAudioCue('shutter');
+  // Save shot payload helper
+  const commitSaveShot = async (
+    shotNumber: 1 | 2, 
+    base64Data: string, 
+    blurScore?: number
+  ) => {
     setIsCapturing(true);
     setErrorMessage(null);
 
@@ -183,7 +250,9 @@ export function App() {
         body: JSON.stringify({
           isbn: activeIsbn,
           shotNumber,
-          imageBase64: base64Data
+          imageBase64: base64Data,
+          bookDetails: bookDetails,
+          blurScore
         })
       });
 
@@ -196,7 +265,8 @@ export function App() {
         filename: data.filename,
         savedAt: new Date().toISOString(),
         type: shotNumber === 1 ? 'Front Cover & Spine Angle' : 'Author & Title Page Angle',
-        previewDataUrl: base64Data
+        previewDataUrl: base64Data,
+        blurScore
       };
 
       if (shotNumber === 1) {
@@ -226,7 +296,47 @@ export function App() {
       playAudioCue('error');
     } finally {
       setIsCapturing(false);
+      setBlurWarning(null);
     }
+  };
+
+  // Handle Photo Capture
+  const handleCapturePhoto = async () => {
+    if (!activeIsbn || isCapturing) return;
+
+    const shotNumber = currentStep === 'CAPTURE_SHOT_1' ? 1 : 2;
+
+    const watermarkConfig = systemConfig?.watermarkEnabled !== false ? {
+      isbn: activeIsbn,
+      stationName: systemConfig?.watermarkStation || systemStatus?.watermarkStation || 'Station-01',
+      shotLabel: shotNumber === 1 ? 'Shot 1: Front & Spine' : 'Shot 2: Author & Title',
+      timestamp: new Date().toLocaleString()
+    } : null;
+
+    const result = captureSnapshot({
+      quality: systemConfig?.imageQuality || 0.95,
+      watermark: watermarkConfig
+    });
+
+    if (!result) {
+      setErrorMessage('Could not capture frame from camera.');
+      return;
+    }
+
+    playAudioCue('shutter');
+
+    // Check for blur if blur check is enabled
+    if (result.isBlurry && systemConfig?.blurCheckEnabled !== false) {
+      setBlurWarning({
+        shotNumber,
+        base64Data: result.base64Data,
+        sharpnessScore: result.sharpnessScore
+      });
+      return;
+    }
+
+    // Save directly
+    await commitSaveShot(shotNumber, result.base64Data, result.sharpnessScore);
   };
 
   // Retake a specific shot
@@ -247,7 +357,10 @@ export function App() {
     setShot1(null);
     setShot2(null);
     setMetadata(null);
+    setBookDetails(null);
     setErrorMessage(null);
+    setDuplicateModal(null);
+    setBlurWarning(null);
     setCurrentStep('SCAN_ISBN');
     setTimeout(() => isbnInputRef.current?.focus(), 150);
   };
@@ -316,8 +429,8 @@ export function App() {
           </div>
         )}
 
-        {/* ISBN Scan/Input Bar */}
-        <div className="w-full glass-panel rounded-2xl p-4 sm:p-5 shadow-sm">
+        {/* ISBN Scan/Input Bar & Bibliographic Metadata Banner */}
+        <div className="w-full glass-panel rounded-2xl p-4 sm:p-5 shadow-sm space-y-3">
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -346,18 +459,58 @@ export function App() {
             </button>
           </form>
 
-          {/* Quick Helper Badge */}
-          <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-2 text-[11px] text-slate-400 border-t border-slate-100 dark:border-slate-800/60">
-            <span className="flex items-center space-x-1">
-              <Keyboard className="w-3.5 h-3.5 text-slate-400" />
-              <span>Barcode scanner wedge is active. Scan barcode anytime to auto-begin.</span>
-            </span>
-            {activeIsbn && (
-              <span className="font-mono text-brand-600 dark:text-brand-400 font-bold">
-                Target: C:\Journal_Proofs\{activeIsbn}\
-              </span>
-            )}
-          </div>
+          {/* Bibliographic Metadata Card (Auto-Lookup) */}
+          {activeIsbn && (
+            <div className="pt-2 border-t border-slate-200/60 dark:border-slate-800/60">
+              {isLookingUpMeta ? (
+                <div className="flex items-center space-x-2 text-xs text-brand-600 dark:text-brand-400">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Looking up journal catalog details (OpenLibrary / CrossRef)...</span>
+                </div>
+              ) : bookDetails?.title ? (
+                <div className="flex items-start justify-between gap-3 bg-brand-50/50 dark:bg-brand-950/20 p-3 rounded-xl border border-brand-100 dark:border-brand-900/40">
+                  <div className="space-y-1">
+                    <div className="flex items-center space-x-2">
+                      <BookOpen className="w-4 h-4 text-brand-600 dark:text-brand-400 shrink-0" />
+                      <span className="text-xs font-bold text-slate-900 dark:text-white">
+                        {bookDetails.title}
+                      </span>
+                      {bookDetails.publishYear && (
+                        <span className="text-[10px] font-semibold px-2 py-0.2 rounded-full bg-brand-100 text-brand-800 dark:bg-brand-900/60 dark:text-brand-300">
+                          {bookDetails.publishYear}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 text-[11px] text-slate-500 dark:text-slate-400 pl-6">
+                      {bookDetails.authors && <span><b>Authors:</b> {bookDetails.authors}</span>}
+                      {bookDetails.publisher && <span><b>Publisher:</b> {bookDetails.publisher}</span>}
+                      {bookDetails.source && <span className="text-[10px] text-slate-400">via {bookDetails.source}</span>}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => handleProcessIsbn(activeIsbn, true)}
+                    title="Add another physical copy for this ISBN"
+                    className="inline-flex items-center space-x-1 px-2.5 py-1 text-[11px] font-semibold text-brand-700 dark:text-brand-300 bg-white dark:bg-slate-800 border border-brand-200 dark:border-brand-800 rounded-lg hover:bg-brand-50 dark:hover:bg-slate-700 transition-colors shrink-0 shadow-sm"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>+ Add Copy</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between text-[11px] text-slate-400">
+                  <span>Target Folder: <code className="font-mono text-brand-600 dark:text-brand-400 font-semibold">C:\Journal_Proofs\{activeIsbn}\</code></span>
+                  <button
+                    onClick={() => handleProcessIsbn(activeIsbn, true)}
+                    className="text-brand-600 hover:text-brand-500 font-semibold flex items-center space-x-1"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>+ Add Another Copy</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Dynamic Workflow Viewport (Camera or Review) */}
@@ -401,13 +554,14 @@ export function App() {
                   Ready for Journal Proof Capture
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mb-4">
-                  Scan an ISBN using your handheld scanner or enter it manually to begin taking anti-plagiarism verification photos.
+                  Scan an ISBN using your handheld scanner or enter it manually to begin taking verification photos.
                 </p>
                 <div className="space-y-1.5 text-left text-[11px] bg-slate-50 dark:bg-slate-900/60 p-3 rounded-xl border border-slate-200 dark:border-slate-800 font-mono text-slate-600 dark:text-slate-300">
                   <div>1. Automatic folder creation under <code className="text-brand-500">C:\Journal_Proofs\&lt;ISBN&gt;\</code></div>
-                  <div>2. Shot 1: Front cover & spine side angle</div>
-                  <div>3. Shot 2: Author & title page angle</div>
-                  <div>4. High-resolution output with metadata.json</div>
+                  <div>2. Auto-fetches Journal Title, Author, Publisher</div>
+                  <div>3. Shot 1: Front cover & spine side angle</div>
+                  <div>4. Shot 2: Author & title page angle</div>
+                  <div>5. Embedded audit timestamp & tamper-proof metadata</div>
                 </div>
               </div>
             )}
@@ -416,6 +570,132 @@ export function App() {
         </div>
 
       </main>
+
+      {/* Duplicate / Multi-Copy Prompt Modal */}
+      {duplicateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-overlay-in">
+          <div className="w-full max-w-md rounded-2xl glass-panel shadow-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 space-y-4">
+            <div className="flex items-center space-x-3">
+              <div className="p-2.5 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400">
+                <Layers className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Existing Journal Copy Detected
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  ISBN: <span className="font-mono font-bold text-slate-700 dark:text-slate-300">{duplicateModal.baseIsbn}</span>
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              This ISBN already has <b>{duplicateModal.existingCopies.length}</b> captured record(s) on file. How would you like to proceed?
+            </p>
+
+            <div className="space-y-2">
+              {/* Option 1: Create Next Copy */}
+              <button
+                onClick={() => handleProcessIsbn(duplicateModal.baseIsbn, true)}
+                className="w-full p-3 rounded-xl border border-brand-200 dark:border-brand-800 bg-brand-50/70 dark:bg-brand-950/40 hover:bg-brand-100/80 dark:hover:bg-brand-900/50 text-left flex items-center justify-between group transition-colors"
+              >
+                <div>
+                  <div className="text-xs font-bold text-brand-700 dark:text-brand-300 flex items-center gap-1.5">
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Capture as New Copy (Copy #{duplicateModal.existingCopies.length + 1})</span>
+                  </div>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Creates folder <code className="font-mono">{duplicateModal.baseIsbn}_Copy{duplicateModal.existingCopies.length + 1}</code>
+                  </span>
+                </div>
+                <ArrowRight className="w-4 h-4 text-brand-600 group-hover:translate-x-1 transition-transform" />
+              </button>
+
+              {/* Option 2: Review / Edit Existing */}
+              <button
+                onClick={() => {
+                  const target = duplicateModal.existingCopies[0]?.identifier || duplicateModal.baseIsbn;
+                  handleProcessIsbn(duplicateModal.baseIsbn, false, target);
+                }}
+                className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 text-left flex items-center justify-between group transition-colors"
+              >
+                <div>
+                  <div className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <Eye className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Review / Retake Existing (Copy #1)</span>
+                  </div>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Open existing proof records
+                  </span>
+                </div>
+                <ArrowRight className="w-4 h-4 text-slate-400 group-hover:translate-x-1 transition-transform" />
+              </button>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={() => setDuplicateModal(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Blur / Sharpness Quality Warning Dialog */}
+      {blurWarning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-overlay-in">
+          <div className="w-full max-w-lg rounded-2xl glass-panel shadow-2xl border border-amber-300/40 dark:border-amber-700/40 bg-white dark:bg-slate-900 p-6 space-y-4">
+            <div className="flex items-center space-x-3">
+              <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Potential Motion Blur / Focus Issue
+                </h3>
+                <p className="text-xs text-amber-600 dark:text-amber-400 font-semibold">
+                  Sharpness Score: {blurWarning.sharpnessScore} / 100 (Below recommended threshold)
+                </p>
+              </div>
+            </div>
+
+            {/* Thumbnail Preview */}
+            <div className="relative aspect-[16/10] w-full rounded-xl overflow-hidden bg-black border border-slate-200 dark:border-slate-800">
+              <img
+                src={blurWarning.base64Data}
+                alt="Captured Snapshot"
+                className="w-full h-full object-contain"
+              />
+            </div>
+
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              The camera may have moved or the text might be out of focus. Would you like to retake this shot or keep it anyway?
+            </p>
+
+            <div className="flex items-center justify-end space-x-3 pt-2">
+              <button
+                onClick={() => {
+                  setBlurWarning(null);
+                  playAudioCue('click');
+                }}
+                className="px-4 py-2 text-xs font-bold rounded-xl text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+              >
+                Retake Photo
+              </button>
+
+              <button
+                onClick={() => commitSaveShot(blurWarning.shotNumber, blurWarning.base64Data, blurWarning.sharpnessScore)}
+                className="px-4 py-2 text-xs font-bold rounded-xl text-white bg-amber-600 hover:bg-amber-500 shadow-md transition-colors"
+              >
+                Keep & Save Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modals */}
       <RecentCapturesModal
@@ -435,7 +715,7 @@ export function App() {
 
       {/* Footer */}
       <footer className="py-4 border-t border-slate-200/60 dark:border-slate-800/60 text-center text-xs text-slate-400 dark:text-slate-500">
-        Journal Proof & Anti-Plagiarism Capture System &bull; Local Inventory PC Tool
+        Journal Proof Capture System &bull; Local Inventory PC Tool
       </footer>
 
     </div>

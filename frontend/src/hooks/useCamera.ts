@@ -1,5 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { CameraDevice } from '../types';
+import { calculateSharpnessScore, isImageBlurry } from '../utils/imageQuality';
+import { drawAuditWatermark, WatermarkOptions } from '../utils/watermark';
+
+export interface CaptureOptions {
+  quality?: number;
+  watermark?: WatermarkOptions | null;
+  checkBlur?: boolean;
+}
+
+export interface CaptureResult {
+  base64Data: string;
+  sharpnessScore: number;
+  isBlurry: boolean;
+}
 
 export function useCamera() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -84,10 +98,15 @@ export function useCamera() {
     }
   }, [updateDeviceList]);
 
-  // Capture snapshot to Base64 JPEG
-  const captureSnapshot = useCallback((quality: number = 0.95): string | null => {
+  // Capture snapshot to Base64 JPEG with optional watermark and blur evaluation
+  const captureSnapshot = useCallback((options?: number | CaptureOptions): CaptureResult | null => {
     if (!videoRef.current || !isStreaming) return null;
 
+    const opts: CaptureOptions = typeof options === 'number' 
+      ? { quality: options } 
+      : (options || { quality: 0.95 });
+
+    const quality = opts.quality ?? 0.95;
     const video = videoRef.current;
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth || 1920;
@@ -99,8 +118,23 @@ export function useCamera() {
     // Draw full resolution video frame to canvas
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
+    // Calculate sharpness score before watermark (to measure genuine frame sharpness)
+    const sharpnessScore = calculateSharpnessScore(canvas);
+    const blurry = isImageBlurry(sharpnessScore);
+
+    // Apply audit watermark overlay if provided
+    if (opts.watermark) {
+      drawAuditWatermark(canvas, opts.watermark);
+    }
+
     // Convert to high-quality JPEG
-    return canvas.toDataURL('image/jpeg', quality);
+    const base64Data = canvas.toDataURL('image/jpeg', quality);
+
+    return {
+      base64Data,
+      sharpnessScore,
+      isBlurry: blurry
+    };
   }, [isStreaming]);
 
   // Switch camera

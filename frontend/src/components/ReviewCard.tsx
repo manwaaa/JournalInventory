@@ -56,11 +56,19 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
     <div className="w-full glass-panel rounded-2xl p-5 shadow-xl border border-slate-200 dark:border-slate-800 transition-all">
       
       {/* Header Info */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-800">
-        <div>
-          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
-            Journal Verification Record
-          </span>
+      <div className="flex flex-wrap items-start justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-800">
+        <div className="space-y-1">
+          <div className="flex items-center space-x-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+              Journal Verification Record
+            </span>
+            {metadata?.copyNumber && metadata.copyNumber > 1 && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 border border-purple-300 dark:border-purple-800">
+                Copy #{metadata.copyNumber}
+              </span>
+            )}
+          </div>
+
           <div className="flex items-center space-x-2">
             <h3 className="text-xl font-extrabold text-slate-900 dark:text-white font-mono">
               {isbn}
@@ -72,6 +80,20 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
               </span>
             )}
           </div>
+
+          {/* Book / Journal Details */}
+          {metadata?.bookDetails?.title && (
+            <div className="pt-1">
+              <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200">
+                {metadata.bookDetails.title}
+              </h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {metadata.bookDetails.authors && <span>{metadata.bookDetails.authors} </span>}
+                {metadata.bookDetails.publisher && <span>&bull; {metadata.bookDetails.publisher} </span>}
+                {metadata.bookDetails.publishYear && <span>({metadata.bookDetails.publishYear})</span>}
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Action Button: Next Journal */}
