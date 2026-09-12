@@ -248,10 +248,15 @@ app.get('/api/session/stream', (req, res) => {
     }
   }, 20000);
 
-  req.on('close', () => {
+  const cleanup = () => {
     clearInterval(heartbeat);
     sseClients.delete(res);
-  });
+  };
+
+  req.on('close', cleanup);
+  req.on('error', cleanup);
+  res.on('error', cleanup);
+  res.on('close', cleanup);
 });
 
 // Get current live session

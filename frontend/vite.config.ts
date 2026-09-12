@@ -10,7 +10,14 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:3001',
-        changeOrigin: true
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('error', (err) => {
+            // Ignore normal socket disconnects/resets when refreshing browser
+            if ((err as any)?.code === 'ECONNRESET') return;
+            console.warn('[vite proxy error]', err.message);
+          });
+        }
       },
       '/proofs': {
         target: 'http://localhost:3001',
