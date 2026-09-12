@@ -200,6 +200,74 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </span>
               </div>
             </label>
+            {/* Multi-PC 2-Way Sync Section */}
+            <div className="p-3 rounded-xl border border-purple-200 dark:border-purple-900/60 bg-purple-50/40 dark:bg-purple-950/20 space-y-3">
+              <label className="flex items-center space-x-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={config.peerSyncEnabled ?? false}
+                  onChange={(e) => setConfig({ ...config, peerSyncEnabled: e.target.checked })}
+                  className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 border-slate-300"
+                />
+                <div className="text-xs">
+                  <span className="font-semibold text-purple-900 dark:text-purple-200 block flex items-center gap-1.5">
+                    <Wifi className="w-3.5 h-3.5 text-purple-600" />
+                    <span>2-Way Multi-PC Synchronization (PC 1 &harr; PC 2)</span>
+                  </span>
+                  <span className="text-slate-500 dark:text-slate-400 text-[11px]">
+                    Auto-replicate all captured photos to the other PC's <code className="font-mono">C:\Journal_Proofs\</code> in real time
+                  </span>
+                </div>
+              </label>
+
+              {(config.peerSyncEnabled ?? false) && (
+                <div className="pl-7 space-y-2 pt-1">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                      Peer PC IP Address
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={config.peerIp || ''}
+                        onChange={(e) => setConfig({ ...config, peerIp: e.target.value })}
+                        className="flex-1 px-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-purple-500 font-mono"
+                        placeholder="e.g. 172.20.112.149"
+                      />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!config.peerIp) return;
+                          try {
+                            const res = await fetch('/api/sync/reconcile-all', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ peerIp: config.peerIp, peerPort: config.peerPort || 3001 })
+                            });
+                            const data = await res.json();
+                            if (data.success) {
+                              alert(`Sync Complete! Synced ${data.syncedCount} missing files from peer PC.`);
+                              onConfigUpdated();
+                            } else {
+                              alert(`Sync Error: ${data.error || 'Could not sync'}`);
+                            }
+                          } catch (err: any) {
+                            alert(`Connection Failed: ${err.message}`);
+                          }
+                        }}
+                        className="px-3 py-1.5 text-xs font-bold text-white bg-purple-600 hover:bg-purple-500 rounded-lg shadow-sm transition-all"
+                      >
+                        Sync Missing Proofs
+                      </button>
+                    </div>
+                    <span className="text-[10px] text-slate-400 block mt-1">
+                      Enter the IP address of the other PC running this tool. Both PCs will stay in 100% sync.
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
           </div>
 
           {/* LAN Connection helper info */}

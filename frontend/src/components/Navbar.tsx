@@ -1,5 +1,5 @@
 import React from 'react';
-import { Camera, FolderOpen, History, Settings, Moon, Sun } from 'lucide-react';
+import { Camera, FolderOpen, History, Settings, Moon, Sun, Smartphone, Wifi } from 'lucide-react';
 import { SystemStatus } from '../types';
 
 interface NavbarProps {
@@ -9,6 +9,7 @@ interface NavbarProps {
   onOpenRecent: () => void;
   onOpenSettings: () => void;
   onOpenStorageFolder: () => void;
+  onOpenMobilePairing: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -18,6 +19,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenRecent,
   onOpenSettings,
   onOpenStorageFolder,
+  onOpenMobilePairing,
 }) => {
   return (
     <header className="sticky top-0 z-30 w-full glass-panel border-b border-slate-200/80 dark:border-slate-800/80 transition-colors">
@@ -33,6 +35,12 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span className="font-extrabold text-lg sm:text-xl tracking-tight text-slate-900 dark:text-white">
                 Journal<span className="text-brand-600 dark:text-brand-400">Proof</span>
               </span>
+              {systemStatus?.peerSyncEnabled && (
+                <span className="hidden md:inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-300 dark:border-purple-800">
+                  <Wifi className="w-3 h-3 text-purple-600" />
+                  <span>2-PC Sync Active ({systemStatus.peerIp || 'Peer'})</span>
+                </span>
+              )}
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 hidden sm:block">
               Inventory Camera Verification Tool
@@ -43,6 +51,16 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Right: Actions */}
         <div className="flex items-center space-x-2 sm:space-x-3">
           
+          {/* Mobile Camera Pairing QR Button */}
+          <button
+            onClick={onOpenMobilePairing}
+            title="Use your Smartphone as wireless camera (Scan QR)"
+            className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-bold rounded-lg text-brand-700 dark:text-brand-300 bg-brand-50 dark:bg-brand-950/60 hover:bg-brand-100 dark:hover:bg-brand-900/60 border border-brand-200 dark:border-brand-800 transition-colors shadow-sm"
+          >
+            <Smartphone className="w-3.5 h-3.5 text-brand-600 dark:text-brand-400" />
+            <span className="hidden sm:inline">Phone Camera</span>
+          </button>
+
           {/* Open Storage Folder Button */}
           <button
             onClick={onOpenStorageFolder}

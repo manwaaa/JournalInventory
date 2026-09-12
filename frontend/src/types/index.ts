@@ -63,9 +63,15 @@ export interface SystemStatus {
   platform: string;
   networkIps: Array<{ interface: string; address: string }>;
   port: number;
+  httpsPort?: number | null;
+  mobileHttpsUrl?: string;
+  mobileHttpUrl?: string;
   storagePath: string;
   totalCapturedJournals: number;
   watermarkStation?: string;
+  peerSyncEnabled?: boolean;
+  peerIp?: string;
+  peerPort?: number;
 }
 
 export interface SystemConfig {
@@ -77,10 +83,35 @@ export interface SystemConfig {
   watermarkEnabled?: boolean;
   watermarkStation?: string;
   blurCheckEnabled?: boolean;
+  peerSyncEnabled?: boolean;
+  peerIp?: string;
+  peerPort?: number;
 }
 
 export interface CameraDevice {
   deviceId: string;
   label: string;
+}
+
+export interface CaptureSession {
+  activeIsbn: string;
+  baseIsbn: string;
+  currentStep: CaptureStep;
+  shot1: ShotInfo | null;
+  shot2: ShotInfo | null;
+  metadata: JournalMetadata | null;
+  bookDetails: BookDetails | null;
+  copyNumber: number;
+}
+
+export interface SessionEvent {
+  type: 'CONNECTED' | 'ISBN_INITIALIZED' | 'SHOT_SAVED' | 'SESSION_RESET';
+  session: CaptureSession;
+  isbn?: string;
+  shotNumber?: number;
+  shotInfo?: ShotInfo;
+  isComplete?: boolean;
+  currentStep?: CaptureStep;
+  timestamp: number;
 }
 

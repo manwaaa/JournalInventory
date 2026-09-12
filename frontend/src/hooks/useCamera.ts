@@ -18,6 +18,7 @@ export interface CaptureResult {
 export function useCamera() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const activeRequestId = useRef<number>(0);
 
   const [devices, setDevices] = useState<CameraDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
@@ -25,11 +26,13 @@ export function useCamera() {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [resolution, setResolution] = useState<{ width: number; height: number }>({ width: 1920, height: 1080 });
 
+  const [hasTorch, setHasTorch] = useState<boolean>(false);
+  const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
+
   // Load available video devices
   const updateDeviceList = useCallback(async () => {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-        setCameraError('Camera API not supported in this browser.');
         return;
       }
       const allDevices = await navigator.mediaDevices.enumerateDevices();
@@ -50,7 +53,9 @@ export function useCamera() {
 
   // Start camera stream
   const startCamera = useCallback(async (deviceId?: string) => {
+    const requestId = ++activeRequestId.current;
     setCameraError(null);
+    setIsTorchOn(false);
 
     // Stop existing stream
     if (streamRef.current) {
@@ -63,29 +68,56 @@ export function useCamera() {
         audio: false,
         video: {
           deviceId: deviceId ? { exact: deviceId } : undefined,
-          width: { ideal: 1920, min: 1280 },
-          height: { ideal: 1080, min: 720 },
-          facingMode: 'environment'
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          facingMode: { ideal: 'environment' }
         }
       };
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // If a newer startCamera request was made while awaiting getUserMedia, discard this stream
+      if (requestId !== activeRequestId.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
       streamRef.current = stream;
 
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-        setIsStreaming(true);
+        const video = videoRef.current;
+        video.srcObject = stream;
+
+        try {
+          await video.play();
+          setIsStreaming(true);
+        } catch (playErr: any) {
+          if (playErr.name === 'AbortError' || playErr.message?.includes('interrupted')) {
+            return;
+          }
+          console.warn('Video play warning:', playErr);
+        }
 
         const videoTrack = stream.getVideoTracks()[0];
         const settings = videoTrack?.getSettings();
         if (settings?.width && settings?.height) {
           setResolution({ width: settings.width, height: settings.height });
         }
+
+        // Check torch / flashlight support
+        try {
+          const capabilities = (videoTrack as any)?.getCapabilities?.();
+          setHasTorch(Boolean(capabilities && 'torch' in capabilities));
+        } catch (e) {
+          setHasTorch(false);
+        }
       }
 
       await updateDeviceList();
     } catch (err: any) {
+      if (requestId !== activeRequestId.current) return;
+      if (err.name === 'AbortError' || err.message?.includes('interrupted')) return;
+
       console.error('Error starting camera stream:', err);
       setIsStreaming(false);
       if (err.name === 'NotAllowedError') {
@@ -97,6 +129,23 @@ export function useCamera() {
       }
     }
   }, [updateDeviceList]);
+
+  // Toggle flashlight / torch on smartphones
+  const toggleTorch = useCallback(async () => {
+    if (!streamRef.current) return;
+    const track = streamRef.current.getVideoTracks()[0];
+    if (track) {
+      try {
+        const nextState = !isTorchOn;
+        await (track as any).applyConstraints({
+          advanced: [{ torch: nextState }]
+        });
+        setIsTorchOn(nextState);
+      } catch (err) {
+        console.warn('Torch toggle error:', err);
+      }
+    }
+  }, [isTorchOn]);
 
   // Capture snapshot to Base64 JPEG with optional watermark and blur evaluation
   const captureSnapshot = useCallback((options?: number | CaptureOptions): CaptureResult | null => {
@@ -160,6 +209,9 @@ export function useCamera() {
     isStreaming,
     cameraError,
     resolution,
+    hasTorch,
+    isTorchOn,
+    toggleTorch,
     startCamera,
     switchCamera,
     captureSnapshot

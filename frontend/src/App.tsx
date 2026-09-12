@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import confetti from 'canvas-confetti';
 import { 
   Barcode, 
   Camera, 
@@ -24,10 +23,12 @@ import { CameraViewfinder } from './components/CameraViewfinder';
 import { ReviewCard } from './components/ReviewCard';
 import { RecentCapturesModal } from './components/RecentCapturesModal';
 import { SettingsModal } from './components/SettingsModal';
+import { MobilePairingModal } from './components/MobilePairingModal';
 
 import { useCamera } from './hooks/useCamera';
 import { useBarcodeScanner } from './hooks/useBarcodeScanner';
 import { useSoundEffects } from './hooks/useSoundEffects';
+import { useSessionSync } from './hooks/useSessionSync';
 
 import { 
   CaptureStep, 
@@ -36,7 +37,8 @@ import {
   SystemStatus, 
   SystemConfig, 
   BookDetails, 
-  ExistingCopy 
+  ExistingCopy,
+  SessionEvent
 } from './types';
 
 export function App() {
@@ -62,6 +64,7 @@ export function App() {
   // Modals & Dialogs
   const [recentModalOpen, setRecentModalOpen] = useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [mobilePairingOpen, setMobilePairingOpen] = useState(false);
   const [duplicateModal, setDuplicateModal] = useState<{
     baseIsbn: string;
     existingCopies: ExistingCopy[];
@@ -82,6 +85,9 @@ export function App() {
     isStreaming,
     cameraError,
     resolution,
+    hasTorch,
+    isTorchOn,
+    toggleTorch,
     switchCamera,
     captureSnapshot
   } = useCamera();
@@ -116,6 +122,54 @@ export function App() {
       console.error('Failed to fetch system status/config:', err);
     }
   }, []);
+
+  // Real-time multi-device cross-synchronization (PC & Phone)
+  const { resetRemoteSession } = useSessionSync({
+    onSessionSync: useCallback((event: SessionEvent) => {
+      if (event.type === 'CONNECTED') {
+        if (event.session?.activeIsbn && currentStep === 'SCAN_ISBN') {
+          setActiveIsbn(event.session.activeIsbn);
+          setIsbnInput(event.session.activeIsbn);
+          setCurrentStep(event.session.currentStep);
+          setShot1(event.session.shot1);
+          setShot2(event.session.shot2);
+          setMetadata(event.session.metadata);
+          setBookDetails(event.session.bookDetails);
+        }
+      } else if (event.type === 'ISBN_INITIALIZED') {
+        setActiveIsbn(event.session.activeIsbn);
+        setIsbnInput(event.session.activeIsbn);
+        setCurrentStep(event.session.currentStep);
+        setShot1(event.session.shot1);
+        setShot2(event.session.shot2);
+        setMetadata(event.session.metadata);
+        setBookDetails(event.session.bookDetails);
+        playAudioCue('beep');
+      } else if (event.type === 'SHOT_SAVED') {
+        if (event.session.shot1) setShot1(event.session.shot1);
+        if (event.session.shot2) setShot2(event.session.shot2);
+        if (event.session.metadata) setMetadata(event.session.metadata);
+        if (event.session.bookDetails) setBookDetails(event.session.bookDetails);
+        setCurrentStep(event.session.currentStep);
+
+        if (event.isComplete) {
+          playAudioCue('success');
+          fetchStatus();
+        }
+      } else if (event.type === 'SESSION_RESET') {
+        setActiveIsbn('');
+        setIsbnInput('');
+        setShot1(null);
+        setShot2(null);
+        setMetadata(null);
+        setBookDetails(null);
+        setErrorMessage(null);
+        setDuplicateModal(null);
+        setBlurWarning(null);
+        setCurrentStep('SCAN_ISBN');
+      }
+    }, [currentStep, fetchStatus, playAudioCue])
+  });
 
   useEffect(() => {
     fetchStatus();
@@ -276,15 +330,6 @@ export function App() {
         setShot2(newShotInfo);
         setCurrentStep('COMPLETE');
         playAudioCue('success');
-
-        // Confetti celebration
-        try {
-          confetti({
-            particleCount: 50,
-            spread: 60,
-            origin: { y: 0.8 }
-          });
-        } catch (e) {}
       }
 
       if (data.metadata) {
@@ -352,6 +397,7 @@ export function App() {
   // Reset to next journal
   const handleNextJournal = () => {
     playAudioCue('click');
+    resetRemoteSession();
     setActiveIsbn('');
     setIsbnInput('');
     setShot1(null);
@@ -411,6 +457,7 @@ export function App() {
         systemStatus={systemStatus}
         onOpenRecent={() => setRecentModalOpen(true)}
         onOpenSettings={() => setSettingsModalOpen(true)}
+        onOpenMobilePairing={() => setMobilePairingOpen(true)}
         onOpenStorageFolder={() => handleOpenExplorer()}
       />
 
@@ -529,6 +576,9 @@ export function App() {
               currentStep={currentStep}
               resolution={resolution}
               isCapturing={isCapturing}
+              hasTorch={hasTorch}
+              isTorchOn={isTorchOn}
+              onToggleTorch={toggleTorch}
             />
           </div>
 
@@ -711,6 +761,12 @@ export function App() {
         onClose={() => setSettingsModalOpen(false)}
         systemStatus={systemStatus}
         onConfigUpdated={() => fetchStatus()}
+      />
+
+      <MobilePairingModal
+        isOpen={mobilePairingOpen}
+        onClose={() => setMobilePairingOpen(false)}
+        systemStatus={systemStatus}
       />
 
       {/* Footer */}

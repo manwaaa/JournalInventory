@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Camera, RefreshCw, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { Camera, RefreshCw, Eye, EyeOff, AlertCircle, Zap, ZapOff, ShieldCheck } from 'lucide-react';
 import { AngleGuideOverlay } from './AngleGuideOverlay';
 import { CameraDevice, CaptureStep } from '../types';
 
@@ -14,6 +14,9 @@ interface CameraViewfinderProps {
   currentStep: CaptureStep;
   resolution: { width: number; height: number };
   isCapturing: boolean;
+  hasTorch?: boolean;
+  isTorchOn?: boolean;
+  onToggleTorch?: () => void;
 }
 
 export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
@@ -26,7 +29,10 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   onCapture,
   currentStep,
   resolution,
-  isCapturing
+  isCapturing,
+  hasTorch = false,
+  isTorchOn = false,
+  onToggleTorch
 }) => {
   const [showGuide, setShowGuide] = useState<boolean>(true);
   const [triggerFlash, setTriggerFlash] = useState<boolean>(false);
@@ -73,6 +79,22 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               {resolution.width}×{resolution.height}
             </span>
           )}
+
+          {/* Flashlight / Torch Toggle (Mobile) */}
+          {hasTorch && onToggleTorch && (
+            <button
+              onClick={onToggleTorch}
+              title={isTorchOn ? "Turn off flashlight" : "Turn on flashlight"}
+              className={`p-1.5 rounded-lg border backdrop-blur-md transition-colors ${
+                isTorchOn 
+                  ? 'bg-amber-400/90 text-slate-900 border-amber-300 shadow-md shadow-amber-400/30' 
+                  : 'bg-black/60 text-white border-white/20 hover:bg-black/80'
+              }`}
+            >
+              {isTorchOn ? <Zap className="w-4 h-4 fill-current" /> : <ZapOff className="w-4 h-4 text-slate-400" />}
+            </button>
+          )}
+
           {isStepCaptureActive && (
             <button
               onClick={() => setShowGuide(!showGuide)}
@@ -135,22 +157,28 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
 
       {/* Bottom Shutter Capture Bar */}
       {isStepCaptureActive && (
-        <div className="p-3 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between">
-          <div className="text-xs text-slate-400 pl-2">
-            {currentStep === 'CAPTURE_SHOT_1' ? (
-              <span>Take <b className="text-brand-400">Shot 1 of 2</b> (Front Cover & Spine)</span>
-            ) : (
-              <span>Take <b className="text-emerald-400">Shot 2 of 2</b> (Author & Title Page)</span>
-            )}
+        <div className="p-3 bg-slate-900/90 border-t border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3 pl-1">
+            <div className="text-xs text-slate-300">
+              {currentStep === 'CAPTURE_SHOT_1' ? (
+                <span>Take <b className="text-brand-400">Shot 1 of 2</b> (Front Cover & Spine)</span>
+              ) : (
+                <span>Take <b className="text-emerald-400">Shot 2 of 2</b> (Author & Title Page)</span>
+              )}
+            </div>
+            <div className="inline-flex items-center space-x-1 text-[10px] text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-full w-fit">
+              <ShieldCheck className="w-3 h-3 shrink-0" />
+              <span>Direct to PC &bull; 0% Phone Storage</span>
+            </div>
           </div>
 
           <button
             onClick={handleCaptureClick}
             disabled={!isStreaming || isCapturing}
-            className="flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-sm text-white shadow-lg transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 shadow-brand-500/30"
+            className="flex items-center justify-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-sm text-white shadow-lg transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 shadow-brand-500/30 shrink-0"
           >
             <Camera className="w-4 h-4" />
-            <span>{isCapturing ? 'Saving...' : 'Capture Photo'}</span>
+            <span>{isCapturing ? 'Saving to PC...' : 'Capture Photo'}</span>
           </button>
         </div>
       )}
