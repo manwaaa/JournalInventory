@@ -9,18 +9,21 @@ export default defineConfig({
     host: '0.0.0.0',
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: 'http://127.0.0.1:3001',
         changeOrigin: true,
         configure: (proxy) => {
           proxy.on('error', (err) => {
-            // Ignore normal socket disconnects/resets when refreshing browser
-            if ((err as any)?.code === 'ECONNRESET') return;
+            const isConnRefused = 
+              (err as any)?.code === 'ECONNREFUSED' || 
+              (err as any)?.errors?.some((e: any) => e.code === 'ECONNREFUSED');
+            const isConnReset = (err as any)?.code === 'ECONNRESET';
+            if (isConnRefused || isConnReset) return;
             console.warn('[vite proxy error]', err.message);
           });
         }
       },
       '/proofs': {
-        target: 'http://localhost:3001',
+        target: 'http://127.0.0.1:3001',
         changeOrigin: true
       }
     }
