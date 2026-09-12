@@ -93,6 +93,31 @@ try {
   fs.ensureDirSync(config.storagePath);
 }
 
+// Helper to automatically remove any empty folders or folders with 0 proof images in storagePath
+async function cleanupEmptyProofFolders() {
+  try {
+    if (!fs.existsSync(config.storagePath)) return;
+    const entries = await fs.readdir(config.storagePath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const folder = path.join(config.storagePath, entry.name);
+        const files = await fs.readdir(folder);
+        // Only keep folders that have actual photo captures (.jpg, .jpeg, .png, .webp)
+        const imageFiles = files.filter(f => /\.(jpe?g|png|webp)$/i.test(f));
+        if (imageFiles.length === 0) {
+          await fs.remove(folder);
+          console.log(`[Storage] Auto-cleaned empty/abandoned folder: ${entry.name}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Storage] Cleanup empty folders warning:', err.message);
+  }
+}
+
+// Initial cleanup of any orphan/empty folders
+cleanupEmptyProofFolders();
+
 // Helper to save config
 function saveConfig() {
   try {
@@ -235,7 +260,8 @@ app.get('/api/session/current', (req, res) => {
 });
 
 // Reset live session (e.g. Next Journal)
-app.post('/api/session/reset', (req, res) => {
+app.post('/api/session/reset', async (req, res) => {
+  await cleanupEmptyProofFolders();
   currentSession = {
     activeIsbn: '',
     baseIsbn: '',
@@ -248,6 +274,37 @@ app.post('/api/session/reset', (req, res) => {
   };
   broadcastSession('SESSION_RESET');
   res.json({ success: true, session: currentSession });
+});
+
+// Explicitly discard / cancel active session and delete any partial/unwanted folder
+app.post('/api/capture/discard', async (req, res) => {
+  try {
+    const targetIsbn = req.body?.isbn || currentSession.activeIsbn;
+    if (targetIsbn) {
+      const cleanIsbn = sanitizeIsbn(targetIsbn);
+      const folderPath = path.join(config.storagePath, cleanIsbn);
+      if (fs.existsSync(folderPath)) {
+        await fs.remove(folderPath);
+        console.log(`[Storage] Explicitly discarded and deleted proof folder: ${cleanIsbn}`);
+      }
+    }
+    await cleanupEmptyProofFolders();
+    currentSession = {
+      activeIsbn: '',
+      baseIsbn: '',
+      currentStep: 'SCAN_ISBN',
+      shot1: null,
+      shot2: null,
+      metadata: null,
+      bookDetails: null,
+      copyNumber: 1
+    };
+    broadcastSession('SESSION_RESET', { discarded: true, isbn: targetIsbn });
+    res.json({ success: true, discarded: targetIsbn });
+  } catch (err) {
+    console.error('Error discarding session:', err);
+    res.status(500).json({ error: 'Failed to discard session', details: err.message });
+  }
 });
 // System Endpoints
 // -------------------------------------------------------------
@@ -334,7 +391,13 @@ app.post('/api/system/open-folder', (req, res) => {
 
   if (isbn) {
     const cleanIsbn = sanitizeIsbn(isbn);
-    folderToOpen = path.join(config.storagePath, cleanIsbn);
+    const specificFolder = path.join(config.storagePath, cleanIsbn);
+    // Only open specific folder if it actually exists on disk, otherwise open root storage
+    if (fs.existsSync(specificFolder)) {
+      folderToOpen = specificFolder;
+    } else {
+      folderToOpen = config.storagePath;
+    }
   }
 
   if (!fs.existsSync(folderToOpen)) {
@@ -552,20 +615,24 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       copyNumber = match ? parseInt(match[1], 10) : 1;
     }
 
+    // Clean up any previously abandoned empty folders before starting new capture
+    await cleanupEmptyProofFolders();
+
     const folderPath = path.join(config.storagePath, activeIdentifier);
     const alreadyExists = fs.existsSync(folderPath);
-    fs.ensureDirSync(folderPath);
 
     const existingShots = [];
     const shot1Path = path.join(folderPath, '1_front_spine.jpg');
     const shot2Path = path.join(folderPath, '2_author_title.jpg');
 
-    if (fs.existsSync(shot1Path)) existingShots.push('1_front_spine.jpg');
-    if (fs.existsSync(shot2Path)) existingShots.push('2_author_title.jpg');
+    if (alreadyExists) {
+      if (fs.existsSync(shot1Path)) existingShots.push('1_front_spine.jpg');
+      if (fs.existsSync(shot2Path)) existingShots.push('2_author_title.jpg');
+    }
 
     let metadata = null;
     const metaPath = path.join(folderPath, 'metadata.json');
-    if (fs.existsSync(metaPath)) {
+    if (alreadyExists && fs.existsSync(metaPath)) {
       try {
         metadata = fs.readJsonSync(metaPath);
       } catch (e) {}

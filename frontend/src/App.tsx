@@ -14,7 +14,9 @@ import {
   Plus,
   Eye,
   AlertTriangle,
-  Loader2
+  Loader2,
+  Trash2,
+  X
 } from 'lucide-react';
 
 import { Navbar } from './components/Navbar';
@@ -394,6 +396,32 @@ export function App() {
     }
   };
 
+  // Discard current active journal session and delete its folder/shots
+  const handleDiscardSession = async () => {
+    playAudioCue('click');
+    try {
+      await fetch('/api/capture/discard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isbn: activeIsbn })
+      });
+    } catch (e) {
+      console.error('Discard session error:', e);
+    }
+    setActiveIsbn('');
+    setIsbnInput('');
+    setShot1(null);
+    setShot2(null);
+    setMetadata(null);
+    setBookDetails(null);
+    setErrorMessage(null);
+    setDuplicateModal(null);
+    setBlurWarning(null);
+    setCurrentStep('SCAN_ISBN');
+    fetchStatus();
+    setTimeout(() => isbnInputRef.current?.focus(), 150);
+  };
+
   // Reset to next journal
   const handleNextJournal = () => {
     playAudioCue('click');
@@ -408,6 +436,7 @@ export function App() {
     setDuplicateModal(null);
     setBlurWarning(null);
     setCurrentStep('SCAN_ISBN');
+    fetchStatus();
     setTimeout(() => isbnInputRef.current?.focus(), 150);
   };
 
@@ -486,24 +515,86 @@ export function App() {
             className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
           >
             <div className="relative flex-1">
-              <Barcode className="w-5 h-5 text-slate-400 dark:text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <Barcode className="w-5 h-5 text-slate-400 dark:text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 ref={isbnInputRef}
                 type="text"
                 value={isbnInput}
                 onChange={(e) => setIsbnInput(e.target.value)}
                 placeholder="Scan or type Journal ISBN (e.g. 9780132350884)..."
-                className="w-full pl-11 pr-4 py-3 text-sm font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 shadow-inner text-slate-900 dark:text-white transition-all"
+                className="w-full pl-11 pr-32 py-3 text-sm font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 shadow-inner text-slate-900 dark:text-white transition-all"
               />
+
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center space-x-1.5">
+                {isbnInput.trim().length > 0 && (
+                  <>
+                    {(() => {
+                      const digitsOnly = isbnInput.replace(/[^0-9Xx]/g, '');
+                      const len = digitsOnly.length;
+                      if (len === 13) {
+                        return (
+                          <span className="px-2 py-0.5 text-[10px] font-bold rounded-md bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-800">
+                            13 digits (ISBN-13)
+                          </span>
+                        );
+                      } else if (len === 10) {
+                        return (
+                          <span className="px-2 py-0.5 text-[10px] font-bold rounded-md bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-800">
+                            10 digits (ISBN-10)
+                          </span>
+                        );
+                      } else if (len === 8) {
+                        return (
+                          <span className="px-2 py-0.5 text-[10px] font-bold rounded-md bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-400 border border-blue-300 dark:border-blue-800">
+                            8 digits (ISSN)
+                          </span>
+                        );
+                      } else if (len > 0) {
+                        return (
+                          <span className="px-2 py-0.5 text-[10px] font-bold rounded-md bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400 border border-amber-300 dark:border-amber-800">
+                            {len} digits
+                          </span>
+                        );
+                      }
+                      return null;
+                    })()}
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsbnInput('');
+                        isbnInputRef.current?.focus();
+                      }}
+                      className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                      title="Clear text"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
-            <button
-              type="submit"
-              className="inline-flex items-center justify-center space-x-2 px-6 py-3 rounded-xl font-bold text-sm text-white bg-brand-600 hover:bg-brand-500 shadow-md shadow-brand-500/20 active:scale-95 transition-all shrink-0"
-            >
-              <span>{activeIsbn === isbnInput.trim() && activeIsbn ? 'Re-Init' : 'Start Capture'}</span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {activeIsbn && (
+                <button
+                  type="button"
+                  onClick={handleDiscardSession}
+                  className="px-4 py-3 rounded-xl font-bold text-xs text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/60 border border-rose-200 dark:border-rose-900/40 shadow-sm transition-all"
+                  title="Discard this session and start over"
+                >
+                  Clear / Reset
+                </button>
+              )}
+
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center space-x-2 px-6 py-3 rounded-xl font-bold text-sm text-white bg-brand-600 hover:bg-brand-500 shadow-md shadow-brand-500/20 active:scale-95 transition-all shrink-0"
+              >
+                <span>{activeIsbn === isbnInput.trim() && activeIsbn ? 'Re-Init' : 'Start Capture'}</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
           </form>
 
           {/* Bibliographic Metadata Card (Auto-Lookup) */}
@@ -594,6 +685,7 @@ export function App() {
                 onOpenExplorer={handleOpenExplorer}
                 onDownloadZip={handleDownloadZip}
                 onNextJournal={handleNextJournal}
+                onDiscardSession={handleDiscardSession}
               />
             ) : (
               <div className="glass-panel rounded-2xl p-8 border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-center text-slate-400 min-h-[380px]">
