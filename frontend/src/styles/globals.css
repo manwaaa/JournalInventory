@@ -4,52 +4,137 @@
 
 @layer base {
   :root {
-    --brand-soft: #eff6ff;
-    --brand-wash: #dbeafe;
+    --brand-soft: #f0f7ff;
+    --brand-wash: #e0f0fe;
     --brand-glow: #bfdbfe;
-    --brand-primary: #2563eb;
-  }
-
-  .dark {
-    --brand-soft: #0f172a;
-    --brand-wash: #1e293b;
-    --brand-glow: #172554;
-    --brand-primary: #3b82f6;
+    --brand-primary: #1d4ed8;
   }
 }
 
-/* Ambient dynamic background matching iBookTrack */
+/* Premium smooth ambient background with diffused multi-stop lighting */
 .ambient-bg {
-  background-color: #f8fafc;
+  background-color: #f6f9fd;
   background-image:
-    radial-gradient(ellipse 800px 450px at -2% -2%, rgba(219, 234, 254, 0.7), transparent 58%),
-    radial-gradient(ellipse 650px 500px at 100% 95%, rgba(191, 219, 254, 0.5), transparent 52%),
-    radial-gradient(ellipse 500px 350px at 50% 50%, rgba(239, 246, 255, 0.9), transparent 65%);
+    radial-gradient(1200px 700px at 0% -2%, rgba(218, 236, 255, 0.75), transparent 70%),
+    radial-gradient(1100px 750px at 100% 5%, rgba(224, 242, 254, 0.65), transparent 65%),
+    radial-gradient(1000px 650px at 50% 100%, rgba(219, 234, 254, 0.55), transparent 70%),
+    linear-gradient(180deg, #f8fbff 0%, #f1f7fe 50%, #ebf3fd 100%);
   background-attachment: fixed;
+  min-height: 100vh;
 }
 
-.dark .ambient-bg {
-  background-color: #030712;
-  background-image:
-    radial-gradient(ellipse 800px 450px at -2% -2%, rgba(30, 58, 138, 0.25), transparent 58%),
-    radial-gradient(ellipse 650px 500px at 100% 95%, rgba(30, 41, 59, 0.35), transparent 52%),
-    radial-gradient(ellipse 500px 350px at 50% 50%, rgba(15, 23, 42, 0.4), transparent 65%);
-  background-attachment: fixed;
+/* Luxury white card styling with smooth gradient sheen & delicate border */
+.white-card {
+  background: linear-gradient(180deg, #ffffff 0%, #fafdff 45%, #f1f7fe 100%);
+  border: 1px solid rgba(214, 232, 254, 0.95);
+  box-shadow: 
+    0 12px 30px -4px rgba(24, 62, 142, 0.045),
+    0 3px 8px -1px rgba(24, 62, 142, 0.02),
+    inset 0 1px 0 0 rgba(255, 255, 255, 1);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* Glass card styling */
+.white-card:hover {
+  box-shadow: 
+    0 16px 36px -4px rgba(24, 62, 142, 0.065),
+    0 4px 12px -2px rgba(24, 62, 142, 0.03),
+    inset 0 1px 0 0 rgba(255, 255, 255, 1);
+}
+
+/* Sub-card tile styling (for shot thumbnails, summary pills, status blocks) */
+.sub-card {
+  background: linear-gradient(180deg, #ffffff 0%, #f5f9fe 100%);
+  border: 1px solid rgba(219, 235, 254, 0.9);
+  box-shadow: 
+    0 2px 8px -1px rgba(24, 62, 142, 0.035),
+    inset 0 1px 0 0 rgba(255, 255, 255, 1);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.sub-card:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #edf5fe 100%);
+  border-color: rgba(147, 197, 253, 0.95);
+  box-shadow: 
+    0 6px 16px -2px rgba(24, 62, 142, 0.08),
+    inset 0 1px 0 0 rgba(255, 255, 255, 1);
+  transform: translateY(-1px);
+}
+
+/* Modal Dialog Card Container */
+.modal-card {
+  background: linear-gradient(180deg, #ffffff 0%, #fafcff 100%);
+  border: 1px solid rgba(214, 232, 254, 0.95);
+  box-shadow: 
+    0 25px 50px -12px rgba(15, 35, 95, 0.25),
+    0 10px 20px -5px rgba(15, 35, 95, 0.1),
+    inset 0 1px 0 0 rgba(255, 255, 255, 1);
+}
+
 .glass-panel {
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(226, 232, 240, 0.8);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(246, 251, 255, 0.92) 100%);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(219, 234, 254, 0.85);
+  box-shadow: 
+    0 12px 28px -6px rgba(24, 62, 142, 0.05),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.95);
 }
 
-.dark .glass-panel {
-  background: rgba(15, 23, 42, 0.78);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(51, 65, 85, 0.6);
+/* Smooth premium gradient button with gentle glow and silky hover */
+.btn-primary-gradient {
+  background: linear-gradient(135deg, #1e40af 0%, #2563eb 50%, #3b82f6 100%);
+  box-shadow: 0 4px 14px -1px rgba(37, 99, 235, 0.32);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.btn-primary-gradient:hover {
+  background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 50%, #2563eb 100%);
+  box-shadow: 0 6px 20px -1px rgba(37, 99, 235, 0.45);
+  transform: translateY(-1px);
+}
+
+.btn-primary-gradient:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* Soft secondary gradient button */
+.btn-secondary-gradient {
+  background: linear-gradient(180deg, #ffffff 0%, #f0f7ff 100%);
+  border: 1px solid rgba(191, 219, 254, 0.85);
+  box-shadow: 0 2px 6px rgba(24, 62, 142, 0.04);
+  transition: all 0.2s ease;
+}
+
+.btn-secondary-gradient:hover {
+  background: linear-gradient(180deg, #f8fbff 0%, #e0effe 100%);
+  border-color: rgba(147, 197, 253, 1);
+  box-shadow: 0 4px 12px rgba(24, 62, 142, 0.08);
+  transform: translateY(-1px);
+}
+
+/* Lot Header gradient */
+.lot-header-gradient {
+  background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 45%, #2563eb 100%);
+  box-shadow: 0 4px 16px -2px rgba(30, 58, 138, 0.22);
+}
+
+/* Soft gradient pill / badge */
+.badge-soft-blue {
+  background: linear-gradient(135deg, #f0f7ff 0%, #e2f0fe 100%);
+  border: 1px solid rgba(191, 219, 254, 0.8);
+}
+
+/* Smooth subtle input gradient */
+.input-smooth {
+  background: linear-gradient(180deg, #ffffff 0%, #f9fbfe 100%);
+  border: 1px solid rgba(203, 213, 225, 0.8);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.input-smooth:focus {
+  background: #ffffff;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
 /* Custom smooth scrollbar */
@@ -61,11 +146,11 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.4);
+  background: rgba(148, 163, 184, 0.35);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 116, 139, 0.7);
+  background: rgba(100, 116, 139, 0.6);
 }
 
 /* Keyframe for camera shutter flash */

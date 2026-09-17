@@ -1,7 +1,7 @@
 @echo off
-title Journal Proof Capture Launcher
+title Verification Images Launcher
 echo =======================================================
-echo   Starting Journal Proof & Anti-Plagiarism Capture Tool
+echo   Starting Verification Images System
 echo =======================================================
 echo.
 

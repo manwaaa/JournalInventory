@@ -1,9 +1,9 @@
 @echo off
-title Journal Proof Capture System
+title Verification Images System
 color 0A
 cd /d "%~dp0\backend"
 echo ================================================================
-echo   JOURNAL PROOF CAPTURE SYSTEM
+echo   VERIFICATION IMAGES SYSTEM
 echo ================================================================
 echo.
 echo   Launching web interface in default browser...

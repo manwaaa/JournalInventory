@@ -38,7 +38,7 @@ try {
     console.log('[SSL] Generating local self-signed certificate for mobile HTTPS camera access...');
     const pems = await selfsigned.generate([
       { name: 'commonName', value: os.hostname() || 'localhost' },
-      { name: 'organizationName', value: 'JournalProof Inventory' }
+      { name: 'organizationName', value: 'Verification Images' }
     ], { days: 730 });
 
     fs.writeFileSync(CERT_FILE, pems.cert, 'utf8');
@@ -50,12 +50,23 @@ try {
   console.warn('[SSL] Could not initialize SSL certificate:', e.message);
 }
 
-// Default storage directory: C:\Journal_Proofs on Windows, or ./storage/journal_proofs
+// Storage path configuration
 const DEFAULT_STORAGE_PATH = process.platform === 'win32' 
   ? 'C:\\Journal_Proofs' 
   : path.resolve(__dirname, 'storage/journal_proofs');
 
 const CONFIG_FILE = path.resolve(__dirname, 'config.json');
+const MANIFEST_FILE = path.resolve(__dirname, 'manifest.json');
+
+// 6 Shot definitions & filenames
+const SHOT_DEFINITIONS = {
+  1: { filename: '1_books_in_box.jpg', legacy: '1_front_spine.jpg', type: 'Books in a Box', scope: 'box_level' },
+  2: { filename: '2_unbox_books.jpg', legacy: '2_author_title.jpg', type: 'Unbox Books', scope: 'box_level' },
+  3: { filename: '3_front_cover.jpg', legacy: null, type: 'Front Cover', scope: 'book_level' },
+  4: { filename: '4_spine.jpg', legacy: null, type: 'Spine', scope: 'book_level' },
+  5: { filename: '5_title_page.jpg', legacy: null, type: 'Title Page', scope: 'book_level' },
+  6: { filename: '6_front_matter.jpg', legacy: null, type: 'Front Matter (Edition & Copyright)', scope: 'book_level' }
+};
 
 // Load or initialize config
 let config = {
@@ -69,7 +80,8 @@ let config = {
   blurCheckEnabled: true,
   peerSyncEnabled: false,
   peerIp: '',
-  peerPort: 3001
+  peerPort: 3001,
+  enforceManifest: false
 };
 
 if (fs.existsSync(CONFIG_FILE)) {
@@ -83,6 +95,32 @@ if (fs.existsSync(CONFIG_FILE)) {
   fs.writeJsonSync(CONFIG_FILE, config, { spaces: 2 });
 }
 
+// Load or initialize Manifest database
+let manifestData = {
+  items: [],
+  totalCount: 0,
+  processableCount: 0,
+  nonProcessableCount: 0,
+  lastUpdated: null,
+  filename: null
+};
+
+if (fs.existsSync(MANIFEST_FILE)) {
+  try {
+    manifestData = fs.readJsonSync(MANIFEST_FILE);
+  } catch (err) {
+    console.error('Failed to parse manifest.json:', err);
+  }
+}
+
+function saveManifest() {
+  try {
+    fs.writeJsonSync(MANIFEST_FILE, manifestData, { spaces: 2 });
+  } catch (err) {
+    console.error('Failed to save manifest.json:', err);
+  }
+}
+
 // Ensure storage directory exists
 try {
   fs.ensureDirSync(config.storagePath);
@@ -93,7 +131,7 @@ try {
   fs.ensureDirSync(config.storagePath);
 }
 
-// Helper to automatically remove any empty folders or folders with 0 proof images in storagePath
+// Clean up empty proof folders
 async function cleanupEmptyProofFolders() {
   try {
     if (!fs.existsSync(config.storagePath)) return;
@@ -102,7 +140,6 @@ async function cleanupEmptyProofFolders() {
       if (entry.isDirectory()) {
         const folder = path.join(config.storagePath, entry.name);
         const files = await fs.readdir(folder);
-        // Only keep folders that have actual photo captures (.jpg, .jpeg, .png, .webp)
         const imageFiles = files.filter(f => /\.(jpe?g|png|webp)$/i.test(f));
         if (imageFiles.length === 0) {
           await fs.remove(folder);
@@ -115,10 +152,8 @@ async function cleanupEmptyProofFolders() {
   }
 }
 
-// Initial cleanup of any orphan/empty folders
 cleanupEmptyProofFolders();
 
-// Helper to save config
 function saveConfig() {
   try {
     fs.writeJsonSync(CONFIG_FILE, config, { spaces: 2 });
@@ -127,40 +162,29 @@ function saveConfig() {
   }
 }
 
-// Asynchronous 2-way peer replication helper
-async function replicateToPeer(shotData) {
-  if (!config.peerSyncEnabled || !config.peerIp) return;
-  try {
-    const peerUrl = `http://${config.peerIp}:${config.peerPort || 3001}/api/sync/receive-shot`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
-    const res = await fetch(peerUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...shotData, isReplication: true }),
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-    if (!res.ok) {
-      console.warn(`[PeerSync] Replicating to ${peerUrl} responded with status: ${res.status}`);
-    } else {
-      console.log(`[PeerSync] Successfully replicated shot ${shotData.shotNumber} for ${shotData.isbn} to peer ${config.peerIp}`);
-    }
-  } catch (err) {
-    console.warn(`[PeerSync] Could not replicate shot to peer ${config.peerIp}:`, err.message);
-  }
+// Helper to sanitize ISBN for filesystem safely
+function sanitizeIsbn(isbn) {
+  if (!isbn || typeof isbn !== 'string') return '';
+  return isbn.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
-// Global active capture session state (synced across PC & Phone)
+// Helper to extract base ISBN from copy names (e.g. 9780198826545_Copy2 -> 9780198826545)
+function getBaseIsbn(identifier) {
+  return identifier.replace(/_Copy\d+$/i, '');
+}
+
+// Global active capture session state (6 Shots)
 let currentSession = {
   activeIsbn: '',
   baseIsbn: '',
+  lotNumber: 'Lot-131',
+  boxNumber: '',
   currentStep: 'SCAN_ISBN',
-  shot1: null,
-  shot2: null,
+  shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null },
   metadata: null,
   bookDetails: null,
-  copyNumber: 1
+  copyNumber: 1,
+  isProcessable: true
 };
 
 // Connected Server-Sent Events (SSE) clients
@@ -183,17 +207,6 @@ function broadcastSession(type, extra = {}) {
   }
 }
 
-// Helper to sanitize ISBN for filesystem safely
-function sanitizeIsbn(isbn) {
-  if (!isbn || typeof isbn !== 'string') return '';
-  return isbn.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
-// Helper to extract base ISBN from copy names (e.g. 9780198826545_Copy2 -> 9780198826545)
-function getBaseIsbn(identifier) {
-  return identifier.replace(/_Copy\d+$/i, '');
-}
-
 // Helper to get local network IPv4 addresses
 function getNetworkIps() {
   const interfaces = os.networkInterfaces();
@@ -210,8 +223,8 @@ function getNetworkIps() {
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: '60mb' }));
+app.use(express.urlencoded({ limit: '60mb', extended: true }));
 
 // Serve saved shots statically
 app.use('/proofs', (req, res, next) => {
@@ -224,8 +237,6 @@ const metadataCache = new Map();
 // -------------------------------------------------------------
 // Real-Time Cross-Device Session Endpoints (SSE)
 // -------------------------------------------------------------
-
-// SSE stream for real-time pairing between PC & Phone
 app.get('/api/session/stream', (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -234,9 +245,7 @@ app.get('/api/session/stream', (req, res) => {
     'Access-Control-Allow-Origin': '*'
   });
 
-  // Immediately send current session state upon connection
   res.write(`data: ${JSON.stringify({ type: 'CONNECTED', session: currentSession, timestamp: Date.now() })}\n\n`);
-
   sseClients.add(res);
 
   const heartbeat = setInterval(() => {
@@ -259,29 +268,28 @@ app.get('/api/session/stream', (req, res) => {
   res.on('close', cleanup);
 });
 
-// Get current live session
 app.get('/api/session/current', (req, res) => {
   res.json({ session: currentSession });
 });
 
-// Reset live session (e.g. Next Journal)
 app.post('/api/session/reset', async (req, res) => {
   await cleanupEmptyProofFolders();
   currentSession = {
     activeIsbn: '',
     baseIsbn: '',
+    lotNumber: currentSession.lotNumber || 'Lot-131',
+    boxNumber: currentSession.boxNumber || '',
     currentStep: 'SCAN_ISBN',
-    shot1: null,
-    shot2: null,
+    shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null },
     metadata: null,
     bookDetails: null,
-    copyNumber: 1
+    copyNumber: 1,
+    isProcessable: true
   };
   broadcastSession('SESSION_RESET');
   res.json({ success: true, session: currentSession });
 });
 
-// Explicitly discard / cancel active session and delete any partial/unwanted folder
 app.post('/api/capture/discard', async (req, res) => {
   try {
     const targetIsbn = req.body?.isbn || currentSession.activeIsbn;
@@ -290,19 +298,21 @@ app.post('/api/capture/discard', async (req, res) => {
       const folderPath = path.join(config.storagePath, cleanIsbn);
       if (fs.existsSync(folderPath)) {
         await fs.remove(folderPath);
-        console.log(`[Storage] Explicitly discarded and deleted proof folder: ${cleanIsbn}`);
+        console.log(`[Storage] Discarded proof folder: ${cleanIsbn}`);
       }
     }
     await cleanupEmptyProofFolders();
     currentSession = {
       activeIsbn: '',
       baseIsbn: '',
+      lotNumber: currentSession.lotNumber || 'Lot-131',
+      boxNumber: currentSession.boxNumber || '',
       currentStep: 'SCAN_ISBN',
-      shot1: null,
-      shot2: null,
+      shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null },
       metadata: null,
       bookDetails: null,
-      copyNumber: 1
+      copyNumber: 1,
+      isProcessable: true
     };
     broadcastSession('SESSION_RESET', { discarded: true, isbn: targetIsbn });
     res.json({ success: true, discarded: targetIsbn });
@@ -311,10 +321,113 @@ app.post('/api/capture/discard', async (req, res) => {
     res.status(500).json({ error: 'Failed to discard session', details: err.message });
   }
 });
+
+// -------------------------------------------------------------
+// Manifest Import & Validation Endpoints
+// -------------------------------------------------------------
+app.get('/api/manifest', (req, res) => {
+  res.json(manifestData);
+});
+
+app.post('/api/manifest/import', (req, res) => {
+  try {
+    const { items, filename } = req.body;
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    const cleanItems = items.map(item => ({
+      isbn: String(item.isbn || '').trim(),
+      lotNumber: item.lotNumber ? String(item.lotNumber).trim() : '',
+      boxNumber: item.boxNumber ? String(item.boxNumber).trim() : '',
+      title: item.title ? String(item.title).trim() : '',
+      author: item.author ? String(item.author).trim() : '',
+      isProcessable: item.isProcessable !== false && String(item.isProcessable).toLowerCase() !== 'false' && String(item.isProcessable).toLowerCase() !== 'no',
+      reason: item.reason ? String(item.reason).trim() : '',
+      notes: item.notes ? String(item.notes).trim() : '',
+      importedAt: new Date().toISOString()
+    })).filter(i => i.isbn.length > 0);
+
+    const processableCount = cleanItems.filter(i => i.isProcessable).length;
+    const nonProcessableCount = cleanItems.length - processableCount;
+
+    manifestData = {
+      items: cleanItems,
+      totalCount: cleanItems.length,
+      processableCount,
+      nonProcessableCount,
+      lastUpdated: new Date().toISOString(),
+      filename: filename || 'manifest_import.csv'
+    };
+
+    saveManifest();
+    broadcastSession('MANIFEST_UPDATED', { manifestData });
+
+    res.json({
+      success: true,
+      manifestData
+    });
+  } catch (err) {
+    console.error('Manifest import error:', err);
+    res.status(500).json({ error: 'Failed to import manifest', details: err.message });
+  }
+});
+
+app.get('/api/manifest/check/:isbn', (req, res) => {
+  const rawIsbn = req.params.isbn;
+  const cleanIsbn = sanitizeIsbn(rawIsbn);
+  const numericOnly = rawIsbn.replace(/[^0-9Xx]/g, '');
+
+  if (!manifestData.items || manifestData.items.length === 0) {
+    return res.json({
+      manifestActive: false,
+      found: false,
+      isProcessable: true
+    });
+  }
+
+  const match = manifestData.items.find(item => {
+    const itemNum = item.isbn.replace(/[^0-9Xx]/g, '');
+    return item.isbn.toLowerCase() === rawIsbn.toLowerCase() ||
+      item.isbn.toLowerCase() === cleanIsbn.toLowerCase() ||
+      (numericOnly.length > 0 && itemNum === numericOnly);
+  });
+
+  if (match) {
+    return res.json({
+      manifestActive: true,
+      found: true,
+      isProcessable: match.isProcessable,
+      item: match,
+      reason: match.reason || (!match.isProcessable ? 'Marked as Not Processable in Manifest' : '')
+    });
+  }
+
+  return res.json({
+    manifestActive: true,
+    found: false,
+    isProcessable: !config.enforceManifest, // if strict enforcement is on, missing = not processable
+    reason: config.enforceManifest ? 'ISBN not found in imported manifest' : ''
+  });
+});
+
+app.delete('/api/manifest', (req, res) => {
+  manifestData = {
+    items: [],
+    totalCount: 0,
+    processableCount: 0,
+    nonProcessableCount: 0,
+    lastUpdated: null,
+    filename: null
+  };
+  saveManifest();
+  broadcastSession('MANIFEST_UPDATED', { manifestData });
+  res.json({ success: true, message: 'Manifest cleared' });
+});
+
+// -------------------------------------------------------------
 // System Endpoints
 // -------------------------------------------------------------
-
-// System Status & Network info
 app.get('/api/system/status', (req, res) => {
   let proofCount = 0;
   try {
@@ -329,6 +442,7 @@ app.get('/api/system/status', (req, res) => {
 
   res.json({
     status: 'online',
+    appName: 'Verification Images',
     hostname: os.hostname(),
     platform: process.platform,
     networkIps: getNetworkIps(),
@@ -341,11 +455,11 @@ app.get('/api/system/status', (req, res) => {
     watermarkStation: config.watermarkStation || os.hostname(),
     peerSyncEnabled: Boolean(config.peerSyncEnabled),
     peerIp: config.peerIp || '',
-    peerPort: config.peerPort || 3001
+    peerPort: config.peerPort || 3001,
+    manifestItemCount: manifestData.totalCount || 0
   });
 });
 
-// Config GET & POST
 app.get('/api/system/config', (req, res) => {
   res.json(config);
 });
@@ -362,7 +476,8 @@ app.post('/api/system/config', (req, res) => {
     blurCheckEnabled,
     peerSyncEnabled,
     peerIp,
-    peerPort
+    peerPort,
+    enforceManifest
   } = req.body;
   
   if (storagePath && typeof storagePath === 'string') {
@@ -384,12 +499,12 @@ app.post('/api/system/config', (req, res) => {
   if (peerSyncEnabled !== undefined) config.peerSyncEnabled = Boolean(peerSyncEnabled);
   if (peerIp !== undefined) config.peerIp = String(peerIp).trim();
   if (peerPort !== undefined) config.peerPort = Number(peerPort);
+  if (enforceManifest !== undefined) config.enforceManifest = Boolean(enforceManifest);
 
   saveConfig();
   res.json({ success: true, config });
 });
 
-// Open folder in Windows Explorer
 app.post('/api/system/open-folder', (req, res) => {
   const { isbn, targetPath } = req.body;
   let folderToOpen = targetPath || config.storagePath;
@@ -397,7 +512,6 @@ app.post('/api/system/open-folder', (req, res) => {
   if (isbn) {
     const cleanIsbn = sanitizeIsbn(isbn);
     const specificFolder = path.join(config.storagePath, cleanIsbn);
-    // Only open specific folder if it actually exists on disk, otherwise open root storage
     if (fs.existsSync(specificFolder)) {
       folderToOpen = specificFolder;
     } else {
@@ -412,7 +526,6 @@ app.post('/api/system/open-folder', (req, res) => {
   const normalizedPath = path.resolve(folderToOpen);
 
   if (process.platform === 'win32') {
-    // Note: explorer.exe returns exit code 1 when delegating to the Windows Shell
     exec(`explorer.exe "${normalizedPath}"`, (err) => {
       if (err && err.code !== 1 && err.code !== 0) {
         console.warn('Explorer launch warning:', err.message);
@@ -429,7 +542,7 @@ app.post('/api/system/open-folder', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// Metadata Automated Lookup (OpenLibrary, Google Books, CrossRef)
+// Metadata Automated Lookup
 // -------------------------------------------------------------
 app.get('/api/lookup/isbn/:isbn', async (req, res) => {
   try {
@@ -447,12 +560,11 @@ app.get('/api/lookup/isbn/:isbn', async (req, res) => {
 
     let bookData = null;
 
-    // 1. Try OpenLibrary API
     if (numericOnly.length >= 9) {
       try {
         const olUrl = `https://openlibrary.org/api/books?bibkeys=ISBN:${numericOnly}&format=json&jscmd=data`;
         const olRes = await fetch(olUrl, {
-          headers: { 'User-Agent': 'JournalProofInventory/1.0' },
+          headers: { 'User-Agent': 'VerificationImages/2.0' },
           signal: AbortSignal.timeout(3500)
         });
         if (olRes.ok) {
@@ -474,17 +586,14 @@ app.get('/api/lookup/isbn/:isbn', async (req, res) => {
             };
           }
         }
-      } catch (e) {
-        // continue to next provider
-      }
+      } catch (e) {}
     }
 
-    // 2. Fallback: Google Books API
     if (!bookData && numericOnly.length >= 8) {
       try {
         const gbUrl = `https://www.googleapis.com/books/v1/volumes?q=isbn:${numericOnly}`;
         const gbRes = await fetch(gbUrl, {
-          headers: { 'User-Agent': 'JournalProofInventory/1.0' },
+          headers: { 'User-Agent': 'VerificationImages/2.0' },
           signal: AbortSignal.timeout(3500)
         });
         if (gbRes.ok) {
@@ -506,36 +615,7 @@ app.get('/api/lookup/isbn/:isbn', async (req, res) => {
             };
           }
         }
-      } catch (e) {
-        // continue to fallback
-      }
-    }
-
-    // 3. Fallback: CrossRef for Journals / ISSN / titles
-    if (!bookData) {
-      try {
-        const crUrl = `https://api.crossref.org/works?query.bibliographic=${encodeURIComponent(cleanIsbn)}&rows=1`;
-        const crRes = await fetch(crUrl, {
-          headers: { 'User-Agent': 'JournalProofInventory/1.0 (mailto:admin@journalproof.local)' },
-          signal: AbortSignal.timeout(3000)
-        });
-        if (crRes.ok) {
-          const crJson = await crRes.json();
-          const item = crJson.message?.items?.[0];
-          if (item) {
-            const authors = item.author?.map(a => `${a.given || ''} ${a.family || ''}`.trim()).filter(Boolean).join(', ') || '';
-            bookData = {
-              title: item.title?.[0] || item['container-title']?.[0] || '',
-              publisher: item.publisher || '',
-              authors: authors,
-              publishYear: item.published?.['date-parts']?.[0]?.[0]?.toString() || '',
-              source: 'CrossRef'
-            };
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
+      } catch (e) {}
     }
 
     if (bookData) {
@@ -551,10 +631,8 @@ app.get('/api/lookup/isbn/:isbn', async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// Capture & Storage Endpoints
+// Capture & Storage Endpoints (6 Verification Shots)
 // -------------------------------------------------------------
-
-// Helper to find existing copies of an ISBN
 async function findExistingCopies(baseIsbn) {
   if (!fs.existsSync(config.storagePath)) return [];
 
@@ -567,23 +645,27 @@ async function findExistingCopies(baseIsbn) {
   const copies = [];
   for (const name of matchingDirs) {
     const folderPath = path.join(config.storagePath, name);
-    const hasShot1 = fs.existsSync(path.join(folderPath, '1_front_spine.jpg'));
-    const hasShot2 = fs.existsSync(path.join(folderPath, '2_author_title.jpg'));
+    let shotsCount = 0;
+    for (let s = 1; s <= 6; s++) {
+      const def = SHOT_DEFINITIONS[s];
+      const hasMain = fs.existsSync(path.join(folderPath, def.filename));
+      const hasLegacy = def.legacy ? fs.existsSync(path.join(folderPath, def.legacy)) : false;
+      if (hasMain || hasLegacy) shotsCount++;
+    }
+
     let meta = null;
     try {
       meta = await fs.readJson(path.join(folderPath, 'metadata.json'));
     } catch (e) {}
 
-    // Parse copy number
     const copyMatch = name.match(/_Copy(\d+)$/i);
     const copyNumber = copyMatch ? parseInt(copyMatch[1], 10) : 1;
 
     copies.push({
       identifier: name,
       copyNumber,
-      hasShot1,
-      hasShot2,
-      isComplete: hasShot1 && hasShot2,
+      shotsCount,
+      isComplete: shotsCount >= 6,
       metadata: meta
     });
   }
@@ -592,10 +674,10 @@ async function findExistingCopies(baseIsbn) {
   return copies;
 }
 
-// Initialize ISBN folder (supports new copy creation & duplicate detection)
+// Initialize ISBN verification session
 app.post('/api/capture/init-isbn', async (req, res) => {
   try {
-    const { isbn, forceNewCopy, targetIdentifier } = req.body;
+    const { isbn, forceNewCopy, targetIdentifier, lotNumber, boxNumber } = req.body;
     if (!isbn || !isbn.trim()) {
       return res.status(400).json({ error: 'ISBN is required' });
     }
@@ -603,13 +685,37 @@ app.post('/api/capture/init-isbn', async (req, res) => {
     const cleanBaseIsbn = sanitizeIsbn(isbn);
     const baseIsbnOnly = getBaseIsbn(cleanBaseIsbn);
 
+    // Check Manifest validation
+    let manifestMatch = null;
+    let isProcessable = true;
+    let nonProcessableReason = '';
+
+    if (manifestData.items && manifestData.items.length > 0) {
+      const numericOnly = isbn.replace(/[^0-9Xx]/g, '');
+      manifestMatch = manifestData.items.find(item => {
+        const itemNum = item.isbn.replace(/[^0-9Xx]/g, '');
+        return item.isbn.toLowerCase() === isbn.toLowerCase() ||
+          item.isbn.toLowerCase() === cleanBaseIsbn.toLowerCase() ||
+          (numericOnly.length > 0 && itemNum === numericOnly);
+      });
+
+      if (manifestMatch) {
+        isProcessable = manifestMatch.isProcessable;
+        if (!isProcessable) {
+          nonProcessableReason = manifestMatch.reason || 'Journal is marked as Not Processable in the imported manifest.';
+        }
+      } else if (config.enforceManifest) {
+        isProcessable = false;
+        nonProcessableReason = 'ISBN is not listed in the imported manifest (Strict Mode Active).';
+      }
+    }
+
     const existingCopies = await findExistingCopies(baseIsbnOnly);
 
     let activeIdentifier = cleanBaseIsbn;
     let copyNumber = 1;
 
     if (forceNewCopy) {
-      // Find highest copy number and increment
       const maxCopy = existingCopies.reduce((max, c) => Math.max(max, c.copyNumber), 0);
       const nextCopyNum = Math.max(maxCopy + 1, 2);
       activeIdentifier = `${baseIsbnOnly}_Copy${nextCopyNum}`;
@@ -620,19 +726,26 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       copyNumber = match ? parseInt(match[1], 10) : 1;
     }
 
-    // Clean up any previously abandoned empty folders before starting new capture
     await cleanupEmptyProofFolders();
 
     const folderPath = path.join(config.storagePath, activeIdentifier);
     const alreadyExists = fs.existsSync(folderPath);
 
-    const existingShots = [];
-    const shot1Path = path.join(folderPath, '1_front_spine.jpg');
-    const shot2Path = path.join(folderPath, '2_author_title.jpg');
+    const existingShots = {};
+    let shotsFoundCount = 0;
 
-    if (alreadyExists) {
-      if (fs.existsSync(shot1Path)) existingShots.push('1_front_spine.jpg');
-      if (fs.existsSync(shot2Path)) existingShots.push('2_author_title.jpg');
+    for (let s = 1; s <= 6; s++) {
+      const def = SHOT_DEFINITIONS[s];
+      const mainPath = path.join(folderPath, def.filename);
+      const legacyPath = def.legacy ? path.join(folderPath, def.legacy) : null;
+
+      if (alreadyExists && fs.existsSync(mainPath)) {
+        existingShots[s] = def.filename;
+        shotsFoundCount++;
+      } else if (alreadyExists && legacyPath && fs.existsSync(legacyPath)) {
+        existingShots[s] = def.legacy;
+        shotsFoundCount++;
+      }
     }
 
     let metadata = null;
@@ -643,50 +756,56 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       } catch (e) {}
     }
 
-    // Update live session state
+    // Determine initial capture step (first missing shot)
     let initialStep = 'CAPTURE_SHOT_1';
-    let shot1Info = null;
-    let shot2Info = null;
-
-    if (existingShots.includes('1_front_spine.jpg')) {
-      shot1Info = {
-        filename: '1_front_spine.jpg',
-        savedAt: metadata?.shots?.['1']?.savedAt || new Date().toISOString(),
-        type: 'Front Cover & Spine Angle',
-        blurScore: metadata?.shots?.['1']?.blurScore
-      };
+    for (let s = 1; s <= 6; s++) {
+      if (!existingShots[s]) {
+        initialStep = `CAPTURE_SHOT_${s}`;
+        break;
+      }
     }
-    if (existingShots.includes('2_author_title.jpg')) {
-      shot2Info = {
-        filename: '2_author_title.jpg',
-        savedAt: metadata?.shots?.['2']?.savedAt || new Date().toISOString(),
-        type: 'Author & Title Page Angle',
-        blurScore: metadata?.shots?.['2']?.blurScore
-      };
-    }
-
-    if (existingShots.length >= 2) {
+    if (shotsFoundCount >= 6) {
       initialStep = 'COMPLETE';
-    } else if (existingShots.includes('1_front_spine.jpg')) {
-      initialStep = 'CAPTURE_SHOT_2';
     }
+
+    const shotsState = {};
+    for (let s = 1; s <= 6; s++) {
+      if (existingShots[s]) {
+        shotsState[s] = {
+          filename: existingShots[s],
+          savedAt: metadata?.shots?.[s]?.savedAt || new Date().toISOString(),
+          type: SHOT_DEFINITIONS[s].type,
+          scope: SHOT_DEFINITIONS[s].scope,
+          blurScore: metadata?.shots?.[s]?.blurScore
+        };
+      } else {
+        shotsState[s] = null;
+      }
+    }
+
+    const resolvedLot = lotNumber || manifestMatch?.lotNumber || metadata?.lotNumber || currentSession.lotNumber || 'Lot-131';
+    const resolvedBox = boxNumber || manifestMatch?.boxNumber || metadata?.boxNumber || currentSession.boxNumber || '';
 
     currentSession = {
       activeIsbn: activeIdentifier,
       baseIsbn: baseIsbnOnly,
+      lotNumber: resolvedLot,
+      boxNumber: resolvedBox,
       currentStep: initialStep,
-      shot1: shot1Info,
-      shot2: shot2Info,
+      shots: shotsState,
       metadata,
-      bookDetails: metadata?.bookDetails || null,
-      copyNumber
+      bookDetails: metadata?.bookDetails || (manifestMatch?.title ? { title: manifestMatch.title, authors: manifestMatch.author } : null),
+      copyNumber,
+      isProcessable
     };
 
     broadcastSession('ISBN_INITIALIZED', {
       isbn: activeIdentifier,
       baseIsbn: baseIsbnOnly,
       currentStep: initialStep,
-      copyNumber
+      copyNumber,
+      isProcessable,
+      nonProcessableReason
     });
 
     res.json({
@@ -697,17 +816,21 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       folderPath,
       exists: alreadyExists,
       existingShots,
+      shotsCount: shotsFoundCount,
       metadata,
       existingCopies,
-      hasDuplicateCopies: existingCopies.length > 0 && !forceNewCopy && !targetIdentifier
+      hasDuplicateCopies: existingCopies.length > 0 && !forceNewCopy && !targetIdentifier,
+      isProcessable,
+      nonProcessableReason,
+      manifestMatch
     });
   } catch (err) {
     console.error('Error in init-isbn:', err);
-    res.status(500).json({ error: 'Failed to initialize ISBN folder', details: err.message });
+    res.status(500).json({ error: 'Failed to initialize verification session', details: err.message });
   }
 });
 
-// Save captured shot (1 or 2)
+// Save captured shot (1 to 6)
 app.post('/api/capture/save-shot', async (req, res) => {
   try {
     const { 
@@ -716,11 +839,14 @@ app.post('/api/capture/save-shot', async (req, res) => {
       imageBase64, 
       operatorName, 
       bookDetails,
-      blurScore
+      blurScore,
+      lotNumber,
+      boxNumber
     } = req.body;
 
-    if (!isbn || !imageBase64 || (shotNumber !== 1 && shotNumber !== 2)) {
-      return res.status(400).json({ error: 'Valid ISBN, shotNumber (1 or 2), and base64 image required' });
+    const sNum = parseInt(shotNumber, 10);
+    if (!isbn || !imageBase64 || sNum < 1 || sNum > 6) {
+      return res.status(400).json({ error: 'Valid ISBN, shotNumber (1-6), and base64 image required' });
     }
 
     const cleanIsbn = sanitizeIsbn(isbn);
@@ -731,21 +857,21 @@ app.post('/api/capture/save-shot', async (req, res) => {
     const folderPath = path.join(config.storagePath, cleanIsbn);
     fs.ensureDirSync(folderPath);
 
-    const filename = shotNumber === 1 ? '1_front_spine.jpg' : '2_author_title.jpg';
+    const shotDef = SHOT_DEFINITIONS[sNum];
+    const filename = shotDef.filename;
     const filePath = path.join(folderPath, filename);
 
-    // Strip data URL prefix if present
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
-
     await fs.writeFile(filePath, buffer);
 
-    // Update metadata.json
     const metaPath = path.join(folderPath, 'metadata.json');
     let metadata = {
       identifier: cleanIsbn,
       isbn: baseIsbnOnly,
       copyNumber,
+      lotNumber: lotNumber || currentSession.lotNumber || 'Lot-131',
+      boxNumber: boxNumber || currentSession.boxNumber || '',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       operator: operatorName || 'Inventory Operator',
@@ -757,72 +883,68 @@ app.post('/api/capture/save-shot', async (req, res) => {
     if (fs.existsSync(metaPath)) {
       try {
         const savedMeta = fs.readJsonSync(metaPath);
-        metadata = { 
-          ...metadata, 
-          ...savedMeta, 
-          updatedAt: new Date().toISOString() 
-        };
+        metadata = { ...metadata, ...savedMeta, updatedAt: new Date().toISOString() };
         if (bookDetails) {
           metadata.bookDetails = { ...(metadata.bookDetails || {}), ...bookDetails };
         }
       } catch (e) {}
     }
 
-    metadata.shots[shotNumber] = {
+    metadata.shots[sNum] = {
       filename,
       sizeBytes: buffer.length,
       savedAt: new Date().toISOString(),
-      type: shotNumber === 1 ? 'Front Cover & Spine Angle' : 'Author & Title Page Angle',
+      type: shotDef.type,
+      scope: shotDef.scope,
       blurScore: blurScore !== undefined ? blurScore : null
     };
 
-    await fs.writeJson(metaPath, metadata, { spaces: 2 });
-
     const totalShots = Object.keys(metadata.shots).length;
+    metadata.isComplete = totalShots >= 6;
+
+    await fs.writeJson(metaPath, metadata, { spaces: 2 });
 
     const newShotInfo = {
       filename,
       savedAt: new Date().toISOString(),
-      type: shotNumber === 1 ? 'Front Cover & Spine Angle' : 'Author & Title Page Angle',
+      type: shotDef.type,
+      scope: shotDef.scope,
       previewDataUrl: imageBase64,
       blurScore
     };
 
-    if (shotNumber === 1) {
-      currentSession.shot1 = newShotInfo;
-      currentSession.currentStep = totalShots >= 2 ? 'COMPLETE' : 'CAPTURE_SHOT_2';
-    } else {
-      currentSession.shot2 = newShotInfo;
-      currentSession.currentStep = 'COMPLETE';
-    }
-
+    currentSession.shots[sNum] = newShotInfo;
     currentSession.metadata = metadata;
     if (bookDetails) currentSession.bookDetails = bookDetails;
 
+    // Calculate next step
+    let nextStep = 'COMPLETE';
+    for (let s = 1; s <= 6; s++) {
+      if (!currentSession.shots[s]) {
+        nextStep = `CAPTURE_SHOT_${s}`;
+        break;
+      }
+    }
+    currentSession.currentStep = nextStep;
+
     broadcastSession('SHOT_SAVED', {
       isbn: cleanIsbn,
-      shotNumber,
+      shotNumber: sNum,
       shotInfo: newShotInfo,
-      isComplete: totalShots >= 2,
-      currentStep: currentSession.currentStep
+      isComplete: totalShots >= 6,
+      currentStep: nextStep
     });
 
-    // Optional: Only auto-open Windows Explorer folder on PC if explicitly enabled in settings
-    if (config.autoOpenExplorer && totalShots >= 2) {
+    if (config.autoOpenExplorer && totalShots >= 6) {
       if (process.platform === 'win32') {
-        exec(`explorer.exe "${path.resolve(folderPath)}"`, (err) => {
-          if (err && err.code !== 1 && err.code !== 0) {
-            console.warn('Explorer launch warning:', err.message);
-          }
-        });
+        exec(`explorer.exe "${path.resolve(folderPath)}"`, () => {});
       }
     }
 
-    // 2-Way Multi-PC sync: replicate to peer PC if enabled and not already a replicated shot
     if (!req.body.isReplication && config.peerSyncEnabled && config.peerIp) {
       replicateToPeer({
         isbn: cleanIsbn,
-        shotNumber,
+        shotNumber: sNum,
         imageBase64,
         operatorName,
         bookDetails,
@@ -834,12 +956,13 @@ app.post('/api/capture/save-shot', async (req, res) => {
     res.json({
       success: true,
       isbn: cleanIsbn,
-      shotNumber,
+      shotNumber: sNum,
       filename,
       filePath,
       relativeUrl: `/proofs/${encodeURIComponent(cleanIsbn)}/${filename}`,
       totalShotsSaved: totalShots,
-      isComplete: totalShots >= 2,
+      isComplete: totalShots >= 6,
+      currentStep: nextStep,
       metadata
     });
   } catch (err) {
@@ -848,215 +971,83 @@ app.post('/api/capture/save-shot', async (req, res) => {
   }
 });
 
-// -------------------------------------------------------------
-// 2-Way Multi-PC Peer Synchronization Endpoints
-// -------------------------------------------------------------
+// Asynchronous 2-way peer replication helper
+async function replicateToPeer(shotData) {
+  if (!config.peerSyncEnabled || !config.peerIp) return;
+  try {
+    const peerUrl = `http://${config.peerIp}:${config.peerPort || 3001}/api/sync/receive-shot`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const res = await fetch(peerUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...shotData, isReplication: true }),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if (!res.ok) {
+      console.warn(`[PeerSync] Replicating to ${peerUrl} status: ${res.status}`);
+    }
+  } catch (err) {
+    console.warn(`[PeerSync] Could not replicate shot to peer ${config.peerIp}:`, err.message);
+  }
+}
 
-// Receive replicated shot from peer PC
+// -------------------------------------------------------------
+// Multi-PC Peer Synchronization Endpoints
+// -------------------------------------------------------------
 app.post('/api/sync/receive-shot', async (req, res) => {
   try {
-    const { 
-      isbn, 
-      shotNumber, 
-      imageBase64, 
-      operatorName, 
-      bookDetails,
-      blurScore,
-      metadata: incomingMeta
-    } = req.body;
-
-    if (!isbn || !imageBase64 || (shotNumber !== 1 && shotNumber !== 2)) {
-      return res.status(400).json({ error: 'Valid ISBN, shotNumber, and base64 image required for peer sync' });
+    const { isbn, shotNumber, imageBase64, operatorName, bookDetails, blurScore, metadata: incomingMeta } = req.body;
+    const sNum = parseInt(shotNumber, 10);
+    if (!isbn || !imageBase64 || sNum < 1 || sNum > 6) {
+      return res.status(400).json({ error: 'Valid ISBN, shotNumber, and base64 image required' });
     }
 
     const cleanIsbn = sanitizeIsbn(isbn);
-    const baseIsbnOnly = getBaseIsbn(cleanIsbn);
-    const copyMatch = cleanIsbn.match(/_Copy(\d+)$/i);
-    const copyNumber = copyMatch ? parseInt(copyMatch[1], 10) : 1;
-
     const folderPath = path.join(config.storagePath, cleanIsbn);
     fs.ensureDirSync(folderPath);
 
-    const filename = shotNumber === 1 ? '1_front_spine.jpg' : '2_author_title.jpg';
+    const shotDef = SHOT_DEFINITIONS[sNum];
+    const filename = shotDef.filename;
     const filePath = path.join(folderPath, filename);
 
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
-    const buffer = Buffer.from(cleanBase64, 'base64');
-    await fs.writeFile(filePath, buffer);
+    await fs.writeFile(filePath, Buffer.from(cleanBase64, 'base64'));
 
     const metaPath = path.join(folderPath, 'metadata.json');
     let metadata = incomingMeta || {
       identifier: cleanIsbn,
-      isbn: baseIsbnOnly,
-      copyNumber,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      isbn: getBaseIsbn(cleanIsbn),
       operator: operatorName || 'Peer Station',
       station: 'Peer Station',
-      bookDetails: bookDetails || null,
       shots: {}
     };
 
     if (fs.existsSync(metaPath)) {
       try {
-        const savedMeta = fs.readJsonSync(metaPath);
-        metadata = { ...metadata, ...savedMeta, updatedAt: new Date().toISOString() };
+        const saved = fs.readJsonSync(metaPath);
+        metadata = { ...metadata, ...saved, updatedAt: new Date().toISOString() };
       } catch (e) {}
     }
 
     metadata.shots = metadata.shots || {};
-    metadata.shots[shotNumber] = {
+    metadata.shots[sNum] = {
       filename,
-      sizeBytes: buffer.length,
       savedAt: new Date().toISOString(),
-      type: shotNumber === 1 ? 'Front Cover & Spine Angle' : 'Author & Title Page Angle',
-      blurScore: blurScore !== undefined ? blurScore : null
+      type: shotDef.type,
+      scope: shotDef.scope,
+      blurScore
     };
 
     await fs.writeJson(metaPath, metadata, { spaces: 2 });
-    console.log(`[PeerSync] Received and saved replicated proof for ${cleanIsbn} (Shot ${shotNumber})`);
-
-    res.json({ success: true, replicated: true, isbn: cleanIsbn, shotNumber });
+    res.json({ success: true, replicated: true, isbn: cleanIsbn, shotNumber: sNum });
   } catch (err) {
-    console.error('[PeerSync] Error saving replicated shot:', err);
     res.status(500).json({ error: 'Failed to save replicated photo', details: err.message });
   }
 });
 
-// Return manifest of all local captured proofs for catch-up diffing
-app.get('/api/sync/manifest', async (req, res) => {
-  try {
-    if (!fs.existsSync(config.storagePath)) {
-      return res.json({ items: [] });
-    }
-    const entries = await fs.readdir(config.storagePath, { withFileTypes: true });
-    const dirs = entries.filter(e => e.isDirectory()).map(e => e.name);
-    const items = [];
-
-    for (const dir of dirs) {
-      const folderPath = path.join(config.storagePath, dir);
-      const hasShot1 = fs.existsSync(path.join(folderPath, '1_front_spine.jpg'));
-      const hasShot2 = fs.existsSync(path.join(folderPath, '2_author_title.jpg'));
-      let meta = null;
-      try {
-        meta = await fs.readJson(path.join(folderPath, 'metadata.json'));
-      } catch (e) {}
-
-      items.push({
-        identifier: dir,
-        hasShot1,
-        hasShot2,
-        isComplete: hasShot1 && hasShot2,
-        metadata: meta
-      });
-    }
-
-    res.json({ items, hostname: os.hostname(), total: items.length });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to read manifest' });
-  }
-});
-
-// Test connection to peer PC
-app.post('/api/sync/test-connection', async (req, res) => {
-  const targetIp = req.body.peerIp || config.peerIp;
-  const targetPort = req.body.peerPort || config.peerPort || 3001;
-
-  if (!targetIp) {
-    return res.status(400).json({ success: false, error: 'Peer IP address is required' });
-  }
-
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const pingRes = await fetch(`http://${targetIp}:${targetPort}/api/system/status`, {
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-
-    if (pingRes.ok) {
-      const data = await pingRes.json();
-      return res.json({
-        success: true,
-        reachable: true,
-        peerHostname: data.hostname,
-        peerStoragePath: data.storagePath,
-        peerJournalsCount: data.totalCapturedJournals
-      });
-    } else {
-      return res.status(pingRes.status).json({ success: false, reachable: false, error: `Peer returned HTTP ${pingRes.status}` });
-    }
-  } catch (err) {
-    return res.json({ success: false, reachable: false, error: `Could not reach ${targetIp}:${targetPort} (${err.message})` });
-  }
-});
-
-// Catch-up / Reconcile all missing proofs from peer PC
-app.post('/api/sync/reconcile-all', async (req, res) => {
-  const targetIp = req.body.peerIp || config.peerIp;
-  const targetPort = req.body.peerPort || config.peerPort || 3001;
-
-  if (!targetIp) {
-    return res.status(400).json({ error: 'Peer IP address is required' });
-  }
-
-  try {
-    const manifestRes = await fetch(`http://${targetIp}:${targetPort}/api/sync/manifest`);
-    if (!manifestRes.ok) {
-      return res.status(500).json({ error: 'Could not fetch peer manifest' });
-    }
-    const { items: peerItems } = await manifestRes.json();
-    let syncedCount = 0;
-
-    for (const peerItem of peerItems) {
-      const folderPath = path.join(config.storagePath, peerItem.identifier);
-      fs.ensureDirSync(folderPath);
-
-      // Check and fetch shot 1 if missing
-      const localShot1 = path.join(folderPath, '1_front_spine.jpg');
-      if (peerItem.hasShot1 && !fs.existsSync(localShot1)) {
-        try {
-          const imgRes = await fetch(`http://${targetIp}:${targetPort}/proofs/${encodeURIComponent(peerItem.identifier)}/1_front_spine.jpg`);
-          if (imgRes.ok) {
-            const arrayBuffer = await imgRes.arrayBuffer();
-            await fs.writeFile(localShot1, Buffer.from(arrayBuffer));
-            syncedCount++;
-          }
-        } catch (e) {}
-      }
-
-      // Check and fetch shot 2 if missing
-      const localShot2 = path.join(folderPath, '2_author_title.jpg');
-      if (peerItem.hasShot2 && !fs.existsSync(localShot2)) {
-        try {
-          const imgRes = await fetch(`http://${targetIp}:${targetPort}/proofs/${encodeURIComponent(peerItem.identifier)}/2_author_title.jpg`);
-          if (imgRes.ok) {
-            const arrayBuffer = await imgRes.arrayBuffer();
-            await fs.writeFile(localShot2, Buffer.from(arrayBuffer));
-            syncedCount++;
-          }
-        } catch (e) {}
-      }
-
-      // Save metadata if provided
-      if (peerItem.metadata) {
-        const metaPath = path.join(folderPath, 'metadata.json');
-        await fs.writeJson(metaPath, peerItem.metadata, { spaces: 2 });
-      }
-    }
-
-    res.json({
-      success: true,
-      syncedCount,
-      peerTotalItems: peerItems.length
-    });
-  } catch (err) {
-    console.error('[PeerSync] Reconcile error:', err);
-    res.status(500).json({ error: 'Failed to reconcile with peer', details: err.message });
-  }
-});
-
-// Download ZIP of proof package
+// Download ZIP of proof package (All 6 Shots)
 app.get('/api/capture/zip/:isbn', (req, res) => {
   const cleanIsbn = sanitizeIsbn(req.params.isbn);
   const folderPath = path.join(config.storagePath, cleanIsbn);
@@ -1066,10 +1057,9 @@ app.get('/api/capture/zip/:isbn', (req, res) => {
   }
 
   res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', `attachment; filename="Proof_${cleanIsbn}.zip"`);
+  res.setHeader('Content-Disposition', `attachment; filename="Verification_${cleanIsbn}.zip"`);
 
   const archive = archiver('zip', { zlib: { level: 9 } });
-
   archive.on('error', (err) => {
     res.status(500).send({ error: err.message });
   });
@@ -1080,17 +1070,14 @@ app.get('/api/capture/zip/:isbn', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// Gallery, History & CSV Export Endpoints
+// Gallery, History & CSV Export Endpoints (6 Shots)
 // -------------------------------------------------------------
-
-// Helper to escape CSV values according to RFC 4180
 function escapeCsv(val) {
   if (val === null || val === undefined) return '""';
   const str = String(val).replace(/"/g, '""');
   return `"${str}"`;
 }
 
-// Export entire inventory records to CSV / Excel
 app.get('/api/gallery/export-csv', async (req, res) => {
   try {
     if (!fs.existsSync(config.storagePath)) {
@@ -1101,18 +1088,24 @@ app.get('/api/gallery/export-csv', async (req, res) => {
     const dirEntries = entries.filter(e => e.isDirectory());
 
     const rows = [];
-    // Header row
     const headers = [
       'Folder Identifier',
+      'Lot Number',
+      'Box Number',
       'ISBN / ISSN',
       'Copy #',
       'Journal / Book Title',
       'Authors',
       'Publisher',
       'Publication Year',
-      'Status',
-      'Shot 1 (Front & Spine)',
-      'Shot 2 (Author & Title)',
+      'Processable Status',
+      'Shot 1 (Books in Box)',
+      'Shot 2 (Unbox Books)',
+      'Shot 3 (Front Cover)',
+      'Shot 4 (Spine)',
+      'Shot 5 (Title Page)',
+      'Shot 6 (Front Matter)',
+      'Verification Status',
       'Operator',
       'Workstation',
       'Date Created',
@@ -1123,18 +1116,7 @@ app.get('/api/gallery/export-csv', async (req, res) => {
 
     for (const dir of dirEntries) {
       const folderPath = path.join(config.storagePath, dir.name);
-      const shot1Path = path.join(folderPath, '1_front_spine.jpg');
-      const shot2Path = path.join(folderPath, '2_author_title.jpg');
       const metaPath = path.join(folderPath, 'metadata.json');
-
-      const hasShot1 = fs.existsSync(shot1Path);
-      const hasShot2 = fs.existsSync(shot2Path);
-      const isComplete = hasShot1 && hasShot2;
-
-      let stat = null;
-      try {
-        stat = await fs.stat(folderPath);
-      } catch (e) {}
 
       let meta = null;
       if (fs.existsSync(metaPath)) {
@@ -1143,9 +1125,30 @@ app.get('/api/gallery/export-csv', async (req, res) => {
         } catch (e) {}
       }
 
+      let stat = null;
+      try {
+        stat = await fs.stat(folderPath);
+      } catch (e) {}
+
+      const shotsStatus = {};
+      let shotsCount = 0;
+      for (let s = 1; s <= 6; s++) {
+        const def = SHOT_DEFINITIONS[s];
+        const hasMain = fs.existsSync(path.join(folderPath, def.filename));
+        const hasLegacy = def.legacy ? fs.existsSync(path.join(folderPath, def.legacy)) : false;
+        if (hasMain || hasLegacy) {
+          shotsStatus[s] = hasMain ? def.filename : def.legacy;
+          shotsCount++;
+        } else {
+          shotsStatus[s] = 'Missing';
+        }
+      }
+
       const copyMatch = dir.name.match(/_Copy(\d+)$/i);
       const copyNum = meta?.copyNumber || (copyMatch ? copyMatch[1] : '1');
       const baseIsbn = meta?.isbn || getBaseIsbn(dir.name);
+      const lotNum = meta?.lotNumber || 'Lot-131';
+      const boxNum = meta?.boxNumber || '';
       const title = meta?.bookDetails?.title || '';
       const authors = meta?.bookDetails?.authors || '';
       const publisher = meta?.bookDetails?.publisher || '';
@@ -1157,15 +1160,22 @@ app.get('/api/gallery/export-csv', async (req, res) => {
 
       const row = [
         dir.name,
+        lotNum,
+        boxNum,
         baseIsbn,
         copyNum,
         title,
         authors,
         publisher,
         year,
-        isComplete ? 'Complete (2/2)' : 'Partial',
-        hasShot1 ? '1_front_spine.jpg' : 'Missing',
-        hasShot2 ? '2_author_title.jpg' : 'Missing',
+        'Processable',
+        shotsStatus[1],
+        shotsStatus[2],
+        shotsStatus[3],
+        shotsStatus[4],
+        shotsStatus[5],
+        shotsStatus[6],
+        shotsCount >= 6 ? 'Complete (6/6)' : `Partial (${shotsCount}/6)`,
         operator,
         station,
         createdAt,
@@ -1176,8 +1186,8 @@ app.get('/api/gallery/export-csv', async (req, res) => {
       rows.push(row.map(escapeCsv).join(','));
     }
 
-    const csvContent = '\uFEFF' + rows.join('\r\n'); // Add UTF-8 BOM for Excel
-    const filename = `Journal_Inventory_Report_${new Date().toISOString().slice(0, 10)}.csv`;
+    const csvContent = '\uFEFF' + rows.join('\r\n');
+    const filename = `Verification_Images_Report_${new Date().toISOString().slice(0, 10)}.csv`;
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -1200,12 +1210,7 @@ app.get('/api/gallery/list', async (req, res) => {
     const items = [];
     for (const dir of dirEntries) {
       const folderPath = path.join(config.storagePath, dir.name);
-      const shot1Path = path.join(folderPath, '1_front_spine.jpg');
-      const shot2Path = path.join(folderPath, '2_author_title.jpg');
       const metaPath = path.join(folderPath, 'metadata.json');
-
-      const hasShot1 = fs.existsSync(shot1Path);
-      const hasShot2 = fs.existsSync(shot2Path);
 
       let stat = null;
       try {
@@ -1219,6 +1224,24 @@ app.get('/api/gallery/list', async (req, res) => {
         } catch (e) {}
       }
 
+      const shots = {};
+      let shotsCount = 0;
+      for (let s = 1; s <= 6; s++) {
+        const def = SHOT_DEFINITIONS[s];
+        const mainPath = path.join(folderPath, def.filename);
+        const legacyPath = def.legacy ? path.join(folderPath, def.legacy) : null;
+
+        if (fs.existsSync(mainPath)) {
+          shots[s] = `/proofs/${encodeURIComponent(dir.name)}/${def.filename}`;
+          shotsCount++;
+        } else if (legacyPath && fs.existsSync(legacyPath)) {
+          shots[s] = `/proofs/${encodeURIComponent(dir.name)}/${def.legacy}`;
+          shotsCount++;
+        } else {
+          shots[s] = null;
+        }
+      }
+
       const copyMatch = dir.name.match(/_Copy(\d+)$/i);
       const copyNumber = metadata?.copyNumber || (copyMatch ? parseInt(copyMatch[1], 10) : 1);
       const baseIsbn = metadata?.isbn || getBaseIsbn(dir.name);
@@ -1226,29 +1249,32 @@ app.get('/api/gallery/list', async (req, res) => {
       items.push({
         isbn: dir.name,
         baseIsbn,
+        lotNumber: metadata?.lotNumber || 'Lot-131',
+        boxNumber: metadata?.boxNumber || '',
         copyNumber,
         folderPath,
-        hasShot1,
-        hasShot2,
-        shot1Url: hasShot1 ? `/proofs/${encodeURIComponent(dir.name)}/1_front_spine.jpg` : null,
-        shot2Url: hasShot2 ? `/proofs/${encodeURIComponent(dir.name)}/2_author_title.jpg` : null,
-        isComplete: hasShot1 && hasShot2,
+        shotsCount,
+        isComplete: shotsCount >= 6,
+        shots,
+        shot1Url: shots[1],
+        shot2Url: shots[2],
+        shot3Url: shots[3],
+        shot4Url: shots[4],
+        shot5Url: shots[5],
+        shot6Url: shots[6],
         modifiedAt: stat ? stat.mtime : null,
         metadata
       });
     }
 
-    // Sort descending by modified date
     items.sort((a, b) => new Date(b.modifiedAt || 0) - new Date(a.modifiedAt || 0));
-
     res.json({ items, total: items.length });
   } catch (err) {
     console.error('Error fetching gallery:', err);
-    res.status(500).json({ error: 'Failed to read proofs directory' });
+    res.status(500).json({ error: 'Failed to read verification proofs directory' });
   }
 });
 
-// Delete proof entry
 app.delete('/api/gallery/:isbn', async (req, res) => {
   try {
     const cleanIsbn = sanitizeIsbn(req.params.isbn);
@@ -1264,7 +1290,7 @@ app.delete('/api/gallery/:isbn', async (req, res) => {
   }
 });
 
-// Serve frontend in production if dist directory exists
+// Serve frontend in production
 const FRONTEND_DIST = path.resolve(__dirname, '../frontend/dist');
 if (fs.existsSync(FRONTEND_DIST)) {
   app.use(express.static(FRONTEND_DIST));
@@ -1277,7 +1303,7 @@ if (fs.existsSync(FRONTEND_DIST)) {
 const httpServer = http.createServer(app);
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`====================================================`);
-  console.log(`  JOURNAL PROOF CAPTURE SERVER`);
+  console.log(`  VERIFICATION IMAGES SERVER`);
   console.log(`  HTTP (PC Local):  http://localhost:${PORT}`);
   const ips = getNetworkIps();
   ips.forEach(ip => console.log(`  LAN HTTP:         http://${ip.address}:${PORT} (${ip.interface})`));
@@ -1285,19 +1311,17 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`====================================================`);
 });
 
-// Start HTTPS server for Mobile Devices if SSL is ready
+// Start HTTPS server for Mobile Devices
 if (sslOptions) {
   try {
     const httpsServer = https.createServer(sslOptions, app);
     httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => {
       const ips = getNetworkIps();
       console.log(`  HTTPS (Mobile):   https://localhost:${HTTPS_PORT}`);
-      ips.forEach(ip => console.log(`  Mobile HTTPS:     https://${ip.address}:${HTTPS_PORT} (Scan via Phone)`));
+      ips.forEach(ip => console.log(`  Mobile HTTPS:     https://${ip.address}:${HTTPS_PORT}`));
       console.log(`====================================================`);
     });
   } catch (e) {
     console.error('Failed to start HTTPS server:', e);
   }
 }
-
-

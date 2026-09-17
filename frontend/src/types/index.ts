@@ -1,4 +1,14 @@
-export type CaptureStep = 'SCAN_ISBN' | 'CAPTURE_SHOT_1' | 'CAPTURE_SHOT_2' | 'COMPLETE';
+export type CaptureStep = 
+  | 'SCAN_ISBN' 
+  | 'CAPTURE_SHOT_1' 
+  | 'CAPTURE_SHOT_2' 
+  | 'CAPTURE_SHOT_3' 
+  | 'CAPTURE_SHOT_4' 
+  | 'CAPTURE_SHOT_5' 
+  | 'CAPTURE_SHOT_6' 
+  | 'COMPLETE';
+
+export type ViewMode = 'CAPTURE' | 'SEARCH_VIEW';
 
 export interface BookDetails {
   title?: string;
@@ -13,11 +23,24 @@ export interface BookDetails {
   source?: string;
 }
 
+export type ShotScope = 'box_level' | 'book_level';
+
+export interface ShotConfig {
+  shotNumber: number;
+  id: string;
+  label: string;
+  scope: ShotScope;
+  filename: string;
+  description: string;
+  instructions: string;
+}
+
 export interface ShotInfo {
   filename: string;
   sizeBytes?: number;
   savedAt: string;
   type: string;
+  scope?: ShotScope;
   previewDataUrl?: string;
   blurScore?: number;
 }
@@ -25,20 +48,23 @@ export interface ShotInfo {
 export interface JournalMetadata {
   identifier?: string;
   isbn: string;
+  lotNumber?: string;
+  boxNumber?: string;
   copyNumber?: number;
   createdAt: string;
   updatedAt: string;
   operator: string;
   station?: string;
   bookDetails?: BookDetails | null;
+  manifestInfo?: ManifestItem | null;
   shots: Record<string, ShotInfo>;
+  isComplete?: boolean;
 }
 
 export interface ExistingCopy {
   identifier: string;
   copyNumber: number;
-  hasShot1: boolean;
-  hasShot2: boolean;
+  shotsCount: number;
   isComplete: boolean;
   metadata?: JournalMetadata | null;
 }
@@ -46,15 +72,42 @@ export interface ExistingCopy {
 export interface ProofItem {
   isbn: string;
   baseIsbn?: string;
+  lotNumber?: string;
+  boxNumber?: string;
   copyNumber?: number;
   folderPath: string;
-  hasShot1: boolean;
-  hasShot2: boolean;
+  shotsCount: number;
+  isComplete: boolean;
+  shots: Record<string, string | null>;
   shot1Url: string | null;
   shot2Url: string | null;
-  isComplete: boolean;
+  shot3Url?: string | null;
+  shot4Url?: string | null;
+  shot5Url?: string | null;
+  shot6Url?: string | null;
   modifiedAt: string | null;
   metadata?: JournalMetadata | null;
+}
+
+export interface ManifestItem {
+  isbn: string;
+  lotNumber?: string;
+  boxNumber?: string;
+  title?: string;
+  author?: string;
+  isProcessable: boolean;
+  reason?: string;
+  notes?: string;
+  importedAt?: string;
+}
+
+export interface ManifestData {
+  items: ManifestItem[];
+  totalCount: number;
+  processableCount: number;
+  nonProcessableCount: number;
+  lastUpdated?: string;
+  filename?: string;
 }
 
 export interface SystemStatus {
@@ -72,6 +125,7 @@ export interface SystemStatus {
   peerSyncEnabled?: boolean;
   peerIp?: string;
   peerPort?: number;
+  manifestItemCount?: number;
 }
 
 export interface SystemConfig {
@@ -86,6 +140,7 @@ export interface SystemConfig {
   peerSyncEnabled?: boolean;
   peerIp?: string;
   peerPort?: number;
+  enforceManifest?: boolean;
 }
 
 export interface CameraDevice {
@@ -96,16 +151,18 @@ export interface CameraDevice {
 export interface CaptureSession {
   activeIsbn: string;
   baseIsbn: string;
+  lotNumber: string;
+  boxNumber: string;
   currentStep: CaptureStep;
-  shot1: ShotInfo | null;
-  shot2: ShotInfo | null;
+  shots: Record<number, ShotInfo | null>;
   metadata: JournalMetadata | null;
   bookDetails: BookDetails | null;
   copyNumber: number;
+  isProcessable: boolean;
 }
 
 export interface SessionEvent {
-  type: 'CONNECTED' | 'ISBN_INITIALIZED' | 'SHOT_SAVED' | 'SESSION_RESET';
+  type: 'CONNECTED' | 'ISBN_INITIALIZED' | 'SHOT_SAVED' | 'SESSION_RESET' | 'MANIFEST_UPDATED';
   session: CaptureSession;
   isbn?: string;
   shotNumber?: number;
@@ -115,3 +172,59 @@ export interface SessionEvent {
   timestamp: number;
 }
 
+export const SHOT_DEFINITIONS: ShotConfig[] = [
+  {
+    shotNumber: 1,
+    id: 'CAPTURE_SHOT_1',
+    label: 'Books in a Box',
+    scope: 'box_level',
+    filename: '1_books_in_box.jpg',
+    description: 'Box level view with books packed inside',
+    instructions: 'Photograph the whole box showing all packed books inside'
+  },
+  {
+    shotNumber: 2,
+    id: 'CAPTURE_SHOT_2',
+    label: 'Unbox Books',
+    scope: 'box_level',
+    filename: '2_unbox_books.jpg',
+    description: 'Box level view of books unpacked',
+    instructions: 'Photograph unboxed books neatly arrayed for processing'
+  },
+  {
+    shotNumber: 3,
+    id: 'CAPTURE_SHOT_3',
+    label: 'Front Cover',
+    scope: 'book_level',
+    filename: '3_front_cover.jpg',
+    description: 'Book level full front cover',
+    instructions: 'Capture flat, clear shot of the journal front cover'
+  },
+  {
+    shotNumber: 4,
+    id: 'CAPTURE_SHOT_4',
+    label: 'Spine',
+    scope: 'book_level',
+    filename: '4_spine.jpg',
+    description: 'Book level spine with volume & title',
+    instructions: 'Capture spine showing title, volume, and book thickness'
+  },
+  {
+    shotNumber: 5,
+    id: 'CAPTURE_SHOT_5',
+    label: 'Title Page',
+    scope: 'book_level',
+    filename: '5_title_page.jpg',
+    description: 'Book level main title page',
+    instructions: 'Open to title page showing author and journal title clearly'
+  },
+  {
+    shotNumber: 6,
+    id: 'CAPTURE_SHOT_6',
+    label: 'Front Matter',
+    scope: 'book_level',
+    filename: '6_front_matter.jpg',
+    description: 'Edition notice, copyright & metadata',
+    instructions: 'Photograph copyright page, edition notice, and barcode/ISSN'
+  }
+];
