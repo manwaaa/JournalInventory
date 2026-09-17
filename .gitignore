@@ -7,3 +7,4 @@ config.json
 *.log
 certs/
 backend/certs/
+scratch/

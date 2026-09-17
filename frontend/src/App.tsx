@@ -12,7 +12,9 @@ import {
   X,
   Search,
   Scan,
-  Lock
+  Lock,
+  Package,
+  CheckCircle2
 } from 'lucide-react';
 
 import { Navbar } from './components/Navbar';
@@ -41,6 +43,7 @@ import {
   SessionEvent,
   ViewMode,
   StationRole,
+  BoxSummary,
   SHOT_DEFINITIONS
 } from './types';
 
@@ -82,6 +85,10 @@ export function App() {
   const [bookDetails, setBookDetails] = useState<BookDetails | null>(null);
   const [isLookingUpMeta, setIsLookingUpMeta] = useState<boolean>(false);
   const [isCapturing, setIsCapturing] = useState<boolean>(false);
+
+  // Box-level list & active summary (PC 1 / PC 2 Workflow)
+  const [boxesList, setBoxesList] = useState<BoxSummary[]>([]);
+  const [activeBoxSummary, setActiveBoxSummary] = useState<BoxSummary | null>(null);
 
   // Red Toast Alert Banner
   const [toastAlert, setToastAlert] = useState<{
@@ -129,6 +136,19 @@ export function App() {
 
   const { playAudioCue } = useSoundEffects(true);
 
+  // Fetch Boxes List from manifest
+  const fetchBoxesList = useCallback(async () => {
+    try {
+      const res = await fetch('/api/boxes/list');
+      if (res.ok) {
+        const data = await res.json();
+        setBoxesList(data.boxes || []);
+      }
+    } catch (e) {
+      console.warn('Failed to fetch boxes list:', e);
+    }
+  }, []);
+
   // Fetch status & config
   const fetchStatus = useCallback(async () => {
     try {
@@ -149,16 +169,17 @@ export function App() {
         const m = await resManifest.json();
         setManifestCount(m.totalCount || 0);
       }
+      fetchBoxesList();
     } catch (err) {
       console.error('Failed to fetch system status:', err);
     }
-  }, []);
+  }, [fetchBoxesList]);
 
   // Multi-device SSE Synchronization
   const { resetRemoteSession } = useSessionSync({
     onSessionSync: useCallback((event: SessionEvent) => {
       if (event.type === 'CONNECTED') {
-        if (event.session?.activeIsbn && currentStep === 'SCAN_ISBN') {
+        if (stationRole === 'all' && event.session?.activeIsbn && currentStep === 'SCAN_ISBN') {
           setActiveIsbn(event.session.activeIsbn);
           setIsbnInput(event.session.activeIsbn);
           setLotNumber(event.session.lotNumber || '');
@@ -169,47 +190,95 @@ export function App() {
           setBookDetails(event.session.bookDetails);
         }
       } else if (event.type === 'ISBN_INITIALIZED') {
-        setActiveIsbn(event.session.activeIsbn);
-        setIsbnInput(event.session.activeIsbn);
-        setLotNumber(event.session.lotNumber || '');
-        setBoxNumber(event.session.boxNumber || '');
-        setCurrentStep(event.session.currentStep);
-        setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
-        setMetadata(event.session.metadata);
-        setBookDetails(event.session.bookDetails);
-        playAudioCue('beep');
+        if (stationRole === 'all') {
+          setActiveIsbn(event.session.activeIsbn);
+          setIsbnInput(event.session.activeIsbn);
+          setLotNumber(event.session.lotNumber || '');
+          setBoxNumber(event.session.boxNumber || '');
+          setCurrentStep(event.session.currentStep);
+          setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
+          setMetadata(event.session.metadata);
+          setBookDetails(event.session.bookDetails);
+          playAudioCue('beep');
+        }
+      } else if (event.type === 'BOX_INITIALIZED') {
+        if (stationRole === 'all') {
+          setActiveIsbn(event.session.activeIsbn);
+          setIsbnInput('');
+          setLotNumber(event.session.lotNumber || '');
+          setBoxNumber(event.session.boxNumber || '');
+          setCurrentStep(event.session.currentStep);
+          setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
+          setMetadata(event.session.metadata);
+          setBookDetails(event.session.bookDetails);
+          if (event.boxSummary) setActiveBoxSummary(event.boxSummary);
+          playAudioCue('beep');
+        }
+      } else if (event.type === 'BOX_SHOT_SAVED') {
+        fetchBoxesList();
+        // If we are on PC 2 and currently viewing a book from this box, auto-update thumbnails 1 & 2
+        if (event.boxNumber && boxNumber && String(event.boxNumber).toLowerCase() === String(boxNumber).toLowerCase()) {
+          if (event.boxShots) {
+            setShots(prev => ({
+              ...prev,
+              1: event.boxShots.hasBoxShot ? {
+                filename: 'shot_1_box.jpg',
+                savedAt: new Date().toISOString(),
+                type: 'Box',
+                scope: 'box_level',
+                previewDataUrl: event.boxShots.boxShotUrl,
+                inheritedFromBox: true
+              } : prev[1],
+              2: event.boxShots.hasUnboxShot ? {
+                filename: 'shot_2_unbox.jpg',
+                savedAt: new Date().toISOString(),
+                type: 'Unbox',
+                scope: 'box_level',
+                previewDataUrl: event.boxShots.unboxShotUrl,
+                inheritedFromBox: true
+              } : prev[2]
+            }));
+          }
+        }
       } else if (event.type === 'SHOT_SAVED') {
-        if (event.session.shots) setShots(event.session.shots);
-        if (event.session.metadata) setMetadata(event.session.metadata);
-        if (event.session.bookDetails) setBookDetails(event.session.bookDetails);
-        setCurrentStep(event.session.currentStep);
+        if (stationRole === 'all' || event.isbn === activeIsbn) {
+          if (event.session.shots) setShots(event.session.shots);
+          if (event.session.metadata) setMetadata(event.session.metadata);
+          if (event.session.bookDetails) setBookDetails(event.session.bookDetails);
+          setCurrentStep(event.session.currentStep);
 
-        if (event.isComplete) {
-          playAudioCue('success');
-          fetchStatus();
+          if (event.isComplete) {
+            playAudioCue('success');
+            fetchStatus();
+          }
         }
       } else if (event.type === 'SESSION_RESET') {
-        setActiveIsbn('');
-        setIsbnInput('');
-        setLotNumber('');
-        setBoxNumber('');
-        setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
-        setMetadata(null);
-        setBookDetails(null);
-        setToastAlert(null);
-        setDuplicateModal(null);
-        setBlurWarning(null);
-        setCurrentStep('SCAN_ISBN');
+        if (stationRole === 'all') {
+          setActiveIsbn('');
+          setIsbnInput('');
+          setLotNumber('');
+          setBoxNumber('');
+          setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
+          setMetadata(null);
+          setBookDetails(null);
+          setActiveBoxSummary(null);
+          setToastAlert(null);
+          setDuplicateModal(null);
+          setBlurWarning(null);
+          setCurrentStep('SCAN_ISBN');
+        }
       } else if (event.type === 'MANIFEST_UPDATED') {
         fetchStatus();
+        fetchBoxesList();
       }
-    }, [currentStep, fetchStatus, playAudioCue])
+    }, [currentStep, stationRole, activeIsbn, boxNumber, fetchStatus, fetchBoxesList, playAudioCue])
   });
 
   useEffect(() => {
     fetchStatus();
+    fetchBoxesList();
     setTimeout(() => isbnInputRef.current?.focus(), 300);
-  }, [fetchStatus]);
+  }, [fetchStatus, fetchBoxesList]);
 
   // Global Ctrl+K shortcut for Quick Search
   useEffect(() => {
@@ -295,6 +364,17 @@ export function App() {
       const resolvedBox = data.boxNumber || data.manifestMatch?.boxNumber || data.metadata?.boxNumber || matchedBox || '';
       setLotNumber(resolvedLot);
       setBoxNumber(resolvedBox);
+
+      // Find or set matching Box Summary
+      if (resolvedBox && boxesList.length > 0) {
+        const foundBox = boxesList.find(b => 
+          (b.lotNumber || 'Unassigned').toLowerCase() === (resolvedLot || 'Unassigned').toLowerCase() &&
+          (b.boxNumber || '').toLowerCase() === resolvedBox.toLowerCase()
+        );
+        if (foundBox) {
+          setActiveBoxSummary(foundBox);
+        }
+      }
 
       if (data.isProcessable === false) {
         const locStr = resolvedLot || resolvedBox ? `[Lot: ${resolvedLot || 'N/A'}${resolvedBox ? ` • Box: ${resolvedBox}` : ''}] ` : '';
@@ -384,6 +464,56 @@ export function App() {
     } catch (err: any) {
       setToastAlert({
         message: err.message || 'Error initializing verification session',
+        type: 'error'
+      });
+      playAudioCue('error');
+    }
+  };
+
+  // Direct Box Selection handler (PC 1: Receiving / Box Level)
+  const handleSelectBox = async (targetLot: string, targetBox: string) => {
+    if (!targetBox) return;
+    setToastAlert(null);
+    playAudioCue('beep');
+
+    try {
+      const res = await fetch('/api/capture/init-box', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lotNumber: targetLot, boxNumber: targetBox })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to initialize box session');
+      }
+
+      setLotNumber(data.lotNumber || targetLot);
+      setBoxNumber(data.boxNumber || targetBox);
+      setActiveIsbn(data.sampleIsbn || `BOX_${targetBox}`);
+      setIsbnInput('');
+      setCurrentStep(data.currentStep);
+      if (data.shots) {
+        setShots(data.shots);
+      }
+      if (data.boxSummary) {
+        setActiveBoxSummary(data.boxSummary);
+      }
+
+      if (data.currentStep === 'CAPTURE_SHOT_3') {
+        setToastAlert({
+          message: `📦 Box ${targetBox} already has Shot 1 & 2 saved! (${data.boxSummary?.totalBooks || 0} journals in manifest).`,
+          type: 'info'
+        });
+      } else {
+        setToastAlert({
+          message: `📦 Selected Box ${targetBox} (${data.boxSummary?.totalBooks || 0} journals). Take Shot 1 (Box) & Shot 2 (Unbox).`,
+          type: 'info'
+        });
+      }
+      fetchBoxesList();
+    } catch (err: any) {
+      setToastAlert({
+        message: err.message || 'Failed to select box',
         type: 'error'
       });
       playAudioCue('error');
@@ -730,23 +860,48 @@ export function App() {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-start space-x-3.5">
                   <div className="w-10 h-10 rounded-xl btn-primary-gradient text-white flex items-center justify-center shadow-md shadow-brand-500/20 shrink-0 mt-0.5">
-                    <Scan className="w-5 h-5" />
+                    {stationRole === 'box_level' ? <Package className="w-5 h-5" /> : <Scan className="w-5 h-5" />}
                   </div>
                   <div className="space-y-0.5">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700">
-                      RECEIVING & VERIFICATION
-                    </span>
+                    <div className="flex items-center space-x-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700">
+                        RECEIVING & VERIFICATION
+                      </span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shadow-xs ${
+                        stationRole === 'box_level' 
+                          ? 'bg-blue-50 text-blue-700 border-blue-300'
+                          : stationRole === 'book_level'
+                            ? 'bg-indigo-50 text-indigo-700 border-indigo-300'
+                            : 'bg-slate-50 text-slate-700 border-slate-300'
+                      }`}>
+                        {stationRole === 'box_level' ? '📦 PC 1: Box Level' : stationRole === 'book_level' ? '📖 PC 2: Book Level' : '🖥️ All-in-One'}
+                      </span>
+                    </div>
                     <h3 className="text-base font-extrabold text-slate-900">
-                      Scan Journal Barcode / ISBN
+                      {stationRole === 'box_level' 
+                        ? 'Select or Scan Box to Photograph (Shots 1 & 2)' 
+                        : stationRole === 'book_level'
+                          ? 'Scan Individual Journal (Shots 3 to 7)'
+                          : 'Scan Journal Barcode / ISBN'}
                     </h3>
                     <p className="text-xs text-slate-500">
-                      Lot and Box numbers are automatically determined from your uploaded manifest.
+                      {stationRole === 'box_level'
+                        ? 'Photograph the box and unboxed books once. All journals in this box will automatically inherit these photos on PC 2.'
+                        : stationRole === 'book_level'
+                          ? 'Box & Unbox photos from PC 1 are automatically attached. Proceed directly with Shots 3 to 7.'
+                          : 'Lot and Box numbers are automatically determined from your uploaded manifest.'}
                     </p>
                   </div>
                 </div>
 
-                {/* Manifest Status Indicator */}
-                <div className="flex items-center space-x-2">
+                {/* Manifest Status Indicator & Box Stats */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {boxesList.length > 0 && (
+                    <span className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-800 border border-blue-200 shadow-xs">
+                      <Package className="w-3.5 h-3.5 text-blue-600" />
+                      <span>{boxesList.length} Boxes Detected</span>
+                    </span>
+                  )}
                   {manifestCount > 0 ? (
                     <button
                       onClick={() => setManifestModalOpen(true)}
@@ -768,6 +923,33 @@ export function App() {
                   )}
                 </div>
               </div>
+
+              {/* PC 1 Dedicated Box Selector Bar */}
+              {stationRole === 'box_level' && boxesList.length > 0 && (
+                <div className="p-3 bg-blue-50/70 border border-blue-200/80 rounded-2xl flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                  <div className="flex items-center space-x-2 text-xs font-bold text-brand-800 shrink-0">
+                    <Package className="w-4 h-4 text-brand-600" />
+                    <span>Quick Select Box:</span>
+                  </div>
+                  <select
+                    value={boxNumber ? `${lotNumber}__${boxNumber}` : ''}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (!val) return;
+                      const [l, b] = val.split('__');
+                      handleSelectBox(l, b);
+                    }}
+                    className="flex-1 bg-white text-slate-800 font-medium text-xs rounded-xl px-3 py-2 border border-blue-300 outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer shadow-xs"
+                  >
+                    <option value="">-- Choose a Box from Manifest ({boxesList.length} boxes available) --</option>
+                    {boxesList.map((b) => (
+                      <option key={b.boxKey} value={`${b.lotNumber}__${b.boxNumber}`}>
+                        📦 Box {b.boxNumber} ({b.totalBooks} books {b.completedBooks > 0 ? `• ${b.completedBooks} verified` : ''}) - Lot: {b.lotNumber} {b.hasBoxShot && b.hasUnboxShot ? '✓ (Photos Done)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <form
                 onSubmit={(e) => {
@@ -818,6 +1000,7 @@ export function App() {
                 <div className="flex-1">
                   <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 mb-1">
                     JOURNAL ISBN / BARCODE
+                    {stationRole === 'box_level' ? 'SCAN ANY ISBN IN BOX OR TYPE BOX' : 'JOURNAL ISBN / BARCODE'}
                   </label>
                   <div className="relative">
                     <Barcode className="w-4 h-4 text-brand-500 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -826,7 +1009,7 @@ export function App() {
                       type="text"
                       value={isbnInput}
                       onChange={(e) => setIsbnInput(e.target.value)}
-                      placeholder="Scan barcode or type ISBN (e.g. 9780132350884)..."
+                      placeholder={stationRole === 'box_level' ? "Scan any book barcode from box to auto-select box..." : "Scan barcode or type ISBN (e.g. 9780132350884)..."}
                       className="w-full pl-10 pr-24 py-2.5 text-xs font-mono text-slate-900 input-smooth rounded-full outline-none placeholder:text-slate-400"
                     />
                     {isbnInput && (
@@ -852,6 +1035,7 @@ export function App() {
                   >
                     <Scan className="w-4 h-4" />
                     <span>Start Scanning</span>
+                    <span>{stationRole === 'box_level' ? 'Start Box Verification' : 'Start Scanning'}</span>
                   </button>
                 </div>
               </form>
@@ -888,7 +1072,7 @@ export function App() {
 
                   <button
                     onClick={() => handleProcessIsbn(activeIsbn, true)}
-                    className="text-[11px] font-bold text-brand-700 hover:underline flex items-center space-x-1 shrink-0"
+                    className="text-[11px] font-bold text-brand-700 hover:underline flex items-center space-x-1 shrink-0 cursor-pointer"
                   >
                     <Plus className="w-3 h-3" />
                     <span>Add Another Copy</span>
@@ -902,6 +1086,8 @@ export function App() {
               currentStep={currentStep}
               isbn={activeIsbn}
               shotsCount={totalCapturedShots}
+              stationRole={stationRole}
+              boxShotsInherited={Boolean(shots[1] && shots[2] && (stationRole === 'book_level' || metadata?.shots?.[1]?.inheritedFromBox))}
             />
 
             {/* Viewfinder & Review Card Grid */}
@@ -940,6 +1126,7 @@ export function App() {
                     shots={shots}
                     metadata={metadata}
                     stationRole={stationRole}
+                    boxSummary={activeBoxSummary}
                     onRetakeShot={handleRetakeShot}
                     onOpenExplorer={handleOpenExplorer}
                     onDownloadZip={handleDownloadZip}

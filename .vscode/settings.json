@@ -4,4 +4,3 @@
   "less.lint.unknownAtRules": "ignore",
   "js/ts.tsdk.path": "frontend/node_modules/typescript/lib"
 }
-

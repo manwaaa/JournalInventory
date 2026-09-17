@@ -9,63 +9,70 @@ import {
   Scroll,
   BookCheck
 } from 'lucide-react';
-import { CaptureStep } from '../types';
+import { CaptureStep, StationRole } from '../types';
 
 interface StepProgressBarProps {
   currentStep: CaptureStep;
   isbn?: string;
   shotsCount: number;
+  stationRole?: StationRole;
+  boxShotsInherited?: boolean;
 }
 
-export const StepProgressBar: React.FC<StepProgressBarProps> = ({ currentStep, shotsCount }) => {
+export const StepProgressBar: React.FC<StepProgressBarProps> = ({ 
+  currentStep, 
+  shotsCount,
+  stationRole = 'all',
+  boxShotsInherited = false
+}) => {
   const steps = [
     {
       id: 'CAPTURE_SHOT_1',
       shotNumber: 1,
       label: '1. Box',
-      sublabel: 'Box Level',
+      sublabel: '📦 PC 1 Box',
       icon: Package
     },
     {
       id: 'CAPTURE_SHOT_2',
       shotNumber: 2,
       label: '2. Unbox',
-      sublabel: 'Box Level',
+      sublabel: '📦 PC 1 Box',
       icon: Layers
     },
     {
       id: 'CAPTURE_SHOT_3',
       shotNumber: 3,
       label: '3. Front Cover',
-      sublabel: 'Book Level',
+      sublabel: '📖 PC 2 Book',
       icon: BookOpen
     },
     {
       id: 'CAPTURE_SHOT_4',
       shotNumber: 4,
       label: '4. Spine',
-      sublabel: 'Book Level',
+      sublabel: '📖 PC 2 Book',
       icon: Bookmark
     },
     {
       id: 'CAPTURE_SHOT_5',
       shotNumber: 5,
       label: '5. Title Page',
-      sublabel: 'Book Level',
+      sublabel: '📖 PC 2 Book',
       icon: FileText
     },
     {
       id: 'CAPTURE_SHOT_6',
       shotNumber: 6,
       label: '6. Edition Notice',
-      sublabel: 'Edition & Copyright',
+      sublabel: '📖 PC 2 Book',
       icon: Scroll
     },
     {
       id: 'CAPTURE_SHOT_7',
       shotNumber: 7,
       label: '7. Back Cover',
-      sublabel: 'Back of Journal',
+      sublabel: '📖 PC 2 Book',
       icon: BookCheck
     }
   ];
@@ -135,7 +142,9 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({ currentStep, s
                   {step.label}
                 </h5>
                 <p className="text-[9px] text-slate-400 truncate mt-0.5">
-                  {step.sublabel}
+                  {step.shotNumber <= 2 && boxShotsInherited && status === 'completed'
+                    ? '✓ Inherited (PC 1)'
+                    : step.sublabel}
                 </p>
               </div>
             </div>

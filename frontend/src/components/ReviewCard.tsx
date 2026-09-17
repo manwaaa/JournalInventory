@@ -19,7 +19,7 @@ import {
   Lock,
   CloudUpload
 } from 'lucide-react';
-import { JournalMetadata, ShotInfo, SHOT_DEFINITIONS, StationRole } from '../types';
+import { JournalMetadata, ShotInfo, SHOT_DEFINITIONS, StationRole, BoxSummary } from '../types';
 
 interface ReviewCardProps {
   isbn: string;
@@ -28,6 +28,7 @@ interface ReviewCardProps {
   shots: Record<number, ShotInfo | null>;
   metadata: JournalMetadata | null;
   stationRole?: StationRole;
+  boxSummary?: BoxSummary | null;
   onRetakeShot: (shotNumber: number) => void;
   onOpenExplorer: (isbn: string) => void;
   onDownloadZip: (isbn: string) => void;
@@ -44,6 +45,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
   shots,
   metadata,
   stationRole = 'all',
+  boxSummary,
   onRetakeShot,
   onOpenExplorer,
   onDownloadZip,
@@ -54,6 +56,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
   const [selectedPreview, setSelectedPreview] = useState<string | null>(null);
+  const [showBooksList, setShowBooksList] = useState(false);
 
   // Count captured shots
   let shotsCount = 0;
@@ -96,6 +99,8 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
     }
   };
 
+  const isBoxSession = isbn.startsWith('BOX_') || stationRole === 'box_level';
+
   return (
     <div className="w-full white-card rounded-2xl p-5 shadow-sm space-y-4 animate-fade-in">
       
@@ -106,6 +111,11 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
             <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 badge-soft-blue px-2.5 py-0.5 rounded-lg shadow-sm">
               {lotNumber || 'Unassigned Lot'} {boxNumber ? `• Box ${boxNumber}` : ''}
             </span>
+            {boxSummary && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                📦 {boxSummary.totalBooks} Journals in Manifest
+              </span>
+            )}
             {metadata?.copyNumber && metadata.copyNumber > 1 && (
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gradient-to-r from-purple-50 to-indigo-50 text-purple-800 border border-purple-200">
                 Copy #{metadata.copyNumber}
@@ -115,7 +125,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
 
           <div className="flex items-center space-x-2">
             <h3 className="text-xl font-extrabold text-slate-900 font-mono tracking-tight">
-              {isbn}
+              {isBoxSession ? `Box ${boxNumber || isbn}` : isbn}
             </h3>
             {isComplete ? (
               <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-bold bg-gradient-to-r from-emerald-50 to-teal-50 text-emerald-700 border border-emerald-300/80 shadow-sm">
@@ -166,16 +176,50 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
             onClick={handleNextClick}
             className={`inline-flex items-center space-x-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${
               canProceed
-                ? 'text-white btn-primary-gradient active:scale-95'
+                ? 'text-white btn-primary-gradient active:scale-95 cursor-pointer shadow-md'
                 : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
             }`}
           >
             {!canProceed && <Lock className="w-3.5 h-3.5 mr-0.5 text-slate-400" />}
-            <span>{stationRole === 'box_level' ? 'Next Journal (Box Done)' : 'Next Book'}</span>
+            <span>{stationRole === 'box_level' ? 'Proceed to Next Box' : 'Next Book'}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
+
+      {/* Box Books Counter / Drawer banner */}
+      {boxSummary && boxSummary.totalBooks > 0 && (
+        <div className="p-3 bg-gradient-to-r from-blue-50/80 to-indigo-50/50 rounded-xl border border-blue-200/80 text-xs">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <Package className="w-4 h-4 text-brand-600 shrink-0" />
+              <span className="font-bold text-slate-800">
+                Box {boxNumber} contains <span className="text-brand-700 font-extrabold">{boxSummary.totalBooks} Journals</span> in Manifest
+              </span>
+            </div>
+            {boxSummary.books && boxSummary.books.length > 0 && (
+              <button
+                onClick={() => setShowBooksList(!showBooksList)}
+                className="text-[11px] font-bold text-brand-700 hover:underline cursor-pointer"
+              >
+                {showBooksList ? 'Hide Journal List ▲' : `View ${boxSummary.totalBooks} Journals ▼`}
+              </button>
+            )}
+          </div>
+
+          {showBooksList && boxSummary.books && (
+            <div className="mt-2.5 pt-2 border-t border-blue-200/60 max-h-48 overflow-y-auto space-y-1 pr-1">
+              {boxSummary.books.map((b, idx) => (
+                <div key={idx} className="flex items-center justify-between py-1 px-2 rounded-lg bg-white/80 border border-blue-100 text-[11px]">
+                  <span className="font-mono font-bold text-slate-800">{b.isbn}</span>
+                  <span className="text-slate-600 truncate max-w-xs">{b.title || 'Untitled Journal'}</span>
+                  <span className="text-[10px] font-semibold text-slate-400">#{idx + 1}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 7 Shots Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -216,14 +260,14 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
                 {hasImage ? (
                   <>
                     <img
-                      src={shotInfo?.previewDataUrl || `/proofs/${encodeURIComponent(isbn)}/${encodeURIComponent(shotInfo?.filename || '')}?t=${Date.now()}`}
+                      src={shotInfo?.previewDataUrl?.startsWith('/proofs') ? shotInfo.previewDataUrl : (shotInfo?.previewDataUrl || `/proofs/${encodeURIComponent(isbn)}/${encodeURIComponent(shotInfo?.filename || '')}?t=${Date.now()}`)}
                       alt={def.label}
                       className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
                       onClick={() => setSelectedPreview(shotInfo?.previewDataUrl || `/proofs/${encodeURIComponent(isbn)}/${encodeURIComponent(shotInfo?.filename || '')}`)}
                     />
                     <button
                       onClick={() => onRetakeShot(def.shotNumber)}
-                      className="absolute bottom-1.5 right-1.5 px-2.5 py-0.5 rounded-lg bg-black/75 hover:bg-black text-white text-[10px] font-semibold backdrop-blur-md border border-white/20 flex items-center space-x-1 shadow transition-all hover:scale-105"
+                      className="absolute bottom-1.5 right-1.5 px-2.5 py-0.5 rounded-lg bg-black/75 hover:bg-black text-white text-[10px] font-semibold backdrop-blur-md border border-white/20 flex items-center space-x-1 shadow transition-all hover:scale-105 cursor-pointer"
                       title="Retake this shot"
                     >
                       <RotateCcw className="w-2.5 h-2.5" />

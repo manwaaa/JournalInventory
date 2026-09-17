@@ -46,6 +46,7 @@ export interface ShotInfo {
   scope?: ShotScope;
   previewDataUrl?: string;
   blurScore?: number;
+  inheritedFromBox?: boolean;
 }
 
 export interface JournalMetadata {
@@ -119,6 +120,21 @@ export interface ManifestData {
   nonProcessableCount: number;
   lastUpdated: string | null;
   filename: string | null;
+}
+
+export interface BoxSummary {
+  lotNumber: string;
+  boxNumber: string;
+  boxKey: string;
+  totalBooks: number;
+  completedBooks: number;
+  hasBoxShot: boolean;
+  hasUnboxShot: boolean;
+  boxShotUrl?: string | null;
+  unboxShotUrl?: string | null;
+  sampleIsbn?: string;
+  items?: ManifestItem[];
+  books?: ManifestItem[];
 }
 
 export interface CameraDevice {
@@ -205,11 +221,15 @@ export interface CaptureSession {
 }
 
 export interface SessionEvent {
-  type: 'CONNECTED' | 'ISBN_INITIALIZED' | 'SHOT_SAVED' | 'SESSION_RESET' | 'MANIFEST_UPDATED';
+  type: 'CONNECTED' | 'ISBN_INITIALIZED' | 'SHOT_SAVED' | 'SESSION_RESET' | 'MANIFEST_UPDATED' | 'BOX_INITIALIZED' | 'BOX_SHOT_SAVED';
   session: CaptureSession;
   isbn?: string;
+  lotNumber?: string;
+  boxNumber?: string;
   shotNumber?: number;
   shotInfo?: ShotInfo;
+  boxShots?: any;
+  boxSummary?: BoxSummary;
   isComplete?: boolean;
   currentStep?: CaptureStep;
   timestamp: number;

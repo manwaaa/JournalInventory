@@ -196,6 +196,7 @@ async function cleanupEmptyProofFolders() {
     const entries = await fs.readdir(config.storagePath, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
+        if (entry.name.startsWith('_') || entry.name.startsWith('.')) continue;
         const folder = path.join(config.storagePath, entry.name);
         const files = await fs.readdir(folder);
         const imageFiles = files.filter(f => /\.(jpe?g|png|webp)$/i.test(f));
@@ -891,7 +892,143 @@ app.get('/api/lookup/isbn/:isbn', async (req, res) => {
 
 // -------------------------------------------------------------
 // Capture & Storage Endpoints (7 Verification Shots)
+// Box-Level Shared Storage & Inheritance Helpers
 // -------------------------------------------------------------
+function getBoxKey(lotNumber, boxNumber) {
+  if (!boxNumber) return null;
+  const cleanLot = (lotNumber || 'Unassigned').trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  const cleanBox = String(boxNumber).trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `${cleanLot}__${cleanBox}`;
+}
+
+function getBoxStorageDir(lotNumber, boxNumber) {
+  const key = getBoxKey(lotNumber, boxNumber);
+  if (!key) return null;
+  return path.join(config.storagePath, '_boxes', key);
+}
+
+function getBoxShots(lotNumber, boxNumber) {
+  const boxDir = getBoxStorageDir(lotNumber, boxNumber);
+  if (!boxDir || !fs.existsSync(boxDir)) {
+    return { hasBoxShot: false, hasUnboxShot: false, boxShotUrl: null, unboxShotUrl: null, boxMeta: null };
+  }
+
+  const hasBoxShot = fs.existsSync(path.join(boxDir, 'shot_1_box.jpg'));
+  const hasUnboxShot = fs.existsSync(path.join(boxDir, 'shot_2_unbox.jpg'));
+
+  let boxMeta = null;
+  try {
+    const metaFile = path.join(boxDir, 'box_meta.json');
+    if (fs.existsSync(metaFile)) boxMeta = fs.readJsonSync(metaFile);
+  } catch (e) {}
+
+  const key = getBoxKey(lotNumber, boxNumber);
+  return {
+    hasBoxShot,
+    hasUnboxShot,
+    boxShotUrl: hasBoxShot ? `/proofs/_boxes/${encodeURIComponent(key)}/shot_1_box.jpg` : null,
+    unboxShotUrl: hasUnboxShot ? `/proofs/_boxes/${encodeURIComponent(key)}/shot_2_unbox.jpg` : null,
+    boxMeta
+  };
+}
+
+async function saveBoxShotToFile(lotNumber, boxNumber, shotNumber, buffer, blurScore) {
+  const boxDir = getBoxStorageDir(lotNumber, boxNumber);
+  if (!boxDir) return null;
+  fs.ensureDirSync(boxDir);
+
+  const filename = shotNumber === 1 ? 'shot_1_box.jpg' : 'shot_2_unbox.jpg';
+  const filePath = path.join(boxDir, filename);
+  await fs.writeFile(filePath, buffer);
+
+  const metaPath = path.join(boxDir, 'box_meta.json');
+  let meta = {
+    lotNumber: lotNumber || 'Unassigned',
+    boxNumber: boxNumber || '',
+    updatedAt: new Date().toISOString(),
+    shots: {}
+  };
+  if (fs.existsSync(metaPath)) {
+    try { meta = fs.readJsonSync(metaPath); } catch (e) {}
+  }
+  meta.updatedAt = new Date().toISOString();
+  meta.shots[shotNumber] = {
+    filename,
+    savedAt: new Date().toISOString(),
+    type: SHOT_DEFINITIONS[shotNumber].type,
+    blurScore: blurScore || null
+  };
+  await fs.writeJson(metaPath, meta, { spaces: 2 });
+  return filename;
+}
+
+// Automatically inherit Shot 1 & 2 into an ISBN folder if captured for that box
+async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) {
+  if (!boxNumber || !folderPath) return { inherited1: false, inherited2: false };
+  const boxDir = getBoxStorageDir(lotNumber, boxNumber);
+  if (!boxDir || !fs.existsSync(boxDir)) return { inherited1: false, inherited2: false };
+
+  let inherited1 = false;
+  let inherited2 = false;
+
+  const targetShot1 = getShotFilename(1, cleanIsbn);
+  const targetShot2 = getShotFilename(2, cleanIsbn);
+  const targetPath1 = path.join(folderPath, targetShot1);
+  const targetPath2 = path.join(folderPath, targetShot2);
+
+  const sourcePath1 = path.join(boxDir, 'shot_1_box.jpg');
+  const sourcePath2 = path.join(boxDir, 'shot_2_unbox.jpg');
+
+  if (fs.existsSync(sourcePath1) && !fs.existsSync(targetPath1)) {
+    fs.ensureDirSync(folderPath);
+    await fs.copy(sourcePath1, targetPath1);
+    inherited1 = true;
+  }
+
+  if (fs.existsSync(sourcePath2) && !fs.existsSync(targetPath2)) {
+    fs.ensureDirSync(folderPath);
+    await fs.copy(sourcePath2, targetPath2);
+    inherited2 = true;
+  }
+
+  if (inherited1 || inherited2) {
+    const metaPath = path.join(folderPath, 'metadata.json');
+    let metadata = {
+      identifier: cleanIsbn,
+      isbn: getBaseIsbn(cleanIsbn),
+      lotNumber: lotNumber || 'Unassigned',
+      boxNumber: boxNumber || '',
+      updatedAt: new Date().toISOString(),
+      shots: {}
+    };
+    if (fs.existsSync(metaPath)) {
+      try { metadata = fs.readJsonSync(metaPath); } catch (e) {}
+    }
+    metadata.shots = metadata.shots || {};
+    if (inherited1) {
+      metadata.shots[1] = {
+        filename: targetShot1,
+        savedAt: new Date().toISOString(),
+        type: SHOT_DEFINITIONS[1].type,
+        scope: SHOT_DEFINITIONS[1].scope,
+        inheritedFromBox: true
+      };
+    }
+    if (inherited2) {
+      metadata.shots[2] = {
+        filename: targetShot2,
+        savedAt: new Date().toISOString(),
+        type: SHOT_DEFINITIONS[2].type,
+        scope: SHOT_DEFINITIONS[2].scope,
+        inheritedFromBox: true
+      };
+    }
+    await fs.writeJson(metaPath, metadata, { spaces: 2 });
+  }
+
+  return { inherited1, inherited2 };
+}
+
 async function findExistingCopies(baseIsbn) {
   if (!fs.existsSync(config.storagePath)) return [];
 
@@ -986,6 +1123,12 @@ app.post('/api/capture/init-isbn', async (req, res) => {
     await cleanupEmptyProofFolders();
 
     const folderPath = path.join(config.storagePath, activeIdentifier);
+    const initialLot = manifestMatch?.lotNumber || lotNumber || currentSession.lotNumber || 'Lot-1';
+    const initialBox = manifestMatch?.boxNumber || boxNumber || currentSession.boxNumber || '';
+
+    // Automatically inherit Shot 1 (Box) & Shot 2 (Unbox) if captured for this Box (e.g. by PC 1)
+    await applyBoxShotsToIsbn(activeIdentifier, initialLot, initialBox, folderPath);
+
     const alreadyExists = fs.existsSync(folderPath);
 
     const existingShots = {};
@@ -1223,6 +1366,11 @@ app.post('/api/capture/save-shot', async (req, res) => {
       });
     }
 
+    // If Shot 1 (Box) or Shot 2 (Unbox), save to box-level storage for all books in this box
+    if (sNum === 1 || sNum === 2) {
+      await saveBoxShotToFile(resolvedLot, resolvedBox, sNum, buffer, blurScore);
+    }
+
     res.json({
       success: true,
       isbn: cleanIsbn,
@@ -1238,6 +1386,215 @@ app.post('/api/capture/save-shot', async (req, res) => {
   } catch (err) {
     console.error('Error saving shot:', err);
     res.status(500).json({ error: 'Failed to save photo to disk', details: err.message });
+  }
+});
+
+// Get all Boxes from manifest with Box & Unbox status and completion stats
+app.get('/api/boxes/list', async (req, res) => {
+  try {
+    const boxesMap = new Map();
+
+    if (manifestData.items && manifestData.items.length > 0) {
+      for (const item of manifestData.items) {
+        const lot = item.lotNumber || 'Unassigned';
+        const box = item.boxNumber || 'Unassigned';
+        const key = getBoxKey(lot, box);
+        if (!key) continue;
+
+        if (!boxesMap.has(key)) {
+          const boxShots = getBoxShots(lot, box);
+          boxesMap.set(key, {
+            lotNumber: lot,
+            boxNumber: box,
+            boxKey: key,
+            totalBooks: 0,
+            completedBooks: 0,
+            hasBoxShot: boxShots.hasBoxShot,
+            hasUnboxShot: boxShots.hasUnboxShot,
+            boxShotUrl: boxShots.boxShotUrl,
+            unboxShotUrl: boxShots.unboxShotUrl,
+            sampleIsbn: item.isbn,
+            items: []
+          });
+        }
+
+        const b = boxesMap.get(key);
+        b.totalBooks++;
+        b.items.push(item);
+      }
+    }
+
+    const boxes = Array.from(boxesMap.values());
+
+    // Calculate completed books for each box
+    for (const b of boxes) {
+      let completed = 0;
+      for (const item of b.items) {
+        const clean = sanitizeIsbn(item.isbn);
+        const itemDir = path.join(config.storagePath, clean);
+        if (fs.existsSync(itemDir)) {
+          let shotsCount = 0;
+          for (let s = 1; s <= 7; s++) {
+            if (findShotFileInFolder(itemDir, s, clean)) shotsCount++;
+          }
+          if (shotsCount >= 7) completed++;
+        }
+      }
+      b.completedBooks = completed;
+    }
+
+    res.json({ success: true, totalBoxes: boxes.length, boxes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Initialize a Box session (PC 1: Receiving / Box Level)
+app.post('/api/capture/init-box', async (req, res) => {
+  try {
+    const { lotNumber, boxNumber } = req.body;
+    if (!boxNumber) {
+      return res.status(400).json({ error: 'Box number is required' });
+    }
+
+    const resolvedLot = lotNumber || 'Unassigned';
+    const boxShots = getBoxShots(resolvedLot, boxNumber);
+    const boxBooks = (manifestData.items || []).filter(item => 
+      (item.lotNumber || 'Unassigned').toLowerCase() === (resolvedLot || 'Unassigned').toLowerCase() &&
+      (item.boxNumber || '').toLowerCase() === String(boxNumber).toLowerCase()
+    );
+
+    const sampleIsbn = boxBooks.length > 0 ? boxBooks[0].isbn : `BOX_${sanitizeIsbn(boxNumber)}`;
+
+    const shotsState = {
+      1: boxShots.hasBoxShot ? {
+        filename: 'shot_1_box.jpg',
+        savedAt: boxShots.boxMeta?.shots?.[1]?.savedAt || new Date().toISOString(),
+        type: SHOT_DEFINITIONS[1].type,
+        scope: SHOT_DEFINITIONS[1].scope,
+        previewDataUrl: boxShots.boxShotUrl
+      } : null,
+      2: boxShots.hasUnboxShot ? {
+        filename: 'shot_2_unbox.jpg',
+        savedAt: boxShots.boxMeta?.shots?.[2]?.savedAt || new Date().toISOString(),
+        type: SHOT_DEFINITIONS[2].type,
+        scope: SHOT_DEFINITIONS[2].scope,
+        previewDataUrl: boxShots.unboxShotUrl
+      } : null,
+      3: null, 4: null, 5: null, 6: null, 7: null
+    };
+
+    let initialStep = 'CAPTURE_SHOT_1';
+    if (boxShots.hasBoxShot && !boxShots.hasUnboxShot) {
+      initialStep = 'CAPTURE_SHOT_2';
+    } else if (boxShots.hasBoxShot && boxShots.hasUnboxShot) {
+      initialStep = 'CAPTURE_SHOT_3';
+    }
+
+    const boxSummary = {
+      lotNumber: resolvedLot,
+      boxNumber: String(boxNumber),
+      totalBooks: boxBooks.length,
+      hasBoxShot: boxShots.hasBoxShot,
+      hasUnboxShot: boxShots.hasUnboxShot,
+      boxShotUrl: boxShots.boxShotUrl,
+      unboxShotUrl: boxShots.unboxShotUrl,
+      books: boxBooks
+    };
+
+    currentSession = {
+      activeIsbn: sampleIsbn,
+      baseIsbn: sampleIsbn,
+      lotNumber: resolvedLot,
+      boxNumber: String(boxNumber),
+      currentStep: initialStep,
+      shots: shotsState,
+      metadata: {
+        lotNumber: resolvedLot,
+        boxNumber: String(boxNumber),
+        shots: boxShots.boxMeta?.shots || {}
+      },
+      bookDetails: boxBooks.length > 0 ? {
+        title: `Box ${boxNumber} (${boxBooks.length} Journals in Manifest)`,
+        authors: `Lot: ${resolvedLot}`
+      } : {
+        title: `Box ${boxNumber}`,
+        authors: `Lot: ${resolvedLot}`
+      },
+      copyNumber: 1,
+      isProcessable: true,
+      boxSummary
+    };
+
+    broadcastSession('BOX_INITIALIZED', {
+      lotNumber: resolvedLot,
+      boxNumber: String(boxNumber),
+      currentStep: initialStep,
+      boxSummary
+    });
+
+    res.json({
+      success: true,
+      lotNumber: resolvedLot,
+      boxNumber: String(boxNumber),
+      sampleIsbn,
+      currentStep: initialStep,
+      shots: shotsState,
+      boxSummary
+    });
+  } catch (err) {
+    console.error('Error in init-box:', err);
+    res.status(500).json({ error: 'Failed to initialize box session', details: err.message });
+  }
+});
+
+// Save Shot 1 (Box) or Shot 2 (Unbox) directly for a specific Box (PC 1 Box Mode)
+app.post('/api/boxes/save-shot', async (req, res) => {
+  try {
+    const { lotNumber, boxNumber, shotNumber, imageBase64, blurScore } = req.body;
+    const sNum = parseInt(shotNumber, 10);
+    if (!boxNumber || !imageBase64 || (sNum !== 1 && sNum !== 2)) {
+      return res.status(400).json({ error: 'Valid boxNumber, shotNumber (1 or 2), and base64 image required' });
+    }
+
+    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    const buffer = Buffer.from(cleanBase64, 'base64');
+
+    const filename = await saveBoxShotToFile(lotNumber, boxNumber, sNum, buffer, blurScore);
+    const boxShots = getBoxShots(lotNumber, boxNumber);
+
+    // Propagate to any existing book folders belonging to this box
+    if (manifestData.items && manifestData.items.length > 0) {
+      const matchingItems = manifestData.items.filter(i => 
+        (i.lotNumber || 'Unassigned').toLowerCase() === (lotNumber || 'Unassigned').toLowerCase() &&
+        (i.boxNumber || '').toLowerCase() === boxNumber.toLowerCase()
+      );
+      for (const item of matchingItems) {
+        const itemClean = sanitizeIsbn(item.isbn);
+        const itemFolder = path.join(config.storagePath, itemClean);
+        if (fs.existsSync(itemFolder)) {
+          await applyBoxShotsToIsbn(itemClean, lotNumber, boxNumber, itemFolder);
+        }
+      }
+    }
+
+    broadcastSession('BOX_SHOT_SAVED', {
+      lotNumber,
+      boxNumber,
+      shotNumber: sNum,
+      boxShots
+    });
+
+    res.json({
+      success: true,
+      lotNumber,
+      boxNumber,
+      shotNumber: sNum,
+      filename,
+      boxShots
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

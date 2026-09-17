@@ -1,8 +1,31 @@
 {
-  "items": [],
-  "totalCount": 0,
-  "processableCount": 0,
+  "items": [
+    {
+      "isbn": "9780132350884",
+      "lotNumber": "Lot-Automated-Test",
+      "boxNumber": "Box-E2E-1",
+      "title": "Clean Code: A Handbook of Agile Software Craftsmanship",
+      "author": "Robert C. Martin",
+      "isProcessable": true,
+      "reason": "",
+      "notes": "",
+      "importedAt": "2026-09-17T13:14:45.470Z"
+    },
+    {
+      "isbn": "9780198826545",
+      "lotNumber": "Lot-Automated-Test",
+      "boxNumber": "Box-E2E-1",
+      "title": "The Principles of Psychology",
+      "author": "William James",
+      "isProcessable": true,
+      "reason": "",
+      "notes": "",
+      "importedAt": "2026-09-17T13:14:45.470Z"
+    }
+  ],
+  "totalCount": 2,
+  "processableCount": 2,
   "nonProcessableCount": 0,
-  "lastUpdated": null,
-  "filename": null
+  "lastUpdated": "2026-09-17T13:14:45.470Z",
+  "filename": "test_manifest.xlsx"
 }
