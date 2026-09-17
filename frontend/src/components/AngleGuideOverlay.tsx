@@ -29,14 +29,14 @@ export const AngleGuideOverlay: React.FC<AngleGuideOverlayProps> = ({ currentSte
     icon: any;
   }> = {
     1: {
-      title: 'Shot 1: Books in a Box',
+      title: 'Shot 1: Box',
       scope: 'Box Level',
       description: 'Align camera directly above or angled into the box showing all packed books',
       color: 'text-blue-400',
       icon: Package
     },
     2: {
-      title: 'Shot 2: Unboxed Books',
+      title: 'Shot 2: Unbox',
       scope: 'Box Level',
       description: 'Show unboxed books arranged neatly on table/counter before processing',
       color: 'text-indigo-400',
@@ -64,14 +64,14 @@ export const AngleGuideOverlay: React.FC<AngleGuideOverlayProps> = ({ currentSte
       icon: FileText
     },
     6: {
-      title: 'Shot 6: Front Matter',
+      title: 'Shot 6: Edition Notice',
       scope: 'Book Level',
       description: 'Capture edition notice, copyright, publisher imprint, and ISSN barcode',
       color: 'text-purple-400',
       icon: Scroll
     },
     7: {
-      title: 'Shot 7: Back of Journal',
+      title: 'Shot 7: Back Cover',
       scope: 'Book Level',
       description: 'Position back cover flat — ensure back barcode, ISBN, and summary are in focus',
       color: 'text-rose-400',

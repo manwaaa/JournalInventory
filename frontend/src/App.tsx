@@ -11,7 +11,8 @@ import {
   Trash2, 
   X,
   Search,
-  Scan
+  Scan,
+  Lock
 } from 'lucide-react';
 
 import { Navbar } from './components/Navbar';
@@ -47,23 +48,9 @@ export function App() {
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
   
-  // Setup fields with placeholder digits & persistence across next books
-  const [lotNumber, setLotNumber] = useState<string>(() => {
-    return localStorage.getItem('vi_lot_number') || '';
-  });
-  const [boxNumber, setBoxNumber] = useState<string>(() => {
-    return localStorage.getItem('vi_box_number') || '';
-  });
-
-  const handleLotChange = (val: string) => {
-    setLotNumber(val);
-    localStorage.setItem('vi_lot_number', val);
-  };
-
-  const handleBoxChange = (val: string) => {
-    setBoxNumber(val);
-    localStorage.setItem('vi_box_number', val);
-  };
+  // Dynamic Lot and Box numbers automatically populated from manifest
+  const [lotNumber, setLotNumber] = useState<string>('');
+  const [boxNumber, setBoxNumber] = useState<string>('');
   const [isbnInput, setIsbnInput] = useState<string>('');
   const [activeIsbn, setActiveIsbn] = useState<string>('');
   const [currentStep, setCurrentStep] = useState<CaptureStep>('SCAN_ISBN');
@@ -161,8 +148,8 @@ export function App() {
         if (event.session?.activeIsbn && currentStep === 'SCAN_ISBN') {
           setActiveIsbn(event.session.activeIsbn);
           setIsbnInput(event.session.activeIsbn);
-          if (event.session.lotNumber) setLotNumber(event.session.lotNumber);
-          if (event.session.boxNumber) setBoxNumber(event.session.boxNumber);
+          setLotNumber(event.session.lotNumber || '');
+          setBoxNumber(event.session.boxNumber || '');
           setCurrentStep(event.session.currentStep);
           setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
           setMetadata(event.session.metadata);
@@ -171,8 +158,8 @@ export function App() {
       } else if (event.type === 'ISBN_INITIALIZED') {
         setActiveIsbn(event.session.activeIsbn);
         setIsbnInput(event.session.activeIsbn);
-        if (event.session.lotNumber) setLotNumber(event.session.lotNumber);
-        if (event.session.boxNumber) setBoxNumber(event.session.boxNumber);
+        setLotNumber(event.session.lotNumber || '');
+        setBoxNumber(event.session.boxNumber || '');
         setCurrentStep(event.session.currentStep);
         setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
         setMetadata(event.session.metadata);
@@ -191,6 +178,8 @@ export function App() {
       } else if (event.type === 'SESSION_RESET') {
         setActiveIsbn('');
         setIsbnInput('');
+        setLotNumber('');
+        setBoxNumber('');
         setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
         setMetadata(null);
         setBookDetails(null);
@@ -246,15 +235,23 @@ export function App() {
     setToastAlert(null);
     playAudioCue('beep');
 
-    // Check manifest processable validation (Validation 4.2)
+    // Check manifest processable validation & pre-fetch lot and box (Validation 4.2)
+    let matchedLot = '';
+    let matchedBox = '';
     try {
       const checkRes = await fetch(`/api/manifest/check/${encodeURIComponent(clean)}`);
       if (checkRes.ok) {
         const checkData = await checkRes.json();
+        matchedLot = checkData.item?.lotNumber || '';
+        matchedBox = checkData.item?.boxNumber || '';
+        if (matchedLot) setLotNumber(matchedLot);
+        if (matchedBox) setBoxNumber(matchedBox);
+
         if (checkData.manifestActive && !checkData.isProcessable) {
           const reasonMsg = checkData.reason || 'Journal is marked as Not Processable in the imported manifest.';
+          const locStr = matchedLot || matchedBox ? `[Lot: ${matchedLot || 'N/A'}${matchedBox ? ` • Box: ${matchedBox}` : ''}] ` : '';
           setToastAlert({
-            message: `Box ${boxNumber || '102/468'} in Lot ${lotNumber}: ISBN ${clean} is NOT processable. ${reasonMsg} You cannot start a verification session for this journal.`,
+            message: `${locStr}ISBN ${clean} is NOT processable. ${reasonMsg} You cannot start a verification session for this journal.`,
             type: 'error'
           });
           playAudioCue('error');
@@ -272,9 +269,7 @@ export function App() {
         body: JSON.stringify({ 
           isbn: clean,
           forceNewCopy,
-          targetIdentifier,
-          lotNumber: lotNumber || 'Lot-131',
-          boxNumber: boxNumber || '102/468'
+          targetIdentifier
         })
       });
 
@@ -283,9 +278,15 @@ export function App() {
         throw new Error(data.error || 'Failed to initialize verification session');
       }
 
+      const resolvedLot = data.lotNumber || data.manifestMatch?.lotNumber || data.metadata?.lotNumber || matchedLot || '';
+      const resolvedBox = data.boxNumber || data.manifestMatch?.boxNumber || data.metadata?.boxNumber || matchedBox || '';
+      setLotNumber(resolvedLot);
+      setBoxNumber(resolvedBox);
+
       if (data.isProcessable === false) {
+        const locStr = resolvedLot || resolvedBox ? `[Lot: ${resolvedLot || 'N/A'}${resolvedBox ? ` • Box: ${resolvedBox}` : ''}] ` : '';
         setToastAlert({
-          message: `Box ${boxNumber} in Lot ${lotNumber}: ISBN ${clean} is NOT processable. ${data.nonProcessableReason || 'Manifest restriction.'} Cannot capture images.`,
+          message: `${locStr}ISBN ${clean} is NOT processable. ${data.nonProcessableReason || 'Manifest restriction.'} Cannot capture images.`,
           type: 'error'
         });
         playAudioCue('error');
@@ -480,8 +481,9 @@ export function App() {
     for (let s = 1; s <= 7; s++) {
       if (shots[s]) captured++;
     }
+    const locStr = lotNumber || boxNumber ? `[Lot: ${lotNumber || 'N/A'}${boxNumber ? ` • Box: ${boxNumber}` : ''}] ` : '';
     setToastAlert({
-      message: `Box ${boxNumber || '102/468'} in Lot ${lotNumber}: Verification pictures for ISBN ${activeIsbn} are incomplete (${captured} of 7 shots). You cannot proceed to the next book until all 7 shots are taken.`,
+      message: `${locStr}Verification pictures for ISBN ${activeIsbn} are incomplete (${captured} of 7 shots). You cannot proceed to the next book until all 7 shots are taken.`,
       type: 'error'
     });
     playAudioCue('error');
@@ -501,6 +503,8 @@ export function App() {
     }
     setActiveIsbn('');
     setIsbnInput('');
+    setLotNumber('');
+    setBoxNumber('');
     setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
     setMetadata(null);
     setBookDetails(null);
@@ -528,6 +532,8 @@ export function App() {
     resetRemoteSession();
     setActiveIsbn('');
     setIsbnInput('');
+    setLotNumber('');
+    setBoxNumber('');
     setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
     setMetadata(null);
     setBookDetails(null);
@@ -636,20 +642,45 @@ export function App() {
             
             {/* Card 1: Receiving & Verification Setup */}
             <div className="white-card rounded-2xl p-6 space-y-4">
-              <div className="flex items-start space-x-3.5">
-                <div className="w-10 h-10 rounded-xl btn-primary-gradient text-white flex items-center justify-center shadow-md shadow-brand-500/20 shrink-0 mt-0.5">
-                  <Scan className="w-5 h-5" />
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start space-x-3.5">
+                  <div className="w-10 h-10 rounded-xl btn-primary-gradient text-white flex items-center justify-center shadow-md shadow-brand-500/20 shrink-0 mt-0.5">
+                    <Scan className="w-5 h-5" />
+                  </div>
+                  <div className="space-y-0.5">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700">
+                      RECEIVING & VERIFICATION
+                    </span>
+                    <h3 className="text-base font-extrabold text-slate-900">
+                      Scan Journal Barcode / ISBN
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Lot and Box numbers are automatically determined from your uploaded manifest.
+                    </p>
+                  </div>
                 </div>
-                <div className="space-y-0.5">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700">
-                    RECEIVING SETUP
-                  </span>
-                  <h3 className="text-base font-extrabold text-slate-900">
-                    Start Verification Session
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Select a lot and box number, then start scanning.
-                  </p>
+
+                {/* Manifest Status Indicator */}
+                <div className="flex items-center space-x-2">
+                  {manifestCount > 0 ? (
+                    <button
+                      onClick={() => setManifestModalOpen(true)}
+                      className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-gradient-to-r from-emerald-50 to-teal-50 text-emerald-700 border border-emerald-300 shadow-xs hover:bg-emerald-100 transition-colors cursor-pointer"
+                      title="View Active Manifest"
+                    >
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      <span>Manifest Active ({manifestCount} items)</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setManifestModalOpen(true)}
+                      className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-300 shadow-xs hover:bg-amber-100 transition-colors cursor-pointer"
+                      title="Upload Manifest for Auto Lot & Box detection"
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Upload Manifest (Auto Lot & Box)</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -660,37 +691,42 @@ export function App() {
                 }}
                 className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1"
               >
-                {/* Lot Number Input Pill */}
+                {/* Lot Number (Read-Only / Auto from Manifest) */}
                 <div className="sm:w-44 shrink-0">
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 mb-1">
-                    LOT NUMBER
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 mb-1 flex items-center justify-between">
+                    <span>LOT NUMBER</span>
+                    <span className="text-[9px] font-medium text-slate-400">Auto</span>
                   </label>
                   <div className="relative flex items-center">
-                    <span className="absolute left-3.5 text-xs font-bold text-brand-600 pointer-events-none">
-                      Lot-
-                    </span>
                     <input
                       type="text"
-                      value={lotNumber.replace(/^Lot-/i, '')}
-                      onChange={(e) => handleLotChange(`Lot-${e.target.value}`)}
-                      placeholder="131"
-                      className="w-full pl-12 pr-4 py-2.5 text-xs font-bold text-slate-900 input-smooth rounded-full outline-none placeholder:text-slate-400 placeholder:font-normal"
+                      value={lotNumber || ''}
+                      readOnly
+                      placeholder="Auto (Manifest)"
+                      title="Lot Number is automatically loaded from your uploaded manifest"
+                      className="w-full pl-4 pr-8 py-2.5 text-xs font-bold font-mono text-brand-900 bg-blue-50/50 border border-blue-200/70 rounded-full outline-none cursor-not-allowed placeholder:text-slate-400 placeholder:font-normal select-all shadow-inner"
                     />
+                    <Lock className="w-3.5 h-3.5 text-brand-400 absolute right-3 pointer-events-none" />
                   </div>
                 </div>
 
-                {/* Box Number Input Pill */}
+                {/* Box Number (Read-Only / Auto from Manifest) */}
                 <div className="sm:w-44 shrink-0">
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 mb-1">
-                    BOX NUMBER
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 mb-1 flex items-center justify-between">
+                    <span>BOX NUMBER</span>
+                    <span className="text-[9px] font-medium text-slate-400">Auto</span>
                   </label>
-                  <input
-                    type="text"
-                    value={boxNumber}
-                    onChange={(e) => handleBoxChange(e.target.value)}
-                    placeholder="102/468"
-                    className="w-full px-4 py-2.5 text-xs font-bold font-mono text-slate-900 input-smooth rounded-full outline-none placeholder:text-slate-400 placeholder:font-normal"
-                  />
+                  <div className="relative flex items-center">
+                    <input
+                      type="text"
+                      value={boxNumber || ''}
+                      readOnly
+                      placeholder="Auto (Manifest)"
+                      title="Box Number is automatically loaded from your uploaded manifest"
+                      className="w-full pl-4 pr-8 py-2.5 text-xs font-bold font-mono text-indigo-900 bg-indigo-50/50 border border-indigo-200/70 rounded-full outline-none cursor-not-allowed placeholder:text-slate-400 placeholder:font-normal select-all shadow-inner"
+                    />
+                    <Lock className="w-3.5 h-3.5 text-indigo-400 absolute right-3 pointer-events-none" />
+                  </div>
                 </div>
 
                 {/* ISBN Scan Input */}
@@ -715,7 +751,7 @@ export function App() {
                           setIsbnInput('');
                           isbnInputRef.current?.focus();
                         }}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 rounded-md transition-colors"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 rounded-md transition-colors cursor-pointer"
                       >
                         <X className="w-3.5 h-3.5" />
                       </button>
@@ -723,7 +759,7 @@ export function App() {
                   </div>
                 </div>
 
-                {/* Start Scanning Button */}
+                {/* Start Verification Button */}
                 <div className="sm:self-end shrink-0">
                   <button
                     type="submit"
@@ -735,25 +771,39 @@ export function App() {
                 </div>
               </form>
 
-              {/* Bibliographic Info Row if ISBN is Active */}
+              {/* Bibliographic Info Row & Auto-Matched Lot/Box if ISBN is Active */}
               {activeIsbn && (
-                <div className="pt-3 border-t border-blue-100 flex items-center justify-between">
-                  <div className="flex items-center space-x-2 text-xs">
-                    <BookOpen className="w-4 h-4 text-brand-700" />
-                    {isLookingUpMeta ? (
-                      <span className="text-slate-500 animate-pulse">Looking up journal details...</span>
-                    ) : bookDetails?.title ? (
-                      <span className="font-bold text-slate-800">
-                        {bookDetails.title} {bookDetails.authors ? `— ${bookDetails.authors}` : ''}
+                <div className="pt-3 border-t border-blue-100 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    {/* Auto-detected Lot and Box Badges */}
+                    {lotNumber && (
+                      <span className="inline-flex items-center gap-1 font-bold text-brand-800 bg-blue-50 border border-blue-200 px-2.5 py-0.5 rounded-lg shadow-xs font-mono">
+                        {lotNumber}
                       </span>
-                    ) : (
-                      <span className="text-slate-500 font-mono">Active Target: {activeIsbn}</span>
                     )}
+                    {boxNumber && (
+                      <span className="inline-flex items-center gap-1 font-bold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2.5 py-0.5 rounded-lg shadow-xs font-mono">
+                        Box: {boxNumber}
+                      </span>
+                    )}
+
+                    <div className="flex items-center space-x-1.5 text-slate-700">
+                      <BookOpen className="w-4 h-4 text-brand-700 shrink-0" />
+                      {isLookingUpMeta ? (
+                        <span className="text-slate-500 animate-pulse">Looking up journal details...</span>
+                      ) : bookDetails?.title ? (
+                        <span className="font-bold text-slate-800">
+                          {bookDetails.title} {bookDetails.authors ? `— ${bookDetails.authors}` : ''}
+                        </span>
+                      ) : (
+                        <span className="text-slate-500 font-mono">Target: {activeIsbn}</span>
+                      )}
+                    </div>
                   </div>
 
                   <button
                     onClick={() => handleProcessIsbn(activeIsbn, true)}
-                    className="text-[11px] font-bold text-brand-700 hover:underline flex items-center space-x-1"
+                    className="text-[11px] font-bold text-brand-700 hover:underline flex items-center space-x-1 shrink-0"
                   >
                     <Plus className="w-3 h-3" />
                     <span>Add Another Copy</span>
@@ -816,7 +866,7 @@ export function App() {
                       Ready for Verification Capture
                     </h3>
                     <p className="text-xs text-slate-500 max-w-sm mb-4">
-                      Select your Lot and Box number, then scan an ISBN barcode to take all 7 required verification photos.
+                      Scan an ISBN barcode to take all 7 required verification photos. Lot and Box numbers are automatically detected from the manifest.
                     </p>
                     <div className="space-y-1.5 text-left text-[11px] bg-gradient-to-b from-blue-50/60 to-indigo-50/40 p-3.5 rounded-xl border border-blue-100 font-medium text-slate-700 w-full max-w-sm shadow-sm">
                       <div className="font-bold text-brand-700 mb-1">7 Required Verification Shots:</div>

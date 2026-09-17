@@ -191,10 +191,10 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
                 {hasImage ? (
                   <>
                     <img
-                      src={shotInfo?.previewDataUrl || `/proofs/${encodeURIComponent(isbn)}/${shotInfo?.filename}?t=${Date.now()}`}
+                      src={shotInfo?.previewDataUrl || `/proofs/${encodeURIComponent(isbn)}/${encodeURIComponent(shotInfo?.filename || '')}?t=${Date.now()}`}
                       alt={def.label}
                       className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
-                      onClick={() => setSelectedPreview(shotInfo?.previewDataUrl || `/proofs/${encodeURIComponent(isbn)}/${shotInfo?.filename}`)}
+                      onClick={() => setSelectedPreview(shotInfo?.previewDataUrl || `/proofs/${encodeURIComponent(isbn)}/${encodeURIComponent(shotInfo?.filename || '')}`)}
                     />
                     <button
                       onClick={() => onRetakeShot(def.shotNumber)}

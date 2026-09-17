@@ -173,18 +173,18 @@ export const SHOT_DEFINITIONS: ShotConfig[] = [
   {
     shotNumber: 1,
     id: 'CAPTURE_SHOT_1',
-    label: 'Books in a Box',
+    label: 'Box',
     scope: 'box_level',
-    filename: '1_books_in_box.jpg',
+    filename: 'isbn_box.jpg',
     description: 'Box level view with books packed inside',
     instructions: 'Photograph the whole box showing all packed books inside'
   },
   {
     shotNumber: 2,
     id: 'CAPTURE_SHOT_2',
-    label: 'Unbox Books',
+    label: 'Unbox',
     scope: 'box_level',
-    filename: '2_unbox_books.jpg',
+    filename: 'isbn_unbox.jpg',
     description: 'Box level view of books unpacked',
     instructions: 'Photograph unboxed books neatly arrayed for processing'
   },
@@ -193,7 +193,7 @@ export const SHOT_DEFINITIONS: ShotConfig[] = [
     id: 'CAPTURE_SHOT_3',
     label: 'Front Cover',
     scope: 'book_level',
-    filename: '3_front_cover.jpg',
+    filename: 'isbn_front cover.jpg',
     description: 'Book level full front cover',
     instructions: 'Capture flat, clear shot of the journal front cover'
   },
@@ -202,7 +202,7 @@ export const SHOT_DEFINITIONS: ShotConfig[] = [
     id: 'CAPTURE_SHOT_4',
     label: 'Spine',
     scope: 'book_level',
-    filename: '4_spine.jpg',
+    filename: 'isbn_spine.jpg',
     description: 'Book level spine with volume & title',
     instructions: 'Capture spine showing title, volume, and book thickness'
   },
@@ -211,25 +211,25 @@ export const SHOT_DEFINITIONS: ShotConfig[] = [
     id: 'CAPTURE_SHOT_5',
     label: 'Title Page',
     scope: 'book_level',
-    filename: '5_title_page.jpg',
+    filename: 'isbn_title page.jpg',
     description: 'Book level main title page',
     instructions: 'Open to title page showing author and journal title clearly'
   },
   {
     shotNumber: 6,
     id: 'CAPTURE_SHOT_6',
-    label: 'Front Matter',
+    label: 'Edition Notice',
     scope: 'book_level',
-    filename: '6_front_matter.jpg',
+    filename: 'isbn_edition notice.jpg',
     description: 'Edition notice, copyright & metadata',
     instructions: 'Photograph copyright page, edition notice, and barcode/ISSN'
   },
   {
     shotNumber: 7,
     id: 'CAPTURE_SHOT_7',
-    label: 'Back of Journal',
+    label: 'Back Cover',
     scope: 'book_level',
-    filename: '7_back_cover.jpg',
+    filename: 'isbn_back cover.jpg',
     description: 'Back cover, barcode & summary',
     instructions: 'Capture flat, clear shot of the back of the journal showing barcodes and summary'
   }

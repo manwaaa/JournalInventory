@@ -58,16 +58,64 @@ const DEFAULT_STORAGE_PATH = process.platform === 'win32'
 const CONFIG_FILE = path.resolve(__dirname, 'config.json');
 const MANIFEST_FILE = path.resolve(__dirname, 'manifest.json');
 
-// 7 Shot definitions & filenames
+// Helper to sanitize ISBN for filesystem safely
+function sanitizeIsbn(isbn) {
+  if (!isbn || typeof isbn !== 'string') return '';
+  return isbn.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+// Helper to extract base ISBN from copy names (e.g. 9780198826545_Copy2 -> 9780198826545)
+function getBaseIsbn(identifier) {
+  return identifier.replace(/_Copy\d+$/i, '');
+}
+
+// 7 Shot definitions & filenames (isbn_<type>.jpg)
 const SHOT_DEFINITIONS = {
-  1: { filename: '1_books_in_box.jpg', legacy: '1_front_spine.jpg', type: 'Books in a Box', scope: 'box_level' },
-  2: { filename: '2_unbox_books.jpg', legacy: '2_author_title.jpg', type: 'Unbox Books', scope: 'box_level' },
-  3: { filename: '3_front_cover.jpg', legacy: null, type: 'Front Cover', scope: 'book_level' },
-  4: { filename: '4_spine.jpg', legacy: null, type: 'Spine', scope: 'book_level' },
-  5: { filename: '5_title_page.jpg', legacy: null, type: 'Title Page', scope: 'book_level' },
-  6: { filename: '6_front_matter.jpg', legacy: null, type: 'Front Matter (Edition & Copyright)', scope: 'book_level' },
-  7: { filename: '7_back_cover.jpg', legacy: null, type: 'Back of Journal', scope: 'book_level' }
+  1: { suffix: '_box.jpg', legacyNames: ['1_books_in_box.jpg', '1_front_spine.jpg', '1_box.jpg', 'box.jpg'], type: 'Box', scope: 'box_level' },
+  2: { suffix: '_unbox.jpg', legacyNames: ['2_unbox_books.jpg', '2_author_title.jpg', '2_unbox.jpg', 'unbox.jpg'], type: 'Unbox', scope: 'box_level' },
+  3: { suffix: '_front cover.jpg', legacyNames: ['3_front_cover.jpg', '3_front cover.jpg', 'front_cover.jpg', 'front cover.jpg'], type: 'Front Cover', scope: 'book_level' },
+  4: { suffix: '_spine.jpg', legacyNames: ['4_spine.jpg', 'spine.jpg'], type: 'Spine', scope: 'book_level' },
+  5: { suffix: '_title page.jpg', legacyNames: ['5_title_page.jpg', '5_title page.jpg', 'title_page.jpg', 'title page.jpg'], type: 'Title Page', scope: 'book_level' },
+  6: { suffix: '_edition notice.jpg', legacyNames: ['6_front_matter.jpg', '6_edition_notice.jpg', '6_edition notice.jpg', 'front_matter.jpg', 'edition_notice.jpg'], type: 'Edition Notice', scope: 'book_level' },
+  7: { suffix: '_back cover.jpg', legacyNames: ['7_back_cover.jpg', '7_back cover.jpg', 'back_cover.jpg', 'back cover.jpg'], type: 'Back Cover', scope: 'book_level' }
 };
+
+function getShotFilename(shotNumber, identifier) {
+  const def = SHOT_DEFINITIONS[shotNumber];
+  if (!def) return `shot_${shotNumber}.jpg`;
+  const cleanId = sanitizeIsbn(identifier || '');
+  const prefix = cleanId || 'journal';
+  return `${prefix}${def.suffix}`;
+}
+
+function findShotFileInFolder(folderPath, shotNumber, identifier) {
+  const def = SHOT_DEFINITIONS[shotNumber];
+  if (!def || !fs.existsSync(folderPath)) return null;
+
+  // 1. Direct match with identifier prefix (e.g. 9780198826545_box.jpg)
+  const targetName = getShotFilename(shotNumber, identifier);
+  if (fs.existsSync(path.join(folderPath, targetName))) {
+    return targetName;
+  }
+
+  // 2. Scan directory for matching suffix or legacy names
+  try {
+    const files = fs.readdirSync(folderPath);
+    const suffix = def.suffix.toLowerCase();
+
+    // Check files ending with this shot's suffix (e.g. any *_box.jpg, *_front cover.jpg)
+    const suffixMatch = files.find(f => f.toLowerCase().endsWith(suffix));
+    if (suffixMatch) return suffixMatch;
+
+    // Check legacy names
+    for (const leg of def.legacyNames) {
+      const legMatch = files.find(f => f.toLowerCase() === leg.toLowerCase() || f.toLowerCase().endsWith(leg.toLowerCase()));
+      if (legMatch) return legMatch;
+    }
+  } catch (e) {}
+
+  return null;
+}
 
 // Load or initialize config
 let config = {
@@ -163,22 +211,12 @@ function saveConfig() {
   }
 }
 
-// Helper to sanitize ISBN for filesystem safely
-function sanitizeIsbn(isbn) {
-  if (!isbn || typeof isbn !== 'string') return '';
-  return isbn.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
-// Helper to extract base ISBN from copy names (e.g. 9780198826545_Copy2 -> 9780198826545)
-function getBaseIsbn(identifier) {
-  return identifier.replace(/_Copy\d+$/i, '');
-}
 
 // Global active capture session state (7 Shots)
 let currentSession = {
   activeIsbn: '',
   baseIsbn: '',
-  lotNumber: 'Lot-131',
+  lotNumber: '',
   boxNumber: '',
   currentStep: 'SCAN_ISBN',
   shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null },
@@ -278,8 +316,8 @@ app.post('/api/session/reset', async (req, res) => {
   currentSession = {
     activeIsbn: '',
     baseIsbn: '',
-    lotNumber: currentSession.lotNumber || 'Lot-131',
-    boxNumber: currentSession.boxNumber || '',
+    lotNumber: '',
+    boxNumber: '',
     currentStep: 'SCAN_ISBN',
     shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null },
     metadata: null,
@@ -306,8 +344,8 @@ app.post('/api/capture/discard', async (req, res) => {
     currentSession = {
       activeIsbn: '',
       baseIsbn: '',
-      lotNumber: currentSession.lotNumber || 'Lot-131',
-      boxNumber: currentSession.boxNumber || '',
+      lotNumber: '',
+      boxNumber: '',
       currentStep: 'SCAN_ISBN',
       shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null },
       metadata: null,
@@ -648,10 +686,8 @@ async function findExistingCopies(baseIsbn) {
     const folderPath = path.join(config.storagePath, name);
     let shotsCount = 0;
     for (let s = 1; s <= 7; s++) {
-      const def = SHOT_DEFINITIONS[s];
-      const hasMain = fs.existsSync(path.join(folderPath, def.filename));
-      const hasLegacy = def.legacy ? fs.existsSync(path.join(folderPath, def.legacy)) : false;
-      if (hasMain || hasLegacy) shotsCount++;
+      const foundFile = findShotFileInFolder(folderPath, s, name);
+      if (foundFile) shotsCount++;
     }
 
     let meta = null;
@@ -736,15 +772,9 @@ app.post('/api/capture/init-isbn', async (req, res) => {
     let shotsFoundCount = 0;
 
     for (let s = 1; s <= 7; s++) {
-      const def = SHOT_DEFINITIONS[s];
-      const mainPath = path.join(folderPath, def.filename);
-      const legacyPath = def.legacy ? path.join(folderPath, def.legacy) : null;
-
-      if (alreadyExists && fs.existsSync(mainPath)) {
-        existingShots[s] = def.filename;
-        shotsFoundCount++;
-      } else if (alreadyExists && legacyPath && fs.existsSync(legacyPath)) {
-        existingShots[s] = def.legacy;
+      const foundFile = findShotFileInFolder(folderPath, s, activeIdentifier);
+      if (alreadyExists && foundFile) {
+        existingShots[s] = foundFile;
         shotsFoundCount++;
       }
     }
@@ -784,8 +814,8 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       }
     }
 
-    const resolvedLot = lotNumber || manifestMatch?.lotNumber || metadata?.lotNumber || currentSession.lotNumber || 'Lot-131';
-    const resolvedBox = boxNumber || manifestMatch?.boxNumber || metadata?.boxNumber || currentSession.boxNumber || '';
+    const resolvedLot = manifestMatch?.lotNumber || metadata?.lotNumber || lotNumber || currentSession.lotNumber || 'Lot-1';
+    const resolvedBox = manifestMatch?.boxNumber || metadata?.boxNumber || boxNumber || currentSession.boxNumber || '';
 
     currentSession = {
       activeIsbn: activeIdentifier,
@@ -803,16 +833,21 @@ app.post('/api/capture/init-isbn', async (req, res) => {
     broadcastSession('ISBN_INITIALIZED', {
       isbn: activeIdentifier,
       baseIsbn: baseIsbnOnly,
+      lotNumber: resolvedLot,
+      boxNumber: resolvedBox,
       currentStep: initialStep,
       copyNumber,
       isProcessable,
-      nonProcessableReason
+      nonProcessableReason,
+      manifestMatch
     });
 
     res.json({
       success: true,
       isbn: activeIdentifier,
       baseIsbn: baseIsbnOnly,
+      lotNumber: resolvedLot,
+      boxNumber: resolvedBox,
       copyNumber,
       folderPath,
       exists: alreadyExists,
@@ -859,20 +894,34 @@ app.post('/api/capture/save-shot', async (req, res) => {
     fs.ensureDirSync(folderPath);
 
     const shotDef = SHOT_DEFINITIONS[sNum];
-    const filename = shotDef.filename;
+    const filename = getShotFilename(sNum, cleanIsbn);
     const filePath = path.join(folderPath, filename);
 
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
     await fs.writeFile(filePath, buffer);
 
+    // Look up manifest to ensure lot and box are preserved from manifest
+    let manifestMatchForShot = null;
+    if (manifestData.items && manifestData.items.length > 0) {
+      const numericOnly = baseIsbnOnly.replace(/[^0-9Xx]/g, '');
+      manifestMatchForShot = manifestData.items.find(item => {
+        const itemNum = item.isbn.replace(/[^0-9Xx]/g, '');
+        return item.isbn.toLowerCase() === baseIsbnOnly.toLowerCase() ||
+          (numericOnly.length > 0 && itemNum === numericOnly);
+      });
+    }
+
+    const resolvedLot = manifestMatchForShot?.lotNumber || lotNumber || currentSession.lotNumber || 'Lot-1';
+    const resolvedBox = manifestMatchForShot?.boxNumber || boxNumber || currentSession.boxNumber || '';
+
     const metaPath = path.join(folderPath, 'metadata.json');
     let metadata = {
       identifier: cleanIsbn,
       isbn: baseIsbnOnly,
       copyNumber,
-      lotNumber: lotNumber || currentSession.lotNumber || 'Lot-131',
-      boxNumber: boxNumber || currentSession.boxNumber || '',
+      lotNumber: resolvedLot,
+      boxNumber: resolvedBox,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       operator: operatorName || 'Inventory Operator',
@@ -1010,7 +1059,7 @@ app.post('/api/sync/receive-shot', async (req, res) => {
     fs.ensureDirSync(folderPath);
 
     const shotDef = SHOT_DEFINITIONS[sNum];
-    const filename = shotDef.filename;
+    const filename = getShotFilename(sNum, cleanIsbn);
     const filePath = path.join(folderPath, filename);
 
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
@@ -1100,13 +1149,13 @@ app.get('/api/gallery/export-csv', async (req, res) => {
       'Publisher',
       'Publication Year',
       'Processable Status',
-      'Shot 1 (Books in Box)',
-      'Shot 2 (Unbox Books)',
+      'Shot 1 (Box)',
+      'Shot 2 (Unbox)',
       'Shot 3 (Front Cover)',
       'Shot 4 (Spine)',
       'Shot 5 (Title Page)',
-      'Shot 6 (Front Matter)',
-      'Shot 7 (Back of Journal)',
+      'Shot 6 (Edition Notice)',
+      'Shot 7 (Back Cover)',
       'Verification Status',
       'Operator',
       'Workstation',
@@ -1135,11 +1184,9 @@ app.get('/api/gallery/export-csv', async (req, res) => {
       const shotsStatus = {};
       let shotsCount = 0;
       for (let s = 1; s <= 7; s++) {
-        const def = SHOT_DEFINITIONS[s];
-        const hasMain = fs.existsSync(path.join(folderPath, def.filename));
-        const hasLegacy = def.legacy ? fs.existsSync(path.join(folderPath, def.legacy)) : false;
-        if (hasMain || hasLegacy) {
-          shotsStatus[s] = hasMain ? def.filename : def.legacy;
+        const foundFile = findShotFileInFolder(folderPath, s, dir.name);
+        if (foundFile) {
+          shotsStatus[s] = foundFile;
           shotsCount++;
         } else {
           shotsStatus[s] = 'Missing';
@@ -1230,15 +1277,9 @@ app.get('/api/gallery/list', async (req, res) => {
       const shots = {};
       let shotsCount = 0;
       for (let s = 1; s <= 7; s++) {
-        const def = SHOT_DEFINITIONS[s];
-        const mainPath = path.join(folderPath, def.filename);
-        const legacyPath = def.legacy ? path.join(folderPath, def.legacy) : null;
-
-        if (fs.existsSync(mainPath)) {
-          shots[s] = `/proofs/${encodeURIComponent(dir.name)}/${def.filename}`;
-          shotsCount++;
-        } else if (legacyPath && fs.existsSync(legacyPath)) {
-          shots[s] = `/proofs/${encodeURIComponent(dir.name)}/${def.legacy}`;
+        const foundFile = findShotFileInFolder(folderPath, s, dir.name);
+        if (foundFile) {
+          shots[s] = `/proofs/${encodeURIComponent(dir.name)}/${encodeURIComponent(foundFile)}`;
           shotsCount++;
         } else {
           shots[s] = null;

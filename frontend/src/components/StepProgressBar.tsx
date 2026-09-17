@@ -22,14 +22,14 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({ currentStep, s
     {
       id: 'CAPTURE_SHOT_1',
       shotNumber: 1,
-      label: '1. Books in Box',
+      label: '1. Box',
       sublabel: 'Box Level',
       icon: Package
     },
     {
       id: 'CAPTURE_SHOT_2',
       shotNumber: 2,
-      label: '2. Unbox Books',
+      label: '2. Unbox',
       sublabel: 'Box Level',
       icon: Layers
     },
@@ -57,7 +57,7 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({ currentStep, s
     {
       id: 'CAPTURE_SHOT_6',
       shotNumber: 6,
-      label: '6. Front Matter',
+      label: '6. Edition Notice',
       sublabel: 'Edition & Copyright',
       icon: Scroll
     },
