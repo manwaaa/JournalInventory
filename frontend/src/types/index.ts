@@ -11,6 +11,8 @@ export type CaptureStep =
 
 export type ViewMode = 'CAPTURE' | 'SEARCH_VIEW';
 
+export type StationRole = 'all' | 'box_level' | 'book_level';
+
 export interface BookDetails {
   title?: string;
   subtitle?: string;
@@ -60,6 +62,13 @@ export interface JournalMetadata {
   manifestInfo?: ManifestItem | null;
   shots: Record<string, ShotInfo>;
   isComplete?: boolean;
+  s3Upload?: {
+    uploadedAt: string;
+    bucket: string;
+    s3FolderUri: string;
+    shareableLink?: string;
+    fileCount: number;
+  } | null;
 }
 
 export interface ExistingCopy {
@@ -141,8 +150,45 @@ export interface SystemConfig {
   blurCheckEnabled?: boolean;
   peerSyncEnabled?: boolean;
   peerIp?: string;
-  peerPort?: number;
+  stationRole?: StationRole;
   enforceManifest?: boolean;
+  s3Enabled?: boolean;
+  s3Bucket?: string;
+  s3Region?: string;
+  s3AccessKeyId?: string;
+  s3SecretAccessKey?: string;
+  s3Prefix?: string;
+  s3CustomEndpoint?: string;
+}
+
+export interface S3UploadFileResult {
+  filename: string;
+  s3Key: string;
+  s3Url?: string;
+  presignedUrl?: string;
+  sizeBytes?: number;
+}
+
+export interface S3UploadResult {
+  success: boolean;
+  isbn: string;
+  bucket: string;
+  prefix: string;
+  s3FolderUri: string;
+  shareableLink?: string;
+  uploadedAt: string;
+  files: S3UploadFileResult[];
+  error?: string;
+}
+
+export interface S3Config {
+  s3Enabled?: boolean;
+  s3Bucket?: string;
+  s3Region?: string;
+  s3AccessKeyId?: string;
+  s3SecretAccessKey?: string;
+  s3Prefix?: string;
+  s3CustomEndpoint?: string;
 }
 
 export interface CaptureSession {

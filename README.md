@@ -35,3 +35,11 @@ cd ../backend
 node server.js
 ```
 The server will start on `http://localhost:3001` and is accessible across the local network (LAN) by any inventory PC.
+
+### 🌐 2-PC Pipeline Setup (Easiest Method)
+1. Run `start_system.bat` on **PC 1**.
+2. On **PC 2**, open the web browser and navigate to:
+   ```
+   http://<PC1-IP-ADDRESS>:3001
+   ```
+3. Set **PC 1** to `📦 PC 1 (Box: 1-2)` and **PC 2** to `📖 PC 2 (Book: 3-7)` in the top navigation bar. Both PCs will immediately share the same storage folder, manifest, and live photos over the local network!

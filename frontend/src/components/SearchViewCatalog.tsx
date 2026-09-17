@@ -14,9 +14,11 @@ import {
   AlertCircle,
   Boxes,
   MoreVertical,
-  Camera
+  Camera,
+  CloudUpload
 } from 'lucide-react';
 import { ProofItem, SHOT_DEFINITIONS } from '../types';
+import { S3UploadModal } from './S3UploadModal';
 
 interface SearchViewCatalogProps {
   onSelectIsbnForCapture: (isbn: string) => void;
@@ -33,7 +35,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'all' | 'in_progress' | 'completed'>('all');
-  const [expandedLots, setExpandedLots] = useState<Record<string, boolean>>({ 'Lot-131': true });
+  const [expandedLots, setExpandedLots] = useState<Record<string, boolean>>({ 'Unassigned Lot': true });
   const [activeActionMenu, setActiveActionMenu] = useState<string | null>(null);
   const [selectedPhotoModal, setSelectedPhotoModal] = useState<{
     isbn: string;
@@ -41,6 +43,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     item: ProofItem;
   } | null>(null);
   const [activePreviewImage, setActivePreviewImage] = useState<string | null>(null);
+  const [s3UploadTarget, setS3UploadTarget] = useState<{ isbn: string; item: ProofItem } | null>(null);
 
   const fetchItems = async () => {
     setLoading(true);
@@ -122,14 +125,14 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
 
   const lotsMap: Record<string, ProofItem[]> = {};
   for (const item of filteredItems) {
-    const lot = item.lotNumber || item.metadata?.lotNumber || 'Lot-131';
+    const lot = item.lotNumber || item.metadata?.lotNumber || 'Unassigned Lot';
     if (!lotsMap[lot]) lotsMap[lot] = [];
     lotsMap[lot].push(item);
   }
 
   const lotKeys = Object.keys(lotsMap);
   if (lotKeys.length === 0 && !loading) {
-    lotsMap['Lot-131'] = [];
+    lotsMap['Unassigned Lot'] = [];
   }
 
   return (
@@ -242,12 +245,14 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
           const completedCount = lotItems.filter(i => i.isComplete).length;
 
           return (
-            <div key={lotName} className="white-card rounded-2xl overflow-hidden shadow-sm">
+            <div key={lotName} className="white-card rounded-2xl shadow-sm">
               
               {/* Royal Blue Smooth Gradient Active Lot Bar */}
               <div
                 onClick={() => toggleLotExpand(lotName)}
-                className="lot-header-gradient text-white px-5 py-3.5 flex items-center justify-between cursor-pointer transition-all select-none hover:opacity-95"
+                className={`lot-header-gradient text-white px-5 py-3.5 flex items-center justify-between cursor-pointer transition-all select-none hover:opacity-95 ${
+                  isExpanded ? 'rounded-t-2xl' : 'rounded-2xl'
+                }`}
               >
                 <div className="flex items-center space-x-4">
                   <span className="text-xs font-mono font-bold text-blue-200">#{lotIdx + 1}</span>
@@ -268,7 +273,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
 
               {/* Nested Box & Book Table */}
               {isExpanded && (
-                <div className="p-4 bg-white/70 overflow-x-auto">
+                <div className="p-4 bg-white/70 rounded-b-2xl overflow-visible min-h-[140px]">
                   {lotItems.length === 0 ? (
                     <div className="py-8 text-center text-slate-400">
                       <Package className="w-8 h-8 opacity-30 mx-auto mb-1 text-slate-400" />
@@ -369,7 +374,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                 )}
                               </td>
 
-                              <td className="py-3 px-3 text-right shrink-0 relative">
+                              <td className={`py-3 px-3 text-right shrink-0 relative ${activeActionMenu === item.isbn ? 'z-40' : ''}`}>
                                 <div className="flex items-center justify-end">
                                   <button
                                     onClick={(e) => {
@@ -386,73 +391,89 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                     <MoreVertical className="w-4 h-4" />
                                   </button>
 
-                                  {activeActionMenu === item.isbn && (
-                                    <div 
-                                      className="absolute right-3 top-11 z-30 w-48 bg-white/98 backdrop-blur-md rounded-2xl shadow-2xl border border-blue-100/90 py-1.5 animate-fade-in text-left divide-y divide-slate-100"
-                                      onClick={(e) => e.stopPropagation()}
-                                    >
-                                      <div className="py-1">
-                                        <button
-                                          onClick={() => {
-                                            setActiveActionMenu(null);
-                                            onSelectIsbnForCapture(item.isbn);
-                                          }}
-                                          className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                        >
-                                          <Camera className="w-4 h-4 text-brand-600 shrink-0" />
-                                          <span>Inspect / Retake</span>
-                                        </button>
+                                  {activeActionMenu === item.isbn && (() => {
+                                    const isNearBottom = itemIdx >= lotItems.length - 2 && lotItems.length >= 2;
+                                    return (
+                                      <div 
+                                        className={`absolute right-3 z-50 w-56 bg-white/98 backdrop-blur-md rounded-2xl shadow-2xl border border-blue-200/90 py-1.5 animate-fade-in text-left divide-y divide-slate-100 ring-1 ring-slate-900/10 ${
+                                          isNearBottom ? 'bottom-full mb-2' : 'top-full mt-2'
+                                        }`}
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <div className="py-1">
+                                          <button
+                                            onClick={() => {
+                                              setActiveActionMenu(null);
+                                              onSelectIsbnForCapture(item.isbn);
+                                            }}
+                                            className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
+                                          >
+                                            <Camera className="w-4 h-4 text-brand-600 shrink-0" />
+                                            <span>Inspect / Retake</span>
+                                          </button>
 
-                                        <button
-                                          onClick={() => {
-                                            setActiveActionMenu(null);
-                                            setSelectedPhotoModal({ isbn: item.isbn, shots: item.shots, item });
-                                          }}
-                                          className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                        >
-                                          <Eye className="w-4 h-4 text-brand-600 shrink-0" />
-                                          <span>View 7 Photos</span>
-                                        </button>
+                                          <button
+                                            onClick={() => {
+                                              setActiveActionMenu(null);
+                                              setSelectedPhotoModal({ isbn: item.isbn, shots: item.shots, item });
+                                            }}
+                                            className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
+                                          >
+                                            <Eye className="w-4 h-4 text-brand-600 shrink-0" />
+                                            <span>View 7 Photos</span>
+                                          </button>
+                                        </div>
+
+                                        <div className="py-1">
+                                          <button
+                                            onClick={() => {
+                                              setActiveActionMenu(null);
+                                              setS3UploadTarget({ isbn: item.isbn, item });
+                                            }}
+                                            className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
+                                          >
+                                            <CloudUpload className="w-4 h-4 text-brand-600 shrink-0" />
+                                            <span>Upload to S3 (Client Cloud)</span>
+                                          </button>
+
+                                          <button
+                                            onClick={() => {
+                                              setActiveActionMenu(null);
+                                              onOpenExplorer(item.isbn);
+                                            }}
+                                            className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-amber-50 hover:text-amber-800 flex items-center space-x-2.5 transition-colors cursor-pointer"
+                                          >
+                                            <FolderOpen className="w-4 h-4 text-amber-500 shrink-0" />
+                                            <span>Open Folder</span>
+                                          </button>
+
+                                          <button
+                                            onClick={() => {
+                                              setActiveActionMenu(null);
+                                              onDownloadZip(item.isbn);
+                                            }}
+                                            className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
+                                          >
+                                            <Download className="w-4 h-4 text-brand-600 shrink-0" />
+                                            <span>Download ZIP</span>
+                                          </button>
+                                        </div>
+
+                                        <div className="py-1">
+                                          <button
+                                            onClick={(e) => {
+                                              setActiveActionMenu(null);
+                                              handleDeleteItem(item.isbn, e);
+                                            }}
+                                            className="w-full px-3.5 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 hover:text-rose-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
+                                          >
+                                            <Trash2 className="w-4 h-4 shrink-0" />
+                                            <span>Delete Record</span>
+                                          </button>
+                                        </div>
                                       </div>
-
-                                      <div className="py-1">
-                                        <button
-                                          onClick={() => {
-                                            setActiveActionMenu(null);
-                                            onOpenExplorer(item.isbn);
-                                          }}
-                                          className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-amber-50 hover:text-amber-800 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                        >
-                                          <FolderOpen className="w-4 h-4 text-amber-500 shrink-0" />
-                                          <span>Open Folder</span>
-                                        </button>
-
-                                        <button
-                                          onClick={() => {
-                                            setActiveActionMenu(null);
-                                            onDownloadZip(item.isbn);
-                                          }}
-                                          className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                        >
-                                          <Download className="w-4 h-4 text-brand-600 shrink-0" />
-                                          <span>Download ZIP</span>
-                                        </button>
-                                      </div>
-
-                                      <div className="py-1">
-                                        <button
-                                          onClick={(e) => {
-                                            setActiveActionMenu(null);
-                                            handleDeleteItem(item.isbn, e);
-                                          }}
-                                          className="w-full px-3.5 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 hover:text-rose-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                        >
-                                          <Trash2 className="w-4 h-4 shrink-0" />
-                                          <span>Delete Record</span>
-                                        </button>
-                                      </div>
-                                    </div>
-                                  )}
+                                    );
+                                  })()}
                                 </div>
                               </td>
 
@@ -538,6 +559,17 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
             <p className="text-white/80 text-xs mt-3 font-medium">Click anywhere to close full preview</p>
           </div>
         </div>
+      )}
+
+      {/* S3 Upload Modal */}
+      {s3UploadTarget && (
+        <S3UploadModal
+          isOpen={Boolean(s3UploadTarget)}
+          onClose={() => setS3UploadTarget(null)}
+          isbn={s3UploadTarget.isbn}
+          item={s3UploadTarget.item}
+          onUploadSuccess={() => fetchItems()}
+        />
       )}
 
     </div>

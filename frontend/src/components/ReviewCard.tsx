@@ -16,9 +16,10 @@ import {
   BookCheck,
   Trash2,
   AlertTriangle,
-  Lock
+  Lock,
+  CloudUpload
 } from 'lucide-react';
-import { JournalMetadata, ShotInfo, SHOT_DEFINITIONS } from '../types';
+import { JournalMetadata, ShotInfo, SHOT_DEFINITIONS, StationRole } from '../types';
 
 interface ReviewCardProps {
   isbn: string;
@@ -26,12 +27,14 @@ interface ReviewCardProps {
   boxNumber?: string;
   shots: Record<number, ShotInfo | null>;
   metadata: JournalMetadata | null;
+  stationRole?: StationRole;
   onRetakeShot: (shotNumber: number) => void;
   onOpenExplorer: (isbn: string) => void;
   onDownloadZip: (isbn: string) => void;
   onNextJournal: () => void;
   onDiscardSession?: () => void;
   onIncompleteWarning?: () => void;
+  onUploadS3?: (isbn: string) => void;
 }
 
 export const ReviewCard: React.FC<ReviewCardProps> = ({
@@ -40,12 +43,14 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
   boxNumber,
   shots,
   metadata,
+  stationRole = 'all',
   onRetakeShot,
   onOpenExplorer,
   onDownloadZip,
   onNextJournal,
   onDiscardSession,
-  onIncompleteWarning
+  onIncompleteWarning,
+  onUploadS3
 }) => {
   const [copied, setCopied] = useState(false);
   const [selectedPreview, setSelectedPreview] = useState<string | null>(null);
@@ -57,6 +62,8 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
   }
 
   const isComplete = shotsCount >= 7;
+  const isBoxLevelDone = Boolean(shots[1] && shots[2]);
+  const canProceed = stationRole === 'box_level' ? isBoxLevelDone : isComplete;
 
   const handleCopyPath = () => {
     if (!isbn) return;
@@ -67,7 +74,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
   };
 
   const handleNextClick = () => {
-    if (!isComplete) {
+    if (!canProceed) {
       if (onIncompleteWarning) {
         onIncompleteWarning();
       }
@@ -97,7 +104,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
         <div className="space-y-1">
           <div className="flex items-center space-x-2">
             <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 badge-soft-blue px-2.5 py-0.5 rounded-lg shadow-sm">
-              {lotNumber || 'Lot-131'} {boxNumber ? `• Box ${boxNumber}` : ''}
+              {lotNumber || 'Unassigned Lot'} {boxNumber ? `• Box ${boxNumber}` : ''}
             </span>
             {metadata?.copyNumber && metadata.copyNumber > 1 && (
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gradient-to-r from-purple-50 to-indigo-50 text-purple-800 border border-purple-200">
@@ -115,6 +122,18 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                 Completed (7/7)
               </span>
+            ) : stationRole === 'box_level' ? (
+              isBoxLevelDone ? (
+                <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-bold bg-gradient-to-r from-blue-50 to-emerald-50 text-blue-800 border border-blue-300/80 shadow-sm">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
+                  Box Level Done (2/2) • Ready for PC 2
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-bold bg-gradient-to-r from-amber-50 to-yellow-50 text-amber-800 border border-amber-300/80 shadow-sm">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                  Box Level ({shotsCount > 2 ? 2 : shotsCount}/2)
+                </span>
+              )
             ) : (
               <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-bold bg-gradient-to-r from-amber-50 to-yellow-50 text-amber-800 border border-amber-300/80 shadow-sm">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
@@ -146,13 +165,13 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
           <button
             onClick={handleNextClick}
             className={`inline-flex items-center space-x-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${
-              isComplete
+              canProceed
                 ? 'text-white btn-primary-gradient active:scale-95'
                 : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
             }`}
           >
-            {!isComplete && <Lock className="w-3.5 h-3.5 mr-0.5 text-slate-400" />}
-            <span>Next Book</span>
+            {!canProceed && <Lock className="w-3.5 h-3.5 mr-0.5 text-slate-400" />}
+            <span>{stationRole === 'box_level' ? 'Next Journal (Box Done)' : 'Next Book'}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -171,7 +190,9 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
               className={`rounded-xl p-2.5 flex flex-col justify-between sub-card ${
                 hasImage 
                   ? 'border-blue-300/80' 
-                  : 'opacity-90'
+                  : def.scope === 'box_level'
+                    ? 'border-blue-200/60'
+                    : 'opacity-90'
               }`}
             >
               <div className="flex items-center justify-between mb-1.5">
@@ -181,8 +202,12 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
                     {def.label}
                   </span>
                 </div>
-                <span className="text-[9px] font-semibold px-1.5 py-0.2 rounded-md bg-white text-slate-500 border border-slate-200 shadow-xs shrink-0">
-                  {def.scope === 'box_level' ? 'Box' : 'Book'}
+                <span className={`text-[9px] font-semibold px-1.5 py-0.2 rounded-md border shadow-xs shrink-0 ${
+                  def.scope === 'box_level'
+                    ? 'bg-blue-50 text-blue-700 border-blue-200'
+                    : 'bg-slate-50 text-slate-600 border-slate-200'
+                }`}>
+                  {def.scope === 'box_level' ? '📦 PC 1 Box' : '📖 PC 2 Book'}
                 </span>
               </div>
 
@@ -208,7 +233,11 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
                 ) : (
                   <div className="text-center p-2 text-slate-500 flex flex-col items-center">
                     <Icon className="w-6 h-6 opacity-30 mb-1" />
-                    <span className="text-[10px] font-medium">Awaiting Shot {def.shotNumber}</span>
+                    <span className="text-[10px] font-medium">
+                      {stationRole === 'box_level' && def.scope === 'book_level'
+                        ? 'For PC 2 (Book Level)'
+                        : `Awaiting Shot ${def.shotNumber}`}
+                    </span>
                   </div>
                 )}
               </div>
@@ -235,6 +264,16 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
             <Download className="w-3.5 h-3.5 text-brand-600" />
             <span>ZIP (7 Shots)</span>
           </button>
+
+          {onUploadS3 && (
+            <button
+              onClick={() => onUploadS3(isbn)}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl font-semibold text-brand-700 bg-blue-50/80 hover:bg-blue-100/80 border border-blue-200/80 shadow-xs transition-colors cursor-pointer"
+            >
+              <CloudUpload className="w-3.5 h-3.5 text-brand-600" />
+              <span>Upload to S3</span>
+            </button>
+          )}
 
           <button
             onClick={handleCopyPath}

@@ -11,6 +11,8 @@ import dotenv from 'dotenv';
 import http from 'http';
 import https from 'https';
 import selfsigned from 'selfsigned';
+import { S3Client, PutObjectCommand, HeadBucketCommand, ListObjectsV2Command, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 dotenv.config();
 
@@ -130,7 +132,14 @@ let config = {
   peerSyncEnabled: false,
   peerIp: '',
   peerPort: 3001,
-  enforceManifest: false
+  enforceManifest: false,
+  s3Enabled: false,
+  s3Bucket: process.env.AWS_S3_BUCKET || '',
+  s3Region: process.env.AWS_REGION || 'us-east-1',
+  s3AccessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+  s3SecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+  s3Prefix: 'journal-proofs/',
+  s3CustomEndpoint: process.env.AWS_S3_ENDPOINT || ''
 };
 
 if (fs.existsSync(CONFIG_FILE)) {
@@ -539,9 +548,220 @@ app.post('/api/system/config', (req, res) => {
   if (peerIp !== undefined) config.peerIp = String(peerIp).trim();
   if (peerPort !== undefined) config.peerPort = Number(peerPort);
   if (enforceManifest !== undefined) config.enforceManifest = Boolean(enforceManifest);
+  if (req.body.s3Enabled !== undefined) config.s3Enabled = Boolean(req.body.s3Enabled);
+  if (req.body.s3Bucket !== undefined) config.s3Bucket = String(req.body.s3Bucket).trim();
+  if (req.body.s3Region !== undefined) config.s3Region = String(req.body.s3Region).trim();
+  if (req.body.s3AccessKeyId !== undefined) config.s3AccessKeyId = String(req.body.s3AccessKeyId).trim();
+  if (req.body.s3SecretAccessKey !== undefined && !req.body.s3SecretAccessKey.includes('••••')) {
+    config.s3SecretAccessKey = String(req.body.s3SecretAccessKey).trim();
+  }
+  if (req.body.s3Prefix !== undefined) config.s3Prefix = String(req.body.s3Prefix).trim();
+  if (req.body.s3CustomEndpoint !== undefined) config.s3CustomEndpoint = String(req.body.s3CustomEndpoint).trim();
 
   saveConfig();
   res.json({ success: true, config });
+});
+
+// -------------------------------------------------------------
+// AWS S3 Cloud Upload & Client Proof Sharing Endpoints
+// -------------------------------------------------------------
+
+// S3 Client factory helper
+function getS3Client(customConfig = {}) {
+  const region = (customConfig.s3Region || config.s3Region || 'us-east-1').trim();
+  const accessKeyId = (customConfig.s3AccessKeyId || config.s3AccessKeyId || '').trim();
+  const secretAccessKey = (customConfig.s3SecretAccessKey || config.s3SecretAccessKey || '').trim();
+  const endpoint = (customConfig.s3CustomEndpoint || config.s3CustomEndpoint || '').trim();
+
+  if (!accessKeyId || !secretAccessKey) {
+    return null;
+  }
+
+  const clientOptions = {
+    region,
+    credentials: {
+      accessKeyId,
+      secretAccessKey
+    }
+  };
+
+  if (endpoint) {
+    clientOptions.endpoint = endpoint;
+    clientOptions.forcePathStyle = true;
+  }
+
+  return new S3Client(clientOptions);
+}
+
+// S3 Test Connection
+app.post('/api/s3/test-connection', async (req, res) => {
+  try {
+    const targetBucket = (req.body.s3Bucket || config.s3Bucket || '').trim();
+    const targetRegion = (req.body.s3Region || config.s3Region || 'us-east-1').trim();
+    const accessKeyId = (req.body.s3AccessKeyId || config.s3AccessKeyId || '').trim();
+    const secretAccessKey = (req.body.s3SecretAccessKey || config.s3SecretAccessKey || '').trim();
+    const customEndpoint = (req.body.s3CustomEndpoint || config.s3CustomEndpoint || '').trim();
+
+    if (!accessKeyId || !secretAccessKey) {
+      return res.status(400).json({ success: false, error: 'AWS Access Key ID and Secret Access Key are required' });
+    }
+    if (!targetBucket) {
+      return res.status(400).json({ success: false, error: 'AWS S3 Bucket name is required' });
+    }
+
+    const s3 = getS3Client({
+      s3Region: targetRegion,
+      s3AccessKeyId: accessKeyId,
+      s3SecretAccessKey: secretAccessKey,
+      s3CustomEndpoint: customEndpoint
+    });
+
+    if (!s3) {
+      return res.status(400).json({ success: false, error: 'Could not create S3 client with provided credentials' });
+    }
+
+    try {
+      await s3.send(new HeadBucketCommand({ Bucket: targetBucket }));
+    } catch (headErr) {
+      await s3.send(new ListObjectsV2Command({ Bucket: targetBucket, MaxKeys: 1 }));
+    }
+
+    res.json({
+      success: true,
+      message: `Connected successfully to S3 Bucket '${targetBucket}' in region '${targetRegion}'`,
+      bucket: targetBucket,
+      region: targetRegion
+    });
+  } catch (err) {
+    console.error('[S3] Connection test error:', err);
+    res.status(400).json({
+      success: false,
+      error: `S3 Connection failed: ${err.message || 'Check Bucket Name, Region, and Access Keys'}`
+    });
+  }
+});
+
+// Upload proof folder for a specific ISBN to S3
+app.post('/api/s3/upload-isbn', async (req, res) => {
+  try {
+    const { isbn, s3Bucket, s3Region, s3Prefix, s3AccessKeyId, s3SecretAccessKey, s3CustomEndpoint } = req.body;
+    if (!isbn) {
+      return res.status(400).json({ error: 'ISBN is required' });
+    }
+
+    const cleanIsbn = sanitizeIsbn(isbn);
+    const folderPath = path.join(config.storagePath, cleanIsbn);
+
+    if (!fs.existsSync(folderPath)) {
+      return res.status(404).json({ error: `No local folder found for ISBN ${cleanIsbn}` });
+    }
+
+    const targetBucket = (s3Bucket || config.s3Bucket || '').trim();
+    const targetRegion = (s3Region || config.s3Region || 'us-east-1').trim();
+    let prefix = (s3Prefix || config.s3Prefix || 'journal-proofs/').trim();
+    if (prefix && !prefix.endsWith('/')) prefix += '/';
+
+    const s3 = getS3Client({
+      s3Region: targetRegion,
+      s3AccessKeyId: s3AccessKeyId || config.s3AccessKeyId,
+      s3SecretAccessKey: s3SecretAccessKey || config.s3SecretAccessKey,
+      s3CustomEndpoint: s3CustomEndpoint || config.s3CustomEndpoint
+    });
+
+    if (!s3 || !targetBucket) {
+      return res.status(400).json({ 
+        error: 'S3 is not configured. Please enter your AWS Bucket and Access Keys in Settings.' 
+      });
+    }
+
+    const filesInFolder = await fs.readdir(folderPath);
+    if (filesInFolder.length === 0) {
+      return res.status(400).json({ error: `Folder for ISBN ${cleanIsbn} is empty.` });
+    }
+
+    const uploadedFiles = [];
+    const s3BaseFolderKey = `${prefix}${cleanIsbn}`;
+
+    for (const filename of filesInFolder) {
+      const filePath = path.join(folderPath, filename);
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) continue;
+
+      const fileBuffer = await fs.readFile(filePath);
+      const s3Key = `${s3BaseFolderKey}/${filename}`;
+
+      let contentType = 'application/octet-stream';
+      if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) contentType = 'image/jpeg';
+      else if (filename.endsWith('.png')) contentType = 'image/png';
+      else if (filename.endsWith('.json')) contentType = 'application/json';
+      else if (filename.endsWith('.zip')) contentType = 'application/zip';
+
+      await s3.send(new PutObjectCommand({
+        Bucket: targetBucket,
+        Key: s3Key,
+        Body: fileBuffer,
+        ContentType: contentType
+      }));
+
+      // Generate 7-day pre-signed download URL for client
+      let presignedUrl = '';
+      try {
+        presignedUrl = await getSignedUrl(s3, new GetObjectCommand({
+          Bucket: targetBucket,
+          Key: s3Key
+        }), { expiresIn: 604800 }); // 7 days
+      } catch (e) {}
+
+      const directUrl = `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${encodeURI(s3Key)}`;
+
+      uploadedFiles.push({
+        filename,
+        s3Key,
+        s3Url: directUrl,
+        presignedUrl: presignedUrl || directUrl,
+        sizeBytes: stat.size
+      });
+    }
+
+    const s3FolderUri = `s3://${targetBucket}/${s3BaseFolderKey}/`;
+    
+    // Choose best shareable link: front cover or first shot presigned URL or direct folder URL
+    const mainPhoto = uploadedFiles.find(f => f.filename.includes('front cover') || f.filename.includes('box') || f.filename.endsWith('.jpg'));
+    const shareableLink = mainPhoto?.presignedUrl || `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${s3BaseFolderKey}/`;
+
+    // Save S3 upload record into local metadata.json
+    const metaPath = path.join(folderPath, 'metadata.json');
+    let metadata = {};
+    if (fs.existsSync(metaPath)) {
+      try { metadata = await fs.readJson(metaPath); } catch (e) {}
+    }
+    metadata.s3Upload = {
+      uploadedAt: new Date().toISOString(),
+      bucket: targetBucket,
+      region: targetRegion,
+      s3FolderUri,
+      shareableLink,
+      fileCount: uploadedFiles.length
+    };
+    await fs.writeJson(metaPath, metadata, { spaces: 2 });
+
+    console.log(`[S3] Successfully uploaded ${uploadedFiles.length} files for ${cleanIsbn} to ${s3FolderUri}`);
+
+    res.json({
+      success: true,
+      isbn: cleanIsbn,
+      bucket: targetBucket,
+      region: targetRegion,
+      prefix,
+      s3FolderUri,
+      shareableLink,
+      uploadedAt: metadata.s3Upload.uploadedAt,
+      files: uploadedFiles
+    });
+  } catch (err) {
+    console.error('[S3] Upload error:', err);
+    res.status(500).json({ error: `Failed to upload to S3: ${err.message}` });
+  }
 });
 
 app.post('/api/system/open-folder', (req, res) => {
@@ -1090,8 +1310,42 @@ app.post('/api/sync/receive-shot', async (req, res) => {
       blurScore
     };
 
+    const totalShots = Object.keys(metadata.shots).length;
+    metadata.isComplete = totalShots >= 7;
+
     await fs.writeJson(metaPath, metadata, { spaces: 2 });
-    res.json({ success: true, replicated: true, isbn: cleanIsbn, shotNumber: sNum });
+
+    // If active session matches this ISBN on peer PC, update live state & broadcast
+    if (currentSession.activeIsbn === cleanIsbn) {
+      currentSession.shots[sNum] = {
+        filename,
+        savedAt: new Date().toISOString(),
+        type: shotDef.type,
+        scope: shotDef.scope,
+        previewDataUrl: imageBase64,
+        blurScore
+      };
+      currentSession.metadata = metadata;
+      
+      let nextStep = 'COMPLETE';
+      for (let s = 1; s <= 7; s++) {
+        if (!currentSession.shots[s]) {
+          nextStep = `CAPTURE_SHOT_${s}`;
+          break;
+        }
+      }
+      currentSession.currentStep = nextStep;
+
+      broadcastSession('SHOT_SAVED', {
+        isbn: cleanIsbn,
+        shotNumber: sNum,
+        shotInfo: currentSession.shots[sNum],
+        isComplete: totalShots >= 7,
+        currentStep: nextStep
+      });
+    }
+
+    res.json({ success: true, replicated: true, isbn: cleanIsbn, shotNumber: sNum, isComplete: totalShots >= 7 });
   } catch (err) {
     res.status(500).json({ error: 'Failed to save replicated photo', details: err.message });
   }
@@ -1196,7 +1450,7 @@ app.get('/api/gallery/export-csv', async (req, res) => {
       const copyMatch = dir.name.match(/_Copy(\d+)$/i);
       const copyNum = meta?.copyNumber || (copyMatch ? copyMatch[1] : '1');
       const baseIsbn = meta?.isbn || getBaseIsbn(dir.name);
-      const lotNum = meta?.lotNumber || 'Lot-131';
+      const lotNum = meta?.lotNumber || 'Unassigned';
       const boxNum = meta?.boxNumber || '';
       const title = meta?.bookDetails?.title || '';
       const authors = meta?.bookDetails?.authors || '';
@@ -1293,7 +1547,7 @@ app.get('/api/gallery/list', async (req, res) => {
       items.push({
         isbn: dir.name,
         baseIsbn,
-        lotNumber: metadata?.lotNumber || 'Lot-131',
+        lotNumber: metadata?.lotNumber || 'Unassigned Lot',
         boxNumber: metadata?.boxNumber || '',
         copyNumber,
         folderPath,

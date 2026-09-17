@@ -6,16 +6,21 @@ import {
   Smartphone, 
   FileSpreadsheet, 
   Search, 
-  Table
+  Table,
+  Package,
+  BookOpen,
+  Layers
 } from 'lucide-react';
-import { SystemStatus, ViewMode } from '../types';
+import { StationRole, SystemStatus, ViewMode } from '../types';
 
 interface NavbarProps {
   viewMode: ViewMode;
   setViewMode: (m: ViewMode) => void;
+  stationRole: StationRole;
+  setStationRole: (r: StationRole) => void;
   systemStatus: SystemStatus | null;
   manifestItemCount: number;
-  onOpenQuickSearch: () => void;
+  onOpenQuickSearch?: () => void;
   onOpenManifestModal: () => void;
   onOpenSettings: () => void;
   onOpenStorageFolder: () => void;
@@ -25,9 +30,10 @@ interface NavbarProps {
 export const Navbar: React.FC<NavbarProps> = ({
   viewMode,
   setViewMode,
+  stationRole,
+  setStationRole,
   systemStatus,
   manifestItemCount,
-  onOpenQuickSearch,
   onOpenManifestModal,
   onOpenSettings,
   onOpenStorageFolder,
@@ -37,7 +43,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     <header className="sticky top-0 z-30 w-full glass-panel border-b border-blue-100/90 transition-colors shadow-[0_4px_16px_rgba(24,62,142,0.03)]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
         
-        {/* Left: Brand Title & Quick Search */}
+        {/* Left: Brand Title */}
         <div className="flex items-center space-x-3.5">
           <div className="flex items-center space-x-2.5">
             <div className="w-9 h-9 rounded-xl btn-primary-gradient text-white flex items-center justify-center shadow-md shadow-brand-500/25">
@@ -47,23 +53,53 @@ export const Navbar: React.FC<NavbarProps> = ({
               Verification <span className="text-brand-700 bg-gradient-to-r from-brand-700 to-indigo-600 bg-clip-text text-transparent">Images</span>
             </span>
           </div>
-
-          {/* Quick Search Pill (Ctrl K) */}
-          <button
-            onClick={onOpenQuickSearch}
-            className="hidden md:flex items-center space-x-2 px-3.5 py-1.5 text-xs text-slate-500 bg-gradient-to-r from-white to-blue-50/50 hover:from-white hover:to-blue-100/60 border border-blue-200/80 rounded-full transition-all shadow-xs cursor-pointer"
-          >
-            <Search className="w-3.5 h-3.5 text-brand-500" />
-            <span className="text-slate-400">Quick Search...</span>
-            <kbd className="px-1.5 py-0.5 text-[10px] font-mono font-semibold bg-white rounded-md border border-slate-200 text-slate-500 shadow-xs">
-              Ctrl K
-            </kbd>
-          </button>
         </div>
 
         {/* Right: View Toggle, Manifest, Live Sync & Tools */}
         <div className="flex items-center space-x-2 sm:space-x-3">
           
+          {/* Station Role Toggle: PC 1 (Box Level) vs PC 2 (Book Level) vs All-in-One */}
+          {viewMode === 'CAPTURE' && (
+            <div className="hidden lg:flex items-center bg-gradient-to-r from-slate-100 to-blue-50/60 p-1 rounded-xl border border-slate-200/80 shadow-xs" title="Select PC Station Role">
+              <button
+                onClick={() => setStationRole('all')}
+                className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  stationRole === 'all'
+                    ? 'bg-white text-slate-800 shadow-sm border border-slate-200/80'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+                title="All 7 shots captured on this PC"
+              >
+                <Layers className="w-3 h-3 text-slate-500" />
+                <span>All-in-One</span>
+              </button>
+              <button
+                onClick={() => setStationRole('box_level')}
+                className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  stationRole === 'box_level'
+                    ? 'bg-white text-blue-800 shadow-sm border border-blue-300 font-extrabold'
+                    : 'text-slate-500 hover:text-blue-700'
+                }`}
+                title="PC 1: Box Level Only (Takes Shot 1 & 2, then proceeds to next)"
+              >
+                <Package className="w-3 h-3 text-blue-600" />
+                <span>PC 1 (Box: 1-2)</span>
+              </button>
+              <button
+                onClick={() => setStationRole('book_level')}
+                className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  stationRole === 'book_level'
+                    ? 'bg-white text-indigo-800 shadow-sm border border-indigo-300 font-extrabold'
+                    : 'text-slate-500 hover:text-indigo-700'
+                }`}
+                title="PC 2: Book Level (Loads Shots 1 & 2 from PC 1, captures Shots 3 to 7)"
+              >
+                <BookOpen className="w-3 h-3 text-indigo-600" />
+                <span>PC 2 (Book: 3-7)</span>
+              </button>
+            </div>
+          )}
+
           {/* View Mode Toggle: Capture vs Search & View */}
           <div className="flex items-center bg-gradient-to-r from-blue-50/80 to-indigo-50/60 p-1 rounded-xl border border-blue-100 shadow-xs">
             <button

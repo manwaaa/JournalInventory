@@ -23,6 +23,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { MobilePairingModal } from './components/MobilePairingModal';
 import { ManifestImportModal } from './components/ManifestImportModal';
 import { SearchViewCatalog } from './components/SearchViewCatalog';
+import { S3UploadModal } from './components/S3UploadModal';
 
 import { useCamera } from './hooks/useCamera';
 import { useBarcodeScanner } from './hooks/useBarcodeScanner';
@@ -39,11 +40,22 @@ import {
   ExistingCopy,
   SessionEvent,
   ViewMode,
+  StationRole,
   SHOT_DEFINITIONS
 } from './types';
 
 export function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('CAPTURE');
+
+  // Station Role: 'all' | 'box_level' (PC 1: Shots 1-2) | 'book_level' (PC 2: Shots 3-7)
+  const [stationRole, setStationRoleState] = useState<StationRole>(() => {
+    return (localStorage.getItem('verification_station_role') as StationRole) || 'all';
+  });
+
+  const setStationRole = (role: StationRole) => {
+    localStorage.setItem('verification_station_role', role);
+    setStationRoleState(role);
+  };
 
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
@@ -84,6 +96,7 @@ export function App() {
   const [quickSearchOpen, setQuickSearchOpen] = useState(false);
   const [quickSearchText, setQuickSearchText] = useState('');
   const [manifestCount, setManifestCount] = useState<number>(0);
+  const [s3ModalIsbn, setS3ModalIsbn] = useState<string | null>(null);
 
   const [duplicateModal, setDuplicateModal] = useState<{
     baseIsbn: string;
@@ -331,6 +344,31 @@ export function App() {
       if (data.shotsCount >= 7) {
         setCurrentStep('COMPLETE');
         playAudioCue('success');
+      } else if (stationRole === 'box_level') {
+        // PC 1 (Box Level: Shots 1 & 2)
+        if (newShots[1] && newShots[2]) {
+          setCurrentStep('CAPTURE_SHOT_3'); // triggers Box Level Complete view
+        } else if (!newShots[1]) {
+          setCurrentStep('CAPTURE_SHOT_1');
+        } else {
+          setCurrentStep('CAPTURE_SHOT_2');
+        }
+      } else if (stationRole === 'book_level') {
+        // PC 2 (Book Level: Shots 3 to 7)
+        // Automatically find next missing book shot among 3..7
+        let nextBookShot = 3;
+        for (let s = 3; s <= 7; s++) {
+          if (!newShots[s]) {
+            nextBookShot = s;
+            break;
+          }
+        }
+        if (newShots[3] && newShots[4] && newShots[5] && newShots[6] && newShots[7] && newShots[1] && newShots[2]) {
+          setCurrentStep('COMPLETE');
+          playAudioCue('success');
+        } else {
+          setCurrentStep(`CAPTURE_SHOT_${nextBookShot}` as CaptureStep);
+        }
       } else {
         let firstMissing = 1;
         for (let s = 1; s <= 7; s++) {
@@ -399,14 +437,47 @@ export function App() {
         blurScore
       };
 
-      setShots(prev => ({
-        ...prev,
+      const updatedShots = {
+        ...shots,
         [shotNumber]: newShotInfo
-      }));
+      };
+
+      setShots(updatedShots);
 
       if (data.isComplete) {
         setCurrentStep('COMPLETE');
         playAudioCue('success');
+      } else if (stationRole === 'box_level' && shotNumber === 2) {
+        // Shot 2 is complete on PC 1
+        playAudioCue('success');
+        setCurrentStep('CAPTURE_SHOT_3');
+        setToastAlert({
+          message: `📦 Box level completed for ${activeIsbn}! Shot 1 & 2 saved. PC 2 can now capture book shots.`,
+          type: 'info'
+        });
+      } else if (stationRole === 'book_level') {
+        let nextBookShot = 3;
+        for (let s = 3; s <= 7; s++) {
+          if (!updatedShots[s]) {
+            nextBookShot = s;
+            break;
+          }
+        }
+        if (updatedShots[3] && updatedShots[4] && updatedShots[5] && updatedShots[6] && updatedShots[7]) {
+          if (updatedShots[1] && updatedShots[2]) {
+            setCurrentStep('COMPLETE');
+            playAudioCue('success');
+          } else {
+            setCurrentStep('COMPLETE');
+            playAudioCue('success');
+            setToastAlert({
+              message: `📖 Book level completed (Shots 3–7 saved)!`,
+              type: 'info'
+            });
+          }
+        } else {
+          setCurrentStep(`CAPTURE_SHOT_${nextBookShot}` as CaptureStep);
+        }
       } else {
         setCurrentStep(data.currentStep as CaptureStep);
       }
@@ -523,9 +594,21 @@ export function App() {
       if (shots[s]) captured++;
     }
 
-    if (captured < 7) {
-      handleIncompleteWarning();
-      return;
+    if (stationRole === 'box_level') {
+      // PC 1 requires Shot 1 & Shot 2
+      if (!shots[1] || !shots[2]) {
+        setToastAlert({
+          message: `Please capture both Shot 1 (Box) and Shot 2 (Unbox) before proceeding on PC 1.`,
+          type: 'error'
+        });
+        playAudioCue('error');
+        return;
+      }
+    } else {
+      if (captured < 7) {
+        handleIncompleteWarning();
+        return;
+      }
     }
 
     playAudioCue('click');
@@ -594,6 +677,8 @@ export function App() {
       <Navbar
         viewMode={viewMode}
         setViewMode={setViewMode}
+        stationRole={stationRole}
+        setStationRole={setStationRole}
         systemStatus={systemStatus}
         manifestItemCount={manifestCount}
         onOpenQuickSearch={() => setQuickSearchOpen(true)}
@@ -835,6 +920,10 @@ export function App() {
                   currentStep={currentStep}
                   resolution={resolution}
                   isCapturing={isCapturing}
+                  stationRole={stationRole}
+                  isBoxLevelDone={Boolean(shots[1] && shots[2])}
+                  hasBoxShots={Boolean(shots[1] && shots[2])}
+                  onNextJournal={handleNextJournal}
                   hasTorch={hasTorch}
                   isTorchOn={isTorchOn}
                   onToggleTorch={toggleTorch}
@@ -850,12 +939,14 @@ export function App() {
                     boxNumber={boxNumber}
                     shots={shots}
                     metadata={metadata}
+                    stationRole={stationRole}
                     onRetakeShot={handleRetakeShot}
                     onOpenExplorer={handleOpenExplorer}
                     onDownloadZip={handleDownloadZip}
                     onNextJournal={handleNextJournal}
                     onDiscardSession={handleDiscardSession}
                     onIncompleteWarning={handleIncompleteWarning}
+                    onUploadS3={(targetIsbn) => setS3ModalIsbn(targetIsbn)}
                   />
                 ) : (
                   <div className="white-card rounded-2xl p-8 flex flex-col items-center justify-center text-center text-slate-400 min-h-[380px]">
@@ -1061,6 +1152,8 @@ export function App() {
         isOpen={settingsModalOpen}
         onClose={() => setSettingsModalOpen(false)}
         config={systemConfig}
+        currentStationRole={stationRole}
+        onStationRoleChange={setStationRole}
         onConfigSaved={(newCfg) => setSystemConfig(newCfg)}
       />
 
@@ -1070,6 +1163,17 @@ export function App() {
         onClose={() => setMobilePairingOpen(false)}
         systemStatus={systemStatus}
       />
+
+      {/* S3 Upload Modal (from ReviewCard) */}
+      {s3ModalIsbn && (
+        <S3UploadModal
+          isOpen={Boolean(s3ModalIsbn)}
+          onClose={() => setS3ModalIsbn(null)}
+          isbn={s3ModalIsbn}
+          systemConfig={systemConfig}
+          onUploadSuccess={() => fetchStatus()}
+        />
+      )}
 
     </div>
   );
