@@ -158,7 +158,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
         <div className="p-3.5 bg-slate-900 border-t border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
           <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3 pl-1">
             <div className="text-xs text-slate-200">
-              <span>Capturing <b className="text-brand-400 font-bold">Shot {shotNum} of 6</b>: {currentDef.label}</span>
+              <span>Capturing <b className="text-brand-400 font-bold">Shot {shotNum} of 7</b>: {currentDef.label}</span>
               <span className="ml-2 text-[10px] font-bold px-2 py-0.5 rounded bg-brand-900/60 text-brand-300 border border-brand-800">
                 {currentDef.scope === 'box_level' ? '📦 Box Level' : '📖 Book Level'}
               </span>

@@ -6,6 +6,7 @@ export type CaptureStep =
   | 'CAPTURE_SHOT_4' 
   | 'CAPTURE_SHOT_5' 
   | 'CAPTURE_SHOT_6' 
+  | 'CAPTURE_SHOT_7' 
   | 'COMPLETE';
 
 export type ViewMode = 'CAPTURE' | 'SEARCH_VIEW';
@@ -85,6 +86,7 @@ export interface ProofItem {
   shot4Url?: string | null;
   shot5Url?: string | null;
   shot6Url?: string | null;
+  shot7Url?: string | null;
   modifiedAt: string | null;
   metadata?: JournalMetadata | null;
 }
@@ -106,26 +108,26 @@ export interface ManifestData {
   totalCount: number;
   processableCount: number;
   nonProcessableCount: number;
-  lastUpdated?: string;
-  filename?: string;
+  lastUpdated: string | null;
+  filename: string | null;
+}
+
+export interface CameraDevice {
+  deviceId: string;
+  label: string;
 }
 
 export interface SystemStatus {
   status: string;
+  appName?: string;
   hostname: string;
   platform: string;
-  networkIps: Array<{ interface: string; address: string }>;
+  networkIps: { address: string; interface: string; internal: boolean }[];
   port: number;
-  httpsPort?: number | null;
-  mobileHttpsUrl?: string;
-  mobileHttpUrl?: string;
-  storagePath: string;
-  totalCapturedJournals: number;
-  watermarkStation?: string;
-  peerSyncEnabled?: boolean;
-  peerIp?: string;
-  peerPort?: number;
-  manifestItemCount?: number;
+  httpsPort: number | null;
+  mobileHttpsUrl: string | null;
+  activeSession: CaptureSession;
+  proofCount: number;
 }
 
 export interface SystemConfig {
@@ -141,11 +143,6 @@ export interface SystemConfig {
   peerIp?: string;
   peerPort?: number;
   enforceManifest?: boolean;
-}
-
-export interface CameraDevice {
-  deviceId: string;
-  label: string;
 }
 
 export interface CaptureSession {
@@ -226,5 +223,14 @@ export const SHOT_DEFINITIONS: ShotConfig[] = [
     filename: '6_front_matter.jpg',
     description: 'Edition notice, copyright & metadata',
     instructions: 'Photograph copyright page, edition notice, and barcode/ISSN'
+  },
+  {
+    shotNumber: 7,
+    id: 'CAPTURE_SHOT_7',
+    label: 'Back of Journal',
+    scope: 'book_level',
+    filename: '7_back_cover.jpg',
+    description: 'Back cover, barcode & summary',
+    instructions: 'Capture flat, clear shot of the back of the journal showing barcodes and summary'
   }
 ];

@@ -58,14 +58,15 @@ const DEFAULT_STORAGE_PATH = process.platform === 'win32'
 const CONFIG_FILE = path.resolve(__dirname, 'config.json');
 const MANIFEST_FILE = path.resolve(__dirname, 'manifest.json');
 
-// 6 Shot definitions & filenames
+// 7 Shot definitions & filenames
 const SHOT_DEFINITIONS = {
   1: { filename: '1_books_in_box.jpg', legacy: '1_front_spine.jpg', type: 'Books in a Box', scope: 'box_level' },
   2: { filename: '2_unbox_books.jpg', legacy: '2_author_title.jpg', type: 'Unbox Books', scope: 'box_level' },
   3: { filename: '3_front_cover.jpg', legacy: null, type: 'Front Cover', scope: 'book_level' },
   4: { filename: '4_spine.jpg', legacy: null, type: 'Spine', scope: 'book_level' },
   5: { filename: '5_title_page.jpg', legacy: null, type: 'Title Page', scope: 'book_level' },
-  6: { filename: '6_front_matter.jpg', legacy: null, type: 'Front Matter (Edition & Copyright)', scope: 'book_level' }
+  6: { filename: '6_front_matter.jpg', legacy: null, type: 'Front Matter (Edition & Copyright)', scope: 'book_level' },
+  7: { filename: '7_back_cover.jpg', legacy: null, type: 'Back of Journal', scope: 'book_level' }
 };
 
 // Load or initialize config
@@ -173,14 +174,14 @@ function getBaseIsbn(identifier) {
   return identifier.replace(/_Copy\d+$/i, '');
 }
 
-// Global active capture session state (6 Shots)
+// Global active capture session state (7 Shots)
 let currentSession = {
   activeIsbn: '',
   baseIsbn: '',
   lotNumber: 'Lot-131',
   boxNumber: '',
   currentStep: 'SCAN_ISBN',
-  shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null },
+  shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null },
   metadata: null,
   bookDetails: null,
   copyNumber: 1,
@@ -280,7 +281,7 @@ app.post('/api/session/reset', async (req, res) => {
     lotNumber: currentSession.lotNumber || 'Lot-131',
     boxNumber: currentSession.boxNumber || '',
     currentStep: 'SCAN_ISBN',
-    shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null },
+    shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null },
     metadata: null,
     bookDetails: null,
     copyNumber: 1,
@@ -308,7 +309,7 @@ app.post('/api/capture/discard', async (req, res) => {
       lotNumber: currentSession.lotNumber || 'Lot-131',
       boxNumber: currentSession.boxNumber || '',
       currentStep: 'SCAN_ISBN',
-      shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null },
+      shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null },
       metadata: null,
       bookDetails: null,
       copyNumber: 1,
@@ -631,7 +632,7 @@ app.get('/api/lookup/isbn/:isbn', async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// Capture & Storage Endpoints (6 Verification Shots)
+// Capture & Storage Endpoints (7 Verification Shots)
 // -------------------------------------------------------------
 async function findExistingCopies(baseIsbn) {
   if (!fs.existsSync(config.storagePath)) return [];
@@ -646,7 +647,7 @@ async function findExistingCopies(baseIsbn) {
   for (const name of matchingDirs) {
     const folderPath = path.join(config.storagePath, name);
     let shotsCount = 0;
-    for (let s = 1; s <= 6; s++) {
+    for (let s = 1; s <= 7; s++) {
       const def = SHOT_DEFINITIONS[s];
       const hasMain = fs.existsSync(path.join(folderPath, def.filename));
       const hasLegacy = def.legacy ? fs.existsSync(path.join(folderPath, def.legacy)) : false;
@@ -665,7 +666,7 @@ async function findExistingCopies(baseIsbn) {
       identifier: name,
       copyNumber,
       shotsCount,
-      isComplete: shotsCount >= 6,
+      isComplete: shotsCount >= 7,
       metadata: meta
     });
   }
@@ -734,7 +735,7 @@ app.post('/api/capture/init-isbn', async (req, res) => {
     const existingShots = {};
     let shotsFoundCount = 0;
 
-    for (let s = 1; s <= 6; s++) {
+    for (let s = 1; s <= 7; s++) {
       const def = SHOT_DEFINITIONS[s];
       const mainPath = path.join(folderPath, def.filename);
       const legacyPath = def.legacy ? path.join(folderPath, def.legacy) : null;
@@ -758,18 +759,18 @@ app.post('/api/capture/init-isbn', async (req, res) => {
 
     // Determine initial capture step (first missing shot)
     let initialStep = 'CAPTURE_SHOT_1';
-    for (let s = 1; s <= 6; s++) {
+    for (let s = 1; s <= 7; s++) {
       if (!existingShots[s]) {
         initialStep = `CAPTURE_SHOT_${s}`;
         break;
       }
     }
-    if (shotsFoundCount >= 6) {
+    if (shotsFoundCount >= 7) {
       initialStep = 'COMPLETE';
     }
 
     const shotsState = {};
-    for (let s = 1; s <= 6; s++) {
+    for (let s = 1; s <= 7; s++) {
       if (existingShots[s]) {
         shotsState[s] = {
           filename: existingShots[s],
@@ -830,7 +831,7 @@ app.post('/api/capture/init-isbn', async (req, res) => {
   }
 });
 
-// Save captured shot (1 to 6)
+// Save captured shot (1 to 7)
 app.post('/api/capture/save-shot', async (req, res) => {
   try {
     const { 
@@ -845,8 +846,8 @@ app.post('/api/capture/save-shot', async (req, res) => {
     } = req.body;
 
     const sNum = parseInt(shotNumber, 10);
-    if (!isbn || !imageBase64 || sNum < 1 || sNum > 6) {
-      return res.status(400).json({ error: 'Valid ISBN, shotNumber (1-6), and base64 image required' });
+    if (!isbn || !imageBase64 || sNum < 1 || sNum > 7) {
+      return res.status(400).json({ error: 'Valid ISBN, shotNumber (1-7), and base64 image required' });
     }
 
     const cleanIsbn = sanitizeIsbn(isbn);
@@ -900,7 +901,7 @@ app.post('/api/capture/save-shot', async (req, res) => {
     };
 
     const totalShots = Object.keys(metadata.shots).length;
-    metadata.isComplete = totalShots >= 6;
+    metadata.isComplete = totalShots >= 7;
 
     await fs.writeJson(metaPath, metadata, { spaces: 2 });
 
@@ -919,7 +920,7 @@ app.post('/api/capture/save-shot', async (req, res) => {
 
     // Calculate next step
     let nextStep = 'COMPLETE';
-    for (let s = 1; s <= 6; s++) {
+    for (let s = 1; s <= 7; s++) {
       if (!currentSession.shots[s]) {
         nextStep = `CAPTURE_SHOT_${s}`;
         break;
@@ -931,11 +932,11 @@ app.post('/api/capture/save-shot', async (req, res) => {
       isbn: cleanIsbn,
       shotNumber: sNum,
       shotInfo: newShotInfo,
-      isComplete: totalShots >= 6,
+      isComplete: totalShots >= 7,
       currentStep: nextStep
     });
 
-    if (config.autoOpenExplorer && totalShots >= 6) {
+    if (config.autoOpenExplorer && totalShots >= 7) {
       if (process.platform === 'win32') {
         exec(`explorer.exe "${path.resolve(folderPath)}"`, () => {});
       }
@@ -961,7 +962,7 @@ app.post('/api/capture/save-shot', async (req, res) => {
       filePath,
       relativeUrl: `/proofs/${encodeURIComponent(cleanIsbn)}/${filename}`,
       totalShotsSaved: totalShots,
-      isComplete: totalShots >= 6,
+      isComplete: totalShots >= 7,
       currentStep: nextStep,
       metadata
     });
@@ -1000,7 +1001,7 @@ app.post('/api/sync/receive-shot', async (req, res) => {
   try {
     const { isbn, shotNumber, imageBase64, operatorName, bookDetails, blurScore, metadata: incomingMeta } = req.body;
     const sNum = parseInt(shotNumber, 10);
-    if (!isbn || !imageBase64 || sNum < 1 || sNum > 6) {
+    if (!isbn || !imageBase64 || sNum < 1 || sNum > 7) {
       return res.status(400).json({ error: 'Valid ISBN, shotNumber, and base64 image required' });
     }
 
@@ -1047,7 +1048,7 @@ app.post('/api/sync/receive-shot', async (req, res) => {
   }
 });
 
-// Download ZIP of proof package (All 6 Shots)
+// Download ZIP of proof package (All 7 Shots)
 app.get('/api/capture/zip/:isbn', (req, res) => {
   const cleanIsbn = sanitizeIsbn(req.params.isbn);
   const folderPath = path.join(config.storagePath, cleanIsbn);
@@ -1070,7 +1071,7 @@ app.get('/api/capture/zip/:isbn', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// Gallery, History & CSV Export Endpoints (6 Shots)
+// Gallery, History & CSV Export Endpoints (7 Shots)
 // -------------------------------------------------------------
 function escapeCsv(val) {
   if (val === null || val === undefined) return '""';
@@ -1105,6 +1106,7 @@ app.get('/api/gallery/export-csv', async (req, res) => {
       'Shot 4 (Spine)',
       'Shot 5 (Title Page)',
       'Shot 6 (Front Matter)',
+      'Shot 7 (Back of Journal)',
       'Verification Status',
       'Operator',
       'Workstation',
@@ -1132,7 +1134,7 @@ app.get('/api/gallery/export-csv', async (req, res) => {
 
       const shotsStatus = {};
       let shotsCount = 0;
-      for (let s = 1; s <= 6; s++) {
+      for (let s = 1; s <= 7; s++) {
         const def = SHOT_DEFINITIONS[s];
         const hasMain = fs.existsSync(path.join(folderPath, def.filename));
         const hasLegacy = def.legacy ? fs.existsSync(path.join(folderPath, def.legacy)) : false;
@@ -1175,7 +1177,8 @@ app.get('/api/gallery/export-csv', async (req, res) => {
         shotsStatus[4],
         shotsStatus[5],
         shotsStatus[6],
-        shotsCount >= 6 ? 'Complete (6/6)' : `Partial (${shotsCount}/6)`,
+        shotsStatus[7],
+        shotsCount >= 7 ? 'Complete (7/7)' : `Partial (${shotsCount}/7)`,
         operator,
         station,
         createdAt,
@@ -1226,7 +1229,7 @@ app.get('/api/gallery/list', async (req, res) => {
 
       const shots = {};
       let shotsCount = 0;
-      for (let s = 1; s <= 6; s++) {
+      for (let s = 1; s <= 7; s++) {
         const def = SHOT_DEFINITIONS[s];
         const mainPath = path.join(folderPath, def.filename);
         const legacyPath = def.legacy ? path.join(folderPath, def.legacy) : null;
@@ -1254,7 +1257,7 @@ app.get('/api/gallery/list', async (req, res) => {
         copyNumber,
         folderPath,
         shotsCount,
-        isComplete: shotsCount >= 6,
+        isComplete: shotsCount >= 7,
         shots,
         shot1Url: shots[1],
         shot2Url: shots[2],
@@ -1262,6 +1265,7 @@ app.get('/api/gallery/list', async (req, res) => {
         shot4Url: shots[4],
         shot5Url: shots[5],
         shot6Url: shots[6],
+        shot7Url: shots[7],
         modifiedAt: stat ? stat.mtime : null,
         metadata
       });

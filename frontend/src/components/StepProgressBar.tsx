@@ -6,7 +6,8 @@ import {
   FileText, 
   CheckCircle2, 
   Bookmark,
-  Scroll
+  Scroll,
+  BookCheck
 } from 'lucide-react';
 import { CaptureStep } from '../types';
 
@@ -59,6 +60,13 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({ currentStep, s
       label: '6. Front Matter',
       sublabel: 'Edition & Copyright',
       icon: Scroll
+    },
+    {
+      id: 'CAPTURE_SHOT_7',
+      shotNumber: 7,
+      label: '7. Back Cover',
+      sublabel: 'Back of Journal',
+      icon: BookCheck
     }
   ];
 
@@ -83,18 +91,18 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({ currentStep, s
             Verification Sequence
           </span>
           <span className="text-xs font-semibold text-slate-600">
-            6 Required Shots (2 Box Level &bull; 4 Book Level)
+            7 Required Shots (2 Box Level &bull; 5 Book Level)
           </span>
         </div>
         
         <div className="text-xs font-bold font-mono">
-          <span className={shotsCount >= 6 ? 'text-emerald-600 font-bold' : 'text-brand-700 font-bold'}>
-            {shotsCount} of 6 Completed
+          <span className={shotsCount >= 7 ? 'text-emerald-600 font-bold' : 'text-brand-700 font-bold'}>
+            {shotsCount} of 7 Completed
           </span>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
         {steps.map((step) => {
           const status = getStepStatus(step.shotNumber, step.id);
           const Icon = step.icon;

@@ -266,7 +266,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                           <th className="py-2.5 px-3">#</th>
                           <th className="py-2.5 px-3">BOX NUMBER</th>
                           <th className="py-2.5 px-3">ISBN & TITLE</th>
-                          <th className="py-2.5 px-3">PICTURES (6 SHOTS)</th>
+                          <th className="py-2.5 px-3">PICTURES (7 SHOTS)</th>
                           <th className="py-2.5 px-3">STATION / OPERATOR</th>
                           <th className="py-2.5 px-3">STATUS</th>
                           <th className="py-2.5 px-3 text-right">ACTIONS</th>
@@ -295,11 +295,11 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                 )}
                               </td>
 
-                              {/* 6 Shots Mini-Thumbnails Strip */}
+                              {/* 7 Shots Mini-Thumbnails Strip */}
                               <td className="py-3 px-3">
                                 <div className="flex items-center space-x-1.5">
-                                  {[1, 2, 3, 4, 5, 6].map((s) => {
-                                    const shotUrl = item.shots?.[s] || (s === 1 ? item.shot1Url : s === 2 ? item.shot2Url : s === 3 ? item.shot3Url : s === 4 ? item.shot4Url : s === 5 ? item.shot5Url : item.shot6Url);
+                                  {[1, 2, 3, 4, 5, 6, 7].map((s) => {
+                                    const shotUrl = item.shots?.[s] || (s === 1 ? item.shot1Url : s === 2 ? item.shot2Url : s === 3 ? item.shot3Url : s === 4 ? item.shot4Url : s === 5 ? item.shot5Url : s === 6 ? item.shot6Url : item.shot7Url);
                                     
                                     return (
                                       <div
@@ -309,7 +309,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                             setActivePreviewImage(shotUrl);
                                           }
                                         }}
-                                        title={`Shot ${s}: ${SHOT_DEFINITIONS[s - 1].label}`}
+                                        title={`Shot ${s}: ${SHOT_DEFINITIONS[s - 1]?.label || 'Shot ' + s}`}
                                         className={`w-7 h-7 rounded-md overflow-hidden flex items-center justify-center border cursor-pointer transition-transform hover:scale-110 ${
                                           shotUrl 
                                             ? 'bg-slate-900 border-blue-200' 
@@ -327,7 +327,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
 
                                   <button
                                     onClick={() => setSelectedPhotoModal({ isbn: item.isbn, shots: item.shots, item })}
-                                    title="View all 6 shots in detail"
+                                    title="View all 7 shots in detail"
                                     className="p-1 text-slate-400 hover:text-brand-700 rounded-md hover:bg-slate-100 transition-colors"
                                   >
                                     <Eye className="w-3.5 h-3.5" />
@@ -348,7 +348,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                 ) : (
                                   <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-300">
                                     <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
-                                    {item.shotsCount}/6 SHOTS
+                                    {item.shotsCount}/7 SHOTS
                                   </span>
                                 )}
                               </td>
@@ -403,14 +403,14 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
         })}
       </div>
 
-      {/* 6 Shots Detailed Inspection Modal */}
+      {/* 7 Shots Detailed Inspection Modal */}
       {selectedPhotoModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-2xl bg-white shadow-2xl border border-blue-100 overflow-hidden">
             <div className="p-4 border-b border-blue-100 flex items-center justify-between bg-blue-50/40">
               <div>
                 <h3 className="text-base font-extrabold text-slate-900 font-mono">
-                  {selectedPhotoModal.isbn} — 6 Verification Shots
+                  {selectedPhotoModal.isbn} — 7 Verification Shots
                 </h3>
                 <p className="text-xs text-slate-500">
                   {selectedPhotoModal.item.metadata?.bookDetails?.title || 'Journal verification photos'}
@@ -425,7 +425,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
               </button>
             </div>
 
-            <div className="p-4 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="p-4 overflow-y-auto grid grid-cols-2 sm:grid-cols-4 gap-3">
               {SHOT_DEFINITIONS.map((def) => {
                 const shotUrl = selectedPhotoModal.item.shots?.[def.shotNumber];
 

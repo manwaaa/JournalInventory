@@ -5,7 +5,8 @@ import {
   BookOpen, 
   Bookmark, 
   FileText, 
-  Scroll 
+  Scroll,
+  BookCheck
 } from 'lucide-react';
 import { CaptureStep } from '../types';
 
@@ -68,6 +69,13 @@ export const AngleGuideOverlay: React.FC<AngleGuideOverlayProps> = ({ currentSte
       description: 'Capture edition notice, copyright, publisher imprint, and ISSN barcode',
       color: 'text-purple-400',
       icon: Scroll
+    },
+    7: {
+      title: 'Shot 7: Back of Journal',
+      scope: 'Book Level',
+      description: 'Position back cover flat — ensure back barcode, ISBN, and summary are in focus',
+      color: 'text-rose-400',
+      icon: BookCheck
     }
   };
 
@@ -160,6 +168,31 @@ export const AngleGuideOverlay: React.FC<AngleGuideOverlayProps> = ({ currentSte
             <line x1="120" y1="160" x2="280" y2="160" stroke="#c084fc" strokeWidth="1.5" />
             <line x1="120" y1="180" x2="260" y2="180" stroke="#c084fc" strokeWidth="1.5" />
             <line x1="120" y1="200" x2="230" y2="200" stroke="#c084fc" strokeWidth="1.5" />
+          </svg>
+        )}
+
+        {shotNum === 7 && (
+          /* Shot 7: Back of Journal / Back Cover */
+          <svg className="w-full h-full text-rose-400/80" viewBox="0 0 400 300" fill="none">
+            {/* Flat back cover outline */}
+            <rect x="110" y="40" width="180" height="220" rx="8" fill="rgba(244, 63, 94, 0.12)" stroke="currentColor" strokeWidth="2.5" />
+            {/* Blurb / Summary lines */}
+            <line x1="130" y1="75" x2="270" y2="75" stroke="#fda4af" strokeWidth="2" />
+            <line x1="130" y1="95" x2="270" y2="95" stroke="#fda4af" strokeWidth="1.5" strokeDasharray="4 2" />
+            <line x1="130" y1="115" x2="250" y2="115" stroke="#fda4af" strokeWidth="1.5" strokeDasharray="4 2" />
+            <line x1="130" y1="135" x2="260" y2="135" stroke="#fda4af" strokeWidth="1.5" strokeDasharray="4 2" />
+            {/* Back Barcode / ISBN block */}
+            <rect x="130" y="165" width="140" height="65" rx="4" fill="rgba(244, 63, 94, 0.22)" stroke="#f43f5e" strokeWidth="1.5" />
+            <line x1="145" y1="175" x2="145" y2="205" stroke="#ffffff" strokeWidth="2" />
+            <line x1="152" y1="175" x2="152" y2="205" stroke="#ffffff" strokeWidth="1.5" />
+            <line x1="160" y1="175" x2="160" y2="205" stroke="#ffffff" strokeWidth="3" />
+            <line x1="170" y1="175" x2="170" y2="205" stroke="#ffffff" strokeWidth="1" />
+            <line x1="177" y1="175" x2="177" y2="205" stroke="#ffffff" strokeWidth="2.5" />
+            <line x1="187" y1="175" x2="187" y2="205" stroke="#ffffff" strokeWidth="1.5" />
+            <line x1="195" y1="175" x2="195" y2="205" stroke="#ffffff" strokeWidth="2" />
+            <line x1="205" y1="175" x2="205" y2="205" stroke="#ffffff" strokeWidth="3" />
+            <text x="145" y="222" fill="#ffffff" fontSize="9" fontWeight="bold" letterSpacing="1">BARCODE / ISBN</text>
+            <text x="148" y="55" fill="#fecdd3" fontSize="10" fontWeight="bold">BACK COVER</text>
           </svg>
         )}
 

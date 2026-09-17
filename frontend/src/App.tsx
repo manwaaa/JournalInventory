@@ -68,14 +68,15 @@ export function App() {
   const [activeIsbn, setActiveIsbn] = useState<string>('');
   const [currentStep, setCurrentStep] = useState<CaptureStep>('SCAN_ISBN');
 
-  // 6 Verification Shots
+  // 7 Verification Shots
   const [shots, setShots] = useState<Record<number, ShotInfo | null>>({
     1: null,
     2: null,
     3: null,
     4: null,
     5: null,
-    6: null
+    6: null,
+    7: null
   });
 
   const [metadata, setMetadata] = useState<JournalMetadata | null>(null);
@@ -163,7 +164,7 @@ export function App() {
           if (event.session.lotNumber) setLotNumber(event.session.lotNumber);
           if (event.session.boxNumber) setBoxNumber(event.session.boxNumber);
           setCurrentStep(event.session.currentStep);
-          setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null });
+          setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
           setMetadata(event.session.metadata);
           setBookDetails(event.session.bookDetails);
         }
@@ -173,7 +174,7 @@ export function App() {
         if (event.session.lotNumber) setLotNumber(event.session.lotNumber);
         if (event.session.boxNumber) setBoxNumber(event.session.boxNumber);
         setCurrentStep(event.session.currentStep);
-        setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null });
+        setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
         setMetadata(event.session.metadata);
         setBookDetails(event.session.bookDetails);
         playAudioCue('beep');
@@ -190,7 +191,7 @@ export function App() {
       } else if (event.type === 'SESSION_RESET') {
         setActiveIsbn('');
         setIsbnInput('');
-        setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null });
+        setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
         setMetadata(null);
         setBookDetails(null);
         setToastAlert(null);
@@ -305,14 +306,14 @@ export function App() {
 
       lookupMetadata(data.baseIsbn || data.isbn);
 
-      const newShots: Record<number, ShotInfo | null> = { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null };
-      for (let s = 1; s <= 6; s++) {
+      const newShots: Record<number, ShotInfo | null> = { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null };
+      for (let s = 1; s <= 7; s++) {
         if (data.existingShots && data.existingShots[s]) {
           newShots[s] = {
             filename: data.existingShots[s],
             savedAt: data.metadata?.shots?.[s]?.savedAt || new Date().toISOString(),
-            type: SHOT_DEFINITIONS[s - 1].label,
-            scope: SHOT_DEFINITIONS[s - 1].scope,
+            type: SHOT_DEFINITIONS[s - 1]?.label || `Shot ${s}`,
+            scope: SHOT_DEFINITIONS[s - 1]?.scope,
             blurScore: data.metadata?.shots?.[s]?.blurScore
           };
         }
@@ -326,12 +327,12 @@ export function App() {
         }
       }
 
-      if (data.shotsCount >= 6) {
+      if (data.shotsCount >= 7) {
         setCurrentStep('COMPLETE');
         playAudioCue('success');
       } else {
         let firstMissing = 1;
-        for (let s = 1; s <= 6; s++) {
+        for (let s = 1; s <= 7; s++) {
           if (!newShots[s]) {
             firstMissing = s;
             break;
@@ -358,7 +359,7 @@ export function App() {
     enabled: currentStep === 'SCAN_ISBN' || currentStep === 'COMPLETE'
   });
 
-  // Save shot payload helper (1 to 6)
+  // Save shot payload helper (1 to 7)
   const commitSaveShot = async (
     shotNumber: number, 
     base64Data: string, 
@@ -467,7 +468,7 @@ export function App() {
     await commitSaveShot(shotNumber, result.base64Data, result.sharpnessScore);
   };
 
-  // Retake a specific shot (1 to 6)
+  // Retake a specific shot (1 to 7)
   const handleRetakeShot = (shotNumber: number) => {
     playAudioCue('click');
     setCurrentStep(`CAPTURE_SHOT_${shotNumber}` as CaptureStep);
@@ -476,11 +477,11 @@ export function App() {
   // Incomplete shots warning (Validation 4.1)
   const handleIncompleteWarning = () => {
     let captured = 0;
-    for (let s = 1; s <= 6; s++) {
+    for (let s = 1; s <= 7; s++) {
       if (shots[s]) captured++;
     }
     setToastAlert({
-      message: `Box ${boxNumber || '102/468'} in Lot ${lotNumber}: Verification pictures for ISBN ${activeIsbn} are incomplete (${captured} of 6 shots). You cannot proceed to the next book until all 6 shots are taken.`,
+      message: `Box ${boxNumber || '102/468'} in Lot ${lotNumber}: Verification pictures for ISBN ${activeIsbn} are incomplete (${captured} of 7 shots). You cannot proceed to the next book until all 7 shots are taken.`,
       type: 'error'
     });
     playAudioCue('error');
@@ -500,7 +501,7 @@ export function App() {
     }
     setActiveIsbn('');
     setIsbnInput('');
-    setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null });
+    setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
     setMetadata(null);
     setBookDetails(null);
     setToastAlert(null);
@@ -514,11 +515,11 @@ export function App() {
   // Reset to next journal (Validation 4.1 enforced)
   const handleNextJournal = () => {
     let captured = 0;
-    for (let s = 1; s <= 6; s++) {
+    for (let s = 1; s <= 7; s++) {
       if (shots[s]) captured++;
     }
 
-    if (captured < 6) {
+    if (captured < 7) {
       handleIncompleteWarning();
       return;
     }
@@ -527,7 +528,7 @@ export function App() {
     resetRemoteSession();
     setActiveIsbn('');
     setIsbnInput('');
-    setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null });
+    setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
     setMetadata(null);
     setBookDetails(null);
     setToastAlert(null);
@@ -576,7 +577,7 @@ export function App() {
 
   // Count captured shots
   let totalCapturedShots = 0;
-  for (let s = 1; s <= 6; s++) {
+  for (let s = 1; s <= 7; s++) {
     if (shots[s]) totalCapturedShots++;
   }
 
@@ -761,7 +762,7 @@ export function App() {
               )}
             </div>
 
-            {/* Step Progress Bar for 6 Shots */}
+            {/* Step Progress Bar for 7 Shots */}
             <StepProgressBar
               currentStep={currentStep}
               isbn={activeIsbn}
@@ -790,7 +791,7 @@ export function App() {
                 />
               </div>
 
-              {/* Right Column: 6-Shots Review Card (5 cols) */}
+              {/* Right Column: 7-Shots Review Card (5 cols) */}
               <div className="lg:col-span-5 flex flex-col gap-4">
                 {activeIsbn ? (
                   <ReviewCard
@@ -815,16 +816,17 @@ export function App() {
                       Ready for Verification Capture
                     </h3>
                     <p className="text-xs text-slate-500 max-w-sm mb-4">
-                      Select your Lot and Box number, then scan an ISBN barcode to take all 6 required verification photos.
+                      Select your Lot and Box number, then scan an ISBN barcode to take all 7 required verification photos.
                     </p>
                     <div className="space-y-1.5 text-left text-[11px] bg-gradient-to-b from-blue-50/60 to-indigo-50/40 p-3.5 rounded-xl border border-blue-100 font-medium text-slate-700 w-full max-w-sm shadow-sm">
-                      <div className="font-bold text-brand-700 mb-1">6 Required Verification Shots:</div>
+                      <div className="font-bold text-brand-700 mb-1">7 Required Verification Shots:</div>
                       <div>1. 📦 Books in a Box (Box Level)</div>
                       <div>2. 📦 Unbox Books (Box Level)</div>
                       <div>3. 📖 Front Cover (Book Level)</div>
                       <div>4. 📖 Spine & Volume (Book Level)</div>
                       <div>5. 📖 Title Page & Authors (Book Level)</div>
                       <div>6. 📖 Front Matter (Edition / Copyright / ISSN)</div>
+                      <div>7. 📖 Back of Journal (Back Cover / Barcode)</div>
                     </div>
                   </div>
                 )}

@@ -13,6 +13,7 @@ import {
   Bookmark,
   FileText,
   Scroll,
+  BookCheck,
   Trash2,
   AlertTriangle,
   Lock
@@ -51,11 +52,11 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
 
   // Count captured shots
   let shotsCount = 0;
-  for (let s = 1; s <= 6; s++) {
+  for (let s = 1; s <= 7; s++) {
     if (shots[s]) shotsCount++;
   }
 
-  const isComplete = shotsCount >= 6;
+  const isComplete = shotsCount >= 7;
 
   const handleCopyPath = () => {
     if (!isbn) return;
@@ -83,6 +84,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
       case 4: return Bookmark;
       case 5: return FileText;
       case 6: return Scroll;
+      case 7: return BookCheck;
       default: return BookOpen;
     }
   };
@@ -111,12 +113,12 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
             {isComplete ? (
               <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-bold bg-gradient-to-r from-emerald-50 to-teal-50 text-emerald-700 border border-emerald-300/80 shadow-sm">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                Completed (6/6)
+                Completed (7/7)
               </span>
             ) : (
               <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-bold bg-gradient-to-r from-amber-50 to-yellow-50 text-amber-800 border border-amber-300/80 shadow-sm">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-                Incomplete ({shotsCount}/6)
+                Incomplete ({shotsCount}/7)
               </span>
             )}
           </div>
@@ -156,8 +158,8 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
         </div>
       </div>
 
-      {/* 6 Shots Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+      {/* 7 Shots Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {SHOT_DEFINITIONS.map((def) => {
           const shotInfo = shots[def.shotNumber];
           const Icon = getShotIcon(def.shotNumber);
@@ -231,7 +233,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
             className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl font-semibold text-slate-700 btn-secondary-gradient"
           >
             <Download className="w-3.5 h-3.5 text-brand-600" />
-            <span>ZIP (6 Shots)</span>
+            <span>ZIP (7 Shots)</span>
           </button>
 
           <button
