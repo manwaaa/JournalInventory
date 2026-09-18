@@ -35,7 +35,6 @@ interface ReviewCardProps {
   onNextJournal: () => void;
   onDiscardSession?: () => void;
   onIncompleteWarning?: () => void;
-  onUploadS3?: (isbn: string) => void;
 }
 
 export const ReviewCard: React.FC<ReviewCardProps> = ({
@@ -44,15 +43,14 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
   boxNumber,
   shots,
   metadata,
-  stationRole = 'all',
+  stationRole = 'book_level',
   boxSummary,
   onRetakeShot,
   onOpenExplorer,
   onDownloadZip,
   onNextJournal,
   onDiscardSession,
-  onIncompleteWarning,
-  onUploadS3
+  onIncompleteWarning
 }) => {
   const [copied, setCopied] = useState(false);
   const [selectedPreview, setSelectedPreview] = useState<string | null>(null);
@@ -309,15 +307,23 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
             <span>ZIP (7 Shots)</span>
           </button>
 
-          {onUploadS3 && (
-            <button
-              onClick={() => onUploadS3(isbn)}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl font-semibold text-brand-700 bg-blue-50/80 hover:bg-blue-100/80 border border-blue-200/80 shadow-xs transition-colors cursor-pointer"
+          {metadata?.s3Upload ? (
+            <span
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl font-semibold text-xs text-emerald-700 bg-emerald-50/90 border border-emerald-200/90 shadow-xs"
+              title={`Automatically synced to S3: ${metadata.s3Upload.s3FolderUri}`}
             >
-              <CloudUpload className="w-3.5 h-3.5 text-brand-600" />
-              <span>Upload to S3</span>
-            </button>
-          )}
+              <CloudUpload className="w-3.5 h-3.5 text-emerald-600" />
+              <span>✓ S3 Auto-Synced</span>
+            </span>
+          ) : isComplete ? (
+            <span
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl font-semibold text-xs text-brand-700 bg-blue-50/80 border border-blue-200/80 shadow-xs"
+              title="Automatically syncing to S3 in background..."
+            >
+              <CloudUpload className="w-3.5 h-3.5 text-brand-600 animate-pulse" />
+              <span>Syncing to S3...</span>
+            </span>
+          ) : null}
 
           <button
             onClick={handleCopyPath}

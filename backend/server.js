@@ -642,123 +642,135 @@ app.post('/api/s3/test-connection', async (req, res) => {
   }
 });
 
+// Core helper: Upload proof folder for a specific ISBN to S3
+async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
+  const folderPath = path.join(config.storagePath, cleanIsbn);
+  if (!fs.existsSync(folderPath)) {
+    throw new Error(`No local folder found for ISBN ${cleanIsbn}`);
+  }
+
+  const targetBucket = (customConfig.s3Bucket || config.s3Bucket || '').trim();
+  const targetRegion = (customConfig.s3Region || config.s3Region || 'us-east-1').trim();
+  let prefix = (customConfig.s3Prefix || config.s3Prefix || 'journal-proofs/').trim();
+  if (prefix && !prefix.endsWith('/')) prefix += '/';
+
+  const s3 = getS3Client({
+    s3Region: targetRegion,
+    s3AccessKeyId: customConfig.s3AccessKeyId || config.s3AccessKeyId,
+    s3SecretAccessKey: customConfig.s3SecretAccessKey || config.s3SecretAccessKey,
+    s3CustomEndpoint: customConfig.s3CustomEndpoint || config.s3CustomEndpoint
+  });
+
+  if (!s3 || !targetBucket) {
+    throw new Error('S3 is not configured. Please enter your AWS Bucket and Access Keys in Settings.');
+  }
+
+  const filesInFolder = await fs.readdir(folderPath);
+  if (filesInFolder.length === 0) {
+    throw new Error(`Folder for ISBN ${cleanIsbn} is empty.`);
+  }
+
+  const uploadedFiles = [];
+  const s3BaseFolderKey = `${prefix}${cleanIsbn}`;
+
+  for (const filename of filesInFolder) {
+    const filePath = path.join(folderPath, filename);
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile()) continue;
+
+    const fileBuffer = await fs.readFile(filePath);
+    const s3Key = `${s3BaseFolderKey}/${filename}`;
+
+    let contentType = 'application/octet-stream';
+    if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) contentType = 'image/jpeg';
+    else if (filename.endsWith('.png')) contentType = 'image/png';
+    else if (filename.endsWith('.json')) contentType = 'application/json';
+    else if (filename.endsWith('.zip')) contentType = 'application/zip';
+
+    await s3.send(new PutObjectCommand({
+      Bucket: targetBucket,
+      Key: s3Key,
+      Body: fileBuffer,
+      ContentType: contentType
+    }));
+
+    // Generate 7-day pre-signed download URL for client
+    let presignedUrl = '';
+    try {
+      presignedUrl = await getSignedUrl(s3, new GetObjectCommand({
+        Bucket: targetBucket,
+        Key: s3Key
+      }), { expiresIn: 604800 }); // 7 days
+    } catch (e) {}
+
+    const directUrl = `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${encodeURI(s3Key)}`;
+
+    uploadedFiles.push({
+      filename,
+      s3Key,
+      s3Url: directUrl,
+      presignedUrl: presignedUrl || directUrl,
+      sizeBytes: stat.size
+    });
+  }
+
+  const s3FolderUri = `s3://${targetBucket}/${s3BaseFolderKey}/`;
+  
+  // Choose best shareable link: front cover or first shot presigned URL or direct folder URL
+  const mainPhoto = uploadedFiles.find(f => f.filename.includes('front cover') || f.filename.includes('box') || f.filename.endsWith('.jpg'));
+  const shareableLink = mainPhoto?.presignedUrl || `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${s3BaseFolderKey}/`;
+
+  // Save S3 upload record into local metadata.json
+  const metaPath = path.join(folderPath, 'metadata.json');
+  let metadata = {};
+  if (fs.existsSync(metaPath)) {
+    try { metadata = await fs.readJson(metaPath); } catch (e) {}
+  }
+  metadata.s3Upload = {
+    uploadedAt: new Date().toISOString(),
+    bucket: targetBucket,
+    region: targetRegion,
+    s3FolderUri,
+    shareableLink,
+    fileCount: uploadedFiles.length
+  };
+  await fs.writeJson(metaPath, metadata, { spaces: 2 });
+
+  if (currentSession.activeIsbn === cleanIsbn && currentSession.metadata) {
+    currentSession.metadata.s3Upload = metadata.s3Upload;
+  }
+
+  broadcastSession('S3_AUTO_UPLOADED', {
+    isbn: cleanIsbn,
+    s3Upload: metadata.s3Upload
+  });
+
+  console.log(`[S3 Auto-Upload] Successfully uploaded ${uploadedFiles.length} files for ${cleanIsbn} to ${s3FolderUri}`);
+
+  return {
+    success: true,
+    isbn: cleanIsbn,
+    bucket: targetBucket,
+    region: targetRegion,
+    prefix,
+    s3FolderUri,
+    shareableLink,
+    uploadedAt: metadata.s3Upload.uploadedAt,
+    files: uploadedFiles
+  };
+}
+
 // Upload proof folder for a specific ISBN to S3
 app.post('/api/s3/upload-isbn', async (req, res) => {
   try {
-    const { isbn, s3Bucket, s3Region, s3Prefix, s3AccessKeyId, s3SecretAccessKey, s3CustomEndpoint } = req.body;
+    const { isbn } = req.body;
     if (!isbn) {
       return res.status(400).json({ error: 'ISBN is required' });
     }
 
     const cleanIsbn = sanitizeIsbn(isbn);
-    const folderPath = path.join(config.storagePath, cleanIsbn);
-
-    if (!fs.existsSync(folderPath)) {
-      return res.status(404).json({ error: `No local folder found for ISBN ${cleanIsbn}` });
-    }
-
-    const targetBucket = (s3Bucket || config.s3Bucket || '').trim();
-    const targetRegion = (s3Region || config.s3Region || 'us-east-1').trim();
-    let prefix = (s3Prefix || config.s3Prefix || 'journal-proofs/').trim();
-    if (prefix && !prefix.endsWith('/')) prefix += '/';
-
-    const s3 = getS3Client({
-      s3Region: targetRegion,
-      s3AccessKeyId: s3AccessKeyId || config.s3AccessKeyId,
-      s3SecretAccessKey: s3SecretAccessKey || config.s3SecretAccessKey,
-      s3CustomEndpoint: s3CustomEndpoint || config.s3CustomEndpoint
-    });
-
-    if (!s3 || !targetBucket) {
-      return res.status(400).json({ 
-        error: 'S3 is not configured. Please enter your AWS Bucket and Access Keys in Settings.' 
-      });
-    }
-
-    const filesInFolder = await fs.readdir(folderPath);
-    if (filesInFolder.length === 0) {
-      return res.status(400).json({ error: `Folder for ISBN ${cleanIsbn} is empty.` });
-    }
-
-    const uploadedFiles = [];
-    const s3BaseFolderKey = `${prefix}${cleanIsbn}`;
-
-    for (const filename of filesInFolder) {
-      const filePath = path.join(folderPath, filename);
-      const stat = await fs.stat(filePath);
-      if (!stat.isFile()) continue;
-
-      const fileBuffer = await fs.readFile(filePath);
-      const s3Key = `${s3BaseFolderKey}/${filename}`;
-
-      let contentType = 'application/octet-stream';
-      if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) contentType = 'image/jpeg';
-      else if (filename.endsWith('.png')) contentType = 'image/png';
-      else if (filename.endsWith('.json')) contentType = 'application/json';
-      else if (filename.endsWith('.zip')) contentType = 'application/zip';
-
-      await s3.send(new PutObjectCommand({
-        Bucket: targetBucket,
-        Key: s3Key,
-        Body: fileBuffer,
-        ContentType: contentType
-      }));
-
-      // Generate 7-day pre-signed download URL for client
-      let presignedUrl = '';
-      try {
-        presignedUrl = await getSignedUrl(s3, new GetObjectCommand({
-          Bucket: targetBucket,
-          Key: s3Key
-        }), { expiresIn: 604800 }); // 7 days
-      } catch (e) {}
-
-      const directUrl = `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${encodeURI(s3Key)}`;
-
-      uploadedFiles.push({
-        filename,
-        s3Key,
-        s3Url: directUrl,
-        presignedUrl: presignedUrl || directUrl,
-        sizeBytes: stat.size
-      });
-    }
-
-    const s3FolderUri = `s3://${targetBucket}/${s3BaseFolderKey}/`;
-    
-    // Choose best shareable link: front cover or first shot presigned URL or direct folder URL
-    const mainPhoto = uploadedFiles.find(f => f.filename.includes('front cover') || f.filename.includes('box') || f.filename.endsWith('.jpg'));
-    const shareableLink = mainPhoto?.presignedUrl || `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${s3BaseFolderKey}/`;
-
-    // Save S3 upload record into local metadata.json
-    const metaPath = path.join(folderPath, 'metadata.json');
-    let metadata = {};
-    if (fs.existsSync(metaPath)) {
-      try { metadata = await fs.readJson(metaPath); } catch (e) {}
-    }
-    metadata.s3Upload = {
-      uploadedAt: new Date().toISOString(),
-      bucket: targetBucket,
-      region: targetRegion,
-      s3FolderUri,
-      shareableLink,
-      fileCount: uploadedFiles.length
-    };
-    await fs.writeJson(metaPath, metadata, { spaces: 2 });
-
-    console.log(`[S3] Successfully uploaded ${uploadedFiles.length} files for ${cleanIsbn} to ${s3FolderUri}`);
-
-    res.json({
-      success: true,
-      isbn: cleanIsbn,
-      bucket: targetBucket,
-      region: targetRegion,
-      prefix,
-      s3FolderUri,
-      shareableLink,
-      uploadedAt: metadata.s3Upload.uploadedAt,
-      files: uploadedFiles
-    });
+    const result = await uploadIsbnToS3(cleanIsbn, req.body);
+    res.json(result);
   } catch (err) {
     console.error('[S3] Upload error:', err);
     res.status(500).json({ error: `Failed to upload to S3: ${err.message}` });
@@ -1354,6 +1366,14 @@ app.post('/api/capture/save-shot', async (req, res) => {
       }
     }
 
+    // Automatic S3 Upload upon completion (7/7 shots)
+    if (totalShots >= 7 && config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
+      console.log(`[S3 Auto-Upload] Verification capture complete for ${cleanIsbn} (7/7 shots). Automatically uploading to S3 in background...`);
+      uploadIsbnToS3(cleanIsbn).catch(err => {
+        console.error(`[S3 Auto-Upload] Error uploading ${cleanIsbn} to S3:`, err.message);
+      });
+    }
+
     if (!req.body.isReplication && config.peerSyncEnabled && config.peerIp) {
       replicateToPeer({
         isbn: cleanIsbn,
@@ -1700,6 +1720,12 @@ app.post('/api/sync/receive-shot', async (req, res) => {
         isComplete: totalShots >= 7,
         currentStep: nextStep
       });
+
+      if (totalShots >= 7 && config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
+        uploadIsbnToS3(cleanIsbn).catch(err => {
+          console.error(`[S3 Auto-Upload] Error uploading ${cleanIsbn} to S3:`, err.message);
+        });
+      }
     }
 
     res.json({ success: true, replicated: true, isbn: cleanIsbn, shotNumber: sNum, isComplete: totalShots >= 7 });

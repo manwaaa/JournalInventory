@@ -11,7 +11,7 @@ export type CaptureStep =
 
 export type ViewMode = 'CAPTURE' | 'SEARCH_VIEW';
 
-export type StationRole = 'all' | 'box_level' | 'book_level';
+export type StationRole = 'box_level' | 'book_level';
 
 export interface BookDetails {
   title?: string;
@@ -221,7 +221,7 @@ export interface CaptureSession {
 }
 
 export interface SessionEvent {
-  type: 'CONNECTED' | 'ISBN_INITIALIZED' | 'SHOT_SAVED' | 'SESSION_RESET' | 'MANIFEST_UPDATED' | 'BOX_INITIALIZED' | 'BOX_SHOT_SAVED';
+  type: 'CONNECTED' | 'ISBN_INITIALIZED' | 'SHOT_SAVED' | 'SESSION_RESET' | 'MANIFEST_UPDATED' | 'BOX_INITIALIZED' | 'BOX_SHOT_SAVED' | 'S3_AUTO_UPLOADED';
   session: CaptureSession;
   isbn?: string;
   lotNumber?: string;
@@ -232,6 +232,7 @@ export interface SessionEvent {
   boxSummary?: BoxSummary;
   isComplete?: boolean;
   currentStep?: CaptureStep;
+  s3Upload?: any;
   timestamp: number;
 }
 

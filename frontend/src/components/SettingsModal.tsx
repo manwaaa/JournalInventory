@@ -15,7 +15,7 @@ interface SettingsModalProps {
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
-  currentStationRole = 'all',
+  currentStationRole = 'box_level',
   onStationRoleChange,
   onConfigSaved,
   onConfigUpdated
@@ -174,43 +174,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span className="font-bold text-slate-800 text-xs">Workstation Role (2-PC Pipeline Mode)</span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedRole('all');
-                  if (onStationRoleChange) onStationRoleChange('all');
-                }}
-                className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
-                  selectedRole === 'all'
-                    ? 'bg-white border-brand-500 ring-2 ring-brand-500/20 shadow-sm'
-                    : 'bg-white/70 border-slate-200 hover:bg-white'
-                }`}
-              >
-                <div className="flex items-center space-x-1.5 mb-1">
-                  <Layers className={`w-3.5 h-3.5 ${selectedRole === 'all' ? 'text-brand-600' : 'text-slate-400'}`} />
-                  <span className="text-xs font-bold text-slate-800">All-in-One</span>
-                </div>
-                <p className="text-[10px] text-slate-500 leading-tight">Takes all 7 verification shots on this single PC.</p>
-              </button>
-
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
                 type="button"
                 onClick={() => {
                   setSelectedRole('box_level');
                   if (onStationRoleChange) onStationRoleChange('box_level');
                 }}
-                className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
                   selectedRole === 'box_level'
-                    ? 'bg-white border-blue-500 ring-2 ring-blue-500/20 shadow-sm'
+                    ? 'bg-gradient-to-br from-blue-50 to-white border-blue-500 ring-2 ring-blue-500/20 shadow-md'
                     : 'bg-white/70 border-slate-200 hover:bg-white'
                 }`}
               >
-                <div className="flex items-center space-x-1.5 mb-1">
-                  <Package className={`w-3.5 h-3.5 ${selectedRole === 'box_level' ? 'text-blue-600' : 'text-slate-400'}`} />
-                  <span className="text-xs font-bold text-blue-900">PC 1: Box Level</span>
+                <div className="flex items-center space-x-2 mb-1.5">
+                  <div className={`p-1.5 rounded-lg ${selectedRole === 'box_level' ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'}`}>
+                    <Package className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-extrabold text-blue-900 block">PC 1: Station 1 (Box Level)</span>
+                    <span className="text-[10px] font-semibold text-blue-600">Receiving & Unboxing</span>
+                  </div>
                 </div>
-                <p className="text-[10px] text-slate-500 leading-tight">Captures Shot 1 & 2 only, then proceeds immediately.</p>
+                <p className="text-[11px] text-slate-600 leading-snug">
+                  Takes <b>Shot 1 (Box)</b> and <b>Shot 2 (Unbox)</b> once per Box, then proceeds immediately to the next box.
+                </p>
               </button>
 
               <button
@@ -219,17 +207,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   setSelectedRole('book_level');
                   if (onStationRoleChange) onStationRoleChange('book_level');
                 }}
-                className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
                   selectedRole === 'book_level'
-                    ? 'bg-white border-indigo-500 ring-2 ring-indigo-500/20 shadow-sm'
+                    ? 'bg-gradient-to-br from-indigo-50 to-white border-indigo-500 ring-2 ring-indigo-500/20 shadow-md'
                     : 'bg-white/70 border-slate-200 hover:bg-white'
                 }`}
               >
-                <div className="flex items-center space-x-1.5 mb-1">
-                  <BookOpen className={`w-3.5 h-3.5 ${selectedRole === 'book_level' ? 'text-indigo-600' : 'text-slate-400'}`} />
-                  <span className="text-xs font-bold text-indigo-900">PC 2: Book Level</span>
+                <div className="flex items-center space-x-2 mb-1.5">
+                  <div className={`p-1.5 rounded-lg ${selectedRole === 'book_level' ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600'}`}>
+                    <BookOpen className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-extrabold text-indigo-900 block">PC 2: Station 2 (Book Level)</span>
+                    <span className="text-[10px] font-semibold text-indigo-600">Individual Journal Inspection</span>
+                  </div>
                 </div>
-                <p className="text-[10px] text-slate-500 leading-tight">Loads Shots 1 & 2 from PC 1, finishes Shots 3 to 7.</p>
+                <p className="text-[11px] text-slate-600 leading-snug">
+                  Automatically inherits Shots 1 & 2 from PC 1, then captures <b>Shots 3 to 7</b> for each journal.
+                </p>
               </button>
             </div>
 

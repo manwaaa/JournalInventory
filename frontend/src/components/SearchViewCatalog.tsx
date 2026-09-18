@@ -18,7 +18,6 @@ import {
   CloudUpload
 } from 'lucide-react';
 import { ProofItem, SHOT_DEFINITIONS } from '../types';
-import { S3UploadModal } from './S3UploadModal';
 
 interface SearchViewCatalogProps {
   onSelectIsbnForCapture: (isbn: string) => void;
@@ -43,7 +42,6 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     item: ProofItem;
   } | null>(null);
   const [activePreviewImage, setActivePreviewImage] = useState<string | null>(null);
-  const [s3UploadTarget, setS3UploadTarget] = useState<{ isbn: string; item: ProofItem } | null>(null);
 
   const fetchItems = async () => {
     setLoading(true);
@@ -361,17 +359,36 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                               </td>
 
                               <td className="py-3 px-3">
-                                {item.isComplete ? (
-                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-white text-emerald-700 border border-emerald-400 shadow-sm">
-                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                                    COMPLETED
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-300">
-                                    <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
-                                    {item.shotsCount}/7 SHOTS
-                                  </span>
-                                )}
+                                <div className="flex flex-col gap-1 items-start">
+                                  {item.isComplete ? (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-white text-emerald-700 border border-emerald-400 shadow-sm">
+                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                      COMPLETED
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-300">
+                                      <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
+                                      {item.shotsCount}/7 SHOTS
+                                    </span>
+                                  )}
+                                  {item.metadata?.s3Upload ? (
+                                    <span
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                      title={`Auto-synced to S3 at ${new Date(item.metadata.s3Upload.uploadedAt).toLocaleString()}`}
+                                    >
+                                      <CloudUpload className="w-3 h-3 text-emerald-600" />
+                                      S3 Synced
+                                    </span>
+                                  ) : item.isComplete ? (
+                                    <span
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200"
+                                      title="Syncing to S3 in background..."
+                                    >
+                                      <CloudUpload className="w-3 h-3 text-blue-500 animate-pulse" />
+                                      S3 Syncing...
+                                    </span>
+                                  ) : null}
+                                </div>
                               </td>
 
                               <td className={`py-3 px-3 text-right shrink-0 relative ${activeActionMenu === item.isbn ? 'z-40' : ''}`}>
@@ -425,16 +442,6 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                         </div>
 
                                         <div className="py-1">
-                                          <button
-                                            onClick={() => {
-                                              setActiveActionMenu(null);
-                                              setS3UploadTarget({ isbn: item.isbn, item });
-                                            }}
-                                            className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                          >
-                                            <CloudUpload className="w-4 h-4 text-brand-600 shrink-0" />
-                                            <span>Upload to S3 (Client Cloud)</span>
-                                          </button>
 
                                           <button
                                             onClick={() => {
@@ -559,17 +566,6 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
             <p className="text-white/80 text-xs mt-3 font-medium">Click anywhere to close full preview</p>
           </div>
         </div>
-      )}
-
-      {/* S3 Upload Modal */}
-      {s3UploadTarget && (
-        <S3UploadModal
-          isOpen={Boolean(s3UploadTarget)}
-          onClose={() => setS3UploadTarget(null)}
-          isbn={s3UploadTarget.isbn}
-          item={s3UploadTarget.item}
-          onUploadSuccess={() => fetchItems()}
-        />
       )}
 
     </div>

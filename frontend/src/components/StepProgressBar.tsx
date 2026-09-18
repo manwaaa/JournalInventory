@@ -22,7 +22,7 @@ interface StepProgressBarProps {
 export const StepProgressBar: React.FC<StepProgressBarProps> = ({ 
   currentStep, 
   shotsCount,
-  stationRole = 'all',
+  stationRole = 'book_level',
   boxShotsInherited = false
 }) => {
   const steps = [

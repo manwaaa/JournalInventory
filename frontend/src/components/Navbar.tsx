@@ -58,44 +58,33 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Right: View Toggle, Manifest, Live Sync & Tools */}
         <div className="flex items-center space-x-2 sm:space-x-3">
           
-          {/* Station Role Toggle: PC 1 (Box Level) vs PC 2 (Book Level) vs All-in-One */}
+          {/* Station Role Toggle: PC 1 (Box Level) vs PC 2 (Book Level) */}
           {viewMode === 'CAPTURE' && (
-            <div className="hidden lg:flex items-center bg-gradient-to-r from-slate-100 to-blue-50/60 p-1 rounded-xl border border-slate-200/80 shadow-xs" title="Select PC Station Role">
-              <button
-                onClick={() => setStationRole('all')}
-                className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
-                  stationRole === 'all'
-                    ? 'bg-white text-slate-800 shadow-sm border border-slate-200/80'
-                    : 'text-slate-500 hover:text-slate-800'
-                }`}
-                title="All 7 shots captured on this PC"
-              >
-                <Layers className="w-3 h-3 text-slate-500" />
-                <span>All-in-One</span>
-              </button>
+            <div className="flex items-center bg-gradient-to-r from-slate-100 to-blue-50/70 p-1 rounded-xl border border-slate-200/80 shadow-xs relative" title="Select PC Station Role">
               <button
                 onClick={() => setStationRole('box_level')}
-                className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
                   stationRole === 'box_level'
-                    ? 'bg-white text-blue-800 shadow-sm border border-blue-300 font-extrabold'
-                    : 'text-slate-500 hover:text-blue-700'
+                    ? 'bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-md shadow-blue-500/25 scale-[1.02]'
+                    : 'text-slate-600 hover:text-blue-700 hover:bg-white/60'
                 }`}
-                title="PC 1: Box Level Only (Takes Shot 1 & 2, then proceeds to next)"
+                title="PC 1: Box Level (Takes Shot 1 & 2 only, then proceeds immediately)"
               >
-                <Package className="w-3 h-3 text-blue-600" />
-                <span>PC 1 (Box: 1-2)</span>
+                <Package className={`w-3.5 h-3.5 ${stationRole === 'box_level' ? 'text-white animate-pulse' : 'text-blue-600'}`} />
+                <span>PC 1 (Box 1-2)</span>
               </button>
+
               <button
                 onClick={() => setStationRole('book_level')}
-                className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
                   stationRole === 'book_level'
-                    ? 'bg-white text-indigo-800 shadow-sm border border-indigo-300 font-extrabold'
-                    : 'text-slate-500 hover:text-indigo-700'
+                    ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-500/25 scale-[1.02]'
+                    : 'text-slate-600 hover:text-indigo-700 hover:bg-white/60'
                 }`}
                 title="PC 2: Book Level (Loads Shots 1 & 2 from PC 1, captures Shots 3 to 7)"
               >
-                <BookOpen className="w-3 h-3 text-indigo-600" />
-                <span>PC 2 (Book: 3-7)</span>
+                <BookOpen className={`w-3.5 h-3.5 ${stationRole === 'book_level' ? 'text-white animate-pulse' : 'text-indigo-600'}`} />
+                <span>PC 2 (Book 3-7)</span>
               </button>
             </div>
           )}
@@ -104,10 +93,10 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div className="flex items-center bg-gradient-to-r from-blue-50/80 to-indigo-50/60 p-1 rounded-xl border border-blue-100 shadow-xs">
             <button
               onClick={() => setViewMode('CAPTURE')}
-              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
                 viewMode === 'CAPTURE'
-                  ? 'btn-primary-gradient text-white shadow-sm'
-                  : 'text-slate-600 hover:text-brand-700'
+                  ? 'btn-primary-gradient text-white shadow-md shadow-brand-500/25 scale-[1.02]'
+                  : 'text-slate-600 hover:text-brand-700 hover:bg-white/60'
               }`}
             >
               <Camera className="w-3.5 h-3.5" />
@@ -115,10 +104,10 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
             <button
               onClick={() => setViewMode('SEARCH_VIEW')}
-              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
                 viewMode === 'SEARCH_VIEW'
-                  ? 'btn-primary-gradient text-white shadow-sm'
-                  : 'text-slate-600 hover:text-brand-700'
+                  ? 'btn-primary-gradient text-white shadow-md shadow-brand-500/25 scale-[1.02]'
+                  : 'text-slate-600 hover:text-brand-700 hover:bg-white/60'
               }`}
             >
               <Table className="w-3.5 h-3.5" />

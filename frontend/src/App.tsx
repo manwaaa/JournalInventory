@@ -25,7 +25,6 @@ import { SettingsModal } from './components/SettingsModal';
 import { MobilePairingModal } from './components/MobilePairingModal';
 import { ManifestImportModal } from './components/ManifestImportModal';
 import { SearchViewCatalog } from './components/SearchViewCatalog';
-import { S3UploadModal } from './components/S3UploadModal';
 
 import { useCamera } from './hooks/useCamera';
 import { useBarcodeScanner } from './hooks/useBarcodeScanner';
@@ -50,9 +49,11 @@ import {
 export function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('CAPTURE');
 
-  // Station Role: 'all' | 'box_level' (PC 1: Shots 1-2) | 'book_level' (PC 2: Shots 3-7)
+  // Station Role: 'box_level' (PC 1: Shots 1-2) | 'book_level' (PC 2: Shots 3-7)
   const [stationRole, setStationRoleState] = useState<StationRole>(() => {
-    return (localStorage.getItem('verification_station_role') as StationRole) || 'all';
+    const saved = localStorage.getItem('verification_station_role') as StationRole;
+    if (saved === 'box_level' || saved === 'book_level') return saved;
+    return 'box_level';
   });
 
   const setStationRole = (role: StationRole) => {
@@ -103,7 +104,6 @@ export function App() {
   const [quickSearchOpen, setQuickSearchOpen] = useState(false);
   const [quickSearchText, setQuickSearchText] = useState('');
   const [manifestCount, setManifestCount] = useState<number>(0);
-  const [s3ModalIsbn, setS3ModalIsbn] = useState<string | null>(null);
 
   const [duplicateModal, setDuplicateModal] = useState<{
     baseIsbn: string;
@@ -179,7 +179,7 @@ export function App() {
   const { resetRemoteSession } = useSessionSync({
     onSessionSync: useCallback((event: SessionEvent) => {
       if (event.type === 'CONNECTED') {
-        if (stationRole === 'all' && event.session?.activeIsbn && currentStep === 'SCAN_ISBN') {
+        if (event.session?.activeIsbn && currentStep === 'SCAN_ISBN' && !activeIsbn) {
           setActiveIsbn(event.session.activeIsbn);
           setIsbnInput(event.session.activeIsbn);
           setLotNumber(event.session.lotNumber || '');
@@ -190,7 +190,7 @@ export function App() {
           setBookDetails(event.session.bookDetails);
         }
       } else if (event.type === 'ISBN_INITIALIZED') {
-        if (stationRole === 'all') {
+        if (stationRole === 'book_level' && event.session.activeIsbn === activeIsbn) {
           setActiveIsbn(event.session.activeIsbn);
           setIsbnInput(event.session.activeIsbn);
           setLotNumber(event.session.lotNumber || '');
@@ -202,7 +202,7 @@ export function App() {
           playAudioCue('beep');
         }
       } else if (event.type === 'BOX_INITIALIZED') {
-        if (stationRole === 'all') {
+        if (stationRole === 'box_level' && event.session.activeIsbn === activeIsbn) {
           setActiveIsbn(event.session.activeIsbn);
           setIsbnInput('');
           setLotNumber(event.session.lotNumber || '');
@@ -241,7 +241,7 @@ export function App() {
           }
         }
       } else if (event.type === 'SHOT_SAVED') {
-        if (stationRole === 'all' || event.isbn === activeIsbn) {
+        if (event.isbn === activeIsbn) {
           if (event.session.shots) setShots(event.session.shots);
           if (event.session.metadata) setMetadata(event.session.metadata);
           if (event.session.bookDetails) setBookDetails(event.session.bookDetails);
@@ -253,7 +253,7 @@ export function App() {
           }
         }
       } else if (event.type === 'SESSION_RESET') {
-        if (stationRole === 'all') {
+        if (event.isbn === activeIsbn) {
           setActiveIsbn('');
           setIsbnInput('');
           setLotNumber('');
@@ -270,6 +270,11 @@ export function App() {
       } else if (event.type === 'MANIFEST_UPDATED') {
         fetchStatus();
         fetchBoxesList();
+      } else if (event.type === 'S3_AUTO_UPLOADED') {
+        if (event.isbn === activeIsbn && event.s3Upload) {
+          setMetadata(prev => prev ? { ...prev, s3Upload: event.s3Upload } : prev);
+        }
+        fetchStatus();
       }
     }, [currentStep, stationRole, activeIsbn, boxNumber, fetchStatus, fetchBoxesList, playAudioCue])
   });
@@ -843,53 +848,53 @@ export function App() {
 
         {/* Conditional Rendering: Capture Mode vs Search & View Catalog */}
         {viewMode === 'SEARCH_VIEW' ? (
-          <SearchViewCatalog
-            onSelectIsbnForCapture={(isbn) => {
-              setViewMode('CAPTURE');
-              handleProcessIsbn(isbn);
-            }}
-            onOpenExplorer={handleOpenExplorer}
-            onDownloadZip={handleDownloadZip}
-          />
+          <div key="search-view-panel" className="w-full animate-page-transition">
+            <SearchViewCatalog
+              onSelectIsbnForCapture={(isbn) => {
+                setViewMode('CAPTURE');
+                handleProcessIsbn(isbn);
+              }}
+              onOpenExplorer={handleOpenExplorer}
+              onDownloadZip={handleDownloadZip}
+            />
+          </div>
         ) : (
-          /* Capture Workflow */
-          <div className="w-full space-y-6 animate-fade-in">
+          /* Capture Workflow with smooth page transition and role transition */
+          <div key={`capture-panel-${stationRole}`} className="w-full space-y-6 animate-page-transition">
             
             {/* Card 1: Receiving & Verification Setup */}
-            <div className="white-card rounded-2xl p-6 space-y-4">
+            <div className="white-card rounded-2xl p-6 space-y-4 transition-all duration-300">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-start space-x-3.5">
-                  <div className="w-10 h-10 rounded-xl btn-primary-gradient text-white flex items-center justify-center shadow-md shadow-brand-500/20 shrink-0 mt-0.5">
-                    {stationRole === 'box_level' ? <Package className="w-5 h-5" /> : <Scan className="w-5 h-5" />}
+                  <div className={`w-10 h-10 rounded-xl text-white flex items-center justify-center shadow-md shrink-0 mt-0.5 transition-all duration-300 ${
+                    stationRole === 'box_level' 
+                      ? 'bg-gradient-to-br from-blue-600 to-blue-700 shadow-blue-500/25' 
+                      : 'bg-gradient-to-br from-indigo-600 to-indigo-700 shadow-indigo-500/25'
+                  }`}>
+                    {stationRole === 'box_level' ? <Package className="w-5 h-5 animate-pulse" /> : <Scan className="w-5 h-5 animate-pulse" />}
                   </div>
                   <div className="space-y-0.5">
                     <div className="flex items-center space-x-2">
                       <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700">
                         RECEIVING & VERIFICATION
                       </span>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shadow-xs ${
+                      <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border shadow-xs transition-all duration-300 ${
                         stationRole === 'box_level' 
-                          ? 'bg-blue-50 text-blue-700 border-blue-300'
-                          : stationRole === 'book_level'
-                            ? 'bg-indigo-50 text-indigo-700 border-indigo-300'
-                            : 'bg-slate-50 text-slate-700 border-slate-300'
+                          ? 'bg-blue-50 text-blue-800 border-blue-300 ring-2 ring-blue-500/10'
+                          : 'bg-indigo-50 text-indigo-800 border-indigo-300 ring-2 ring-indigo-500/10'
                       }`}>
-                        {stationRole === 'box_level' ? '📦 PC 1: Box Level' : stationRole === 'book_level' ? '📖 PC 2: Book Level' : '🖥️ All-in-One'}
+                        {stationRole === 'box_level' ? '📦 PC 1: Station 1 (Box Level)' : '📖 PC 2: Station 2 (Book Level)'}
                       </span>
                     </div>
-                    <h3 className="text-base font-extrabold text-slate-900">
+                    <h3 className="text-base font-extrabold text-slate-900 transition-all duration-300">
                       {stationRole === 'box_level' 
-                        ? 'Select or Scan Box to Photograph (Shots 1 & 2)' 
-                        : stationRole === 'book_level'
-                          ? 'Scan Individual Journal (Shots 3 to 7)'
-                          : 'Scan Journal Barcode / ISBN'}
+                        ? 'PC 1: Select or Scan Box to Photograph (Shots 1 & 2)' 
+                        : 'PC 2: Scan Individual Journal (Shots 3 to 7)'}
                     </h3>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-xs text-slate-500 transition-all duration-300">
                       {stationRole === 'box_level'
                         ? 'Photograph the box and unboxed books once. All journals in this box will automatically inherit these photos on PC 2.'
-                        : stationRole === 'book_level'
-                          ? 'Box & Unbox photos from PC 1 are automatically attached. Proceed directly with Shots 3 to 7.'
-                          : 'Lot and Box numbers are automatically determined from your uploaded manifest.'}
+                        : 'Box & Unbox photos from PC 1 are automatically attached. Proceed directly with Shots 3 to 7 for each journal.'}
                     </p>
                   </div>
                 </div>
@@ -902,7 +907,7 @@ export function App() {
                       <span>{boxesList.length} Boxes Detected</span>
                     </span>
                   )}
-                  {manifestCount > 0 ? (
+                  {manifestCount > 0 && (
                     <button
                       onClick={() => setManifestModalOpen(true)}
                       className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-gradient-to-r from-emerald-50 to-teal-50 text-emerald-700 border border-emerald-300 shadow-xs hover:bg-emerald-100 transition-colors cursor-pointer"
@@ -910,15 +915,6 @@ export function App() {
                     >
                       <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                       <span>Manifest Active ({manifestCount} items)</span>
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => setManifestModalOpen(true)}
-                      className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-300 shadow-xs hover:bg-amber-100 transition-colors cursor-pointer"
-                      title="Upload Manifest for Auto Lot & Box detection"
-                    >
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                      <span>Upload Manifest (Auto Lot & Box)</span>
                     </button>
                   )}
                 </div>
@@ -999,7 +995,6 @@ export function App() {
                 {/* ISBN Scan Input */}
                 <div className="flex-1">
                   <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 mb-1">
-                    JOURNAL ISBN / BARCODE
                     {stationRole === 'box_level' ? 'SCAN ANY ISBN IN BOX OR TYPE BOX' : 'JOURNAL ISBN / BARCODE'}
                   </label>
                   <div className="relative">
@@ -1034,8 +1029,7 @@ export function App() {
                     className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-8 py-2.5 rounded-full font-bold text-xs text-white btn-primary-gradient cursor-pointer active:scale-95 shadow-md shadow-brand-500/20"
                   >
                     <Scan className="w-4 h-4" />
-                    <span>Start Scanning</span>
-                    <span>{stationRole === 'box_level' ? 'Start Box Verification' : 'Start Scanning'}</span>
+                    <span>Start Verification</span>
                   </button>
                 </div>
               </form>
@@ -1133,7 +1127,6 @@ export function App() {
                     onNextJournal={handleNextJournal}
                     onDiscardSession={handleDiscardSession}
                     onIncompleteWarning={handleIncompleteWarning}
-                    onUploadS3={(targetIsbn) => setS3ModalIsbn(targetIsbn)}
                   />
                 ) : (
                   <div className="white-card rounded-2xl p-8 flex flex-col items-center justify-center text-center text-slate-400 min-h-[380px]">
@@ -1350,17 +1343,6 @@ export function App() {
         onClose={() => setMobilePairingOpen(false)}
         systemStatus={systemStatus}
       />
-
-      {/* S3 Upload Modal (from ReviewCard) */}
-      {s3ModalIsbn && (
-        <S3UploadModal
-          isOpen={Boolean(s3ModalIsbn)}
-          onClose={() => setS3ModalIsbn(null)}
-          isbn={s3ModalIsbn}
-          systemConfig={systemConfig}
-          onUploadSuccess={() => fetchStatus()}
-        />
-      )}
 
     </div>
   );

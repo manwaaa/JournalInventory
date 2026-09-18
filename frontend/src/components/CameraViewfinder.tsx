@@ -35,7 +35,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   currentStep,
   resolution,
   isCapturing,
-  stationRole = 'all',
+  stationRole = 'book_level',
   isBoxLevelDone = false,
   hasBoxShots = false,
   onNextJournal,
