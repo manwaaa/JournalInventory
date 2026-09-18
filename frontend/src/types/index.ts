@@ -11,7 +11,7 @@ export type CaptureStep =
 
 export type ViewMode = 'CAPTURE' | 'SEARCH_VIEW';
 
-export type StationRole = 'box_level' | 'book_level';
+export type StationRole = 'box_level' | 'book_level' | 'all_in_one';
 
 export interface BookDetails {
   title?: string;
@@ -168,6 +168,9 @@ export interface SystemConfig {
   peerIp?: string;
   stationRole?: StationRole;
   enforceManifest?: boolean;
+  boxCameraDeviceId?: string;
+  bookCameraDeviceId?: string;
+  autoSwitchCamera?: boolean;
   s3Enabled?: boolean;
   s3Bucket?: string;
   s3Region?: string;

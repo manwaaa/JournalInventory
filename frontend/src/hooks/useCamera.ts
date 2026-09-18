@@ -21,13 +21,42 @@ export function useCamera() {
   const activeRequestId = useRef<number>(0);
 
   const [devices, setDevices] = useState<CameraDevice[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>(() => {
+    return localStorage.getItem('journal_active_camera_id') || '';
+  });
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [resolution, setResolution] = useState<{ width: number; height: number }>({ width: 1920, height: 1080 });
 
+  // Dual Camera Configuration
+  const [boxCameraDeviceId, setBoxCameraDeviceIdState] = useState<string>(() => {
+    return localStorage.getItem('journal_box_camera_id') || '';
+  });
+  const [bookCameraDeviceId, setBookCameraDeviceIdState] = useState<string>(() => {
+    return localStorage.getItem('journal_book_camera_id') || '';
+  });
+  const [autoSwitchCamera, setAutoSwitchCameraState] = useState<boolean>(() => {
+    const saved = localStorage.getItem('journal_auto_switch_camera');
+    return saved === null ? true : saved === 'true';
+  });
+
   const [hasTorch, setHasTorch] = useState<boolean>(false);
   const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
+
+  const setBoxCameraDeviceId = useCallback((id: string) => {
+    setBoxCameraDeviceIdState(id);
+    localStorage.setItem('journal_box_camera_id', id);
+  }, []);
+
+  const setBookCameraDeviceId = useCallback((id: string) => {
+    setBookCameraDeviceIdState(id);
+    localStorage.setItem('journal_book_camera_id', id);
+  }, []);
+
+  const setAutoSwitchCamera = useCallback((enabled: boolean) => {
+    setAutoSwitchCameraState(enabled);
+    localStorage.setItem('journal_auto_switch_camera', String(enabled));
+  }, []);
 
   // Load available video devices
   const updateDeviceList = useCallback(async () => {
@@ -42,14 +71,31 @@ export function useCamera() {
           deviceId: d.deviceId,
           label: d.label || `Camera ${index + 1}`
         }));
+      
       setDevices(videoDevs);
-      if (videoDevs.length > 0 && !selectedDeviceId) {
-        setSelectedDeviceId(videoDevs[0].deviceId);
+
+      if (videoDevs.length > 0) {
+        // Auto-assign default box camera (Cam 1) and book camera (Cam 2) if not already set
+        if (!boxCameraDeviceId || !videoDevs.some(d => d.deviceId === boxCameraDeviceId)) {
+          setBoxCameraDeviceId(videoDevs[0].deviceId);
+        }
+        if (videoDevs.length > 1) {
+          if (!bookCameraDeviceId || !videoDevs.some(d => d.deviceId === bookCameraDeviceId)) {
+            setBookCameraDeviceId(videoDevs[1].deviceId);
+          }
+        } else if (!bookCameraDeviceId) {
+          setBookCameraDeviceId(videoDevs[0].deviceId);
+        }
+
+        if (!selectedDeviceId || !videoDevs.some(d => d.deviceId === selectedDeviceId)) {
+          setSelectedDeviceId(videoDevs[0].deviceId);
+          localStorage.setItem('journal_active_camera_id', videoDevs[0].deviceId);
+        }
       }
     } catch (err: any) {
       console.error('Error enumerating cameras:', err);
     }
-  }, [selectedDeviceId]);
+  }, [boxCameraDeviceId, bookCameraDeviceId, selectedDeviceId, setBoxCameraDeviceId, setBookCameraDeviceId]);
 
   // Start camera stream
   const startCamera = useCallback(async (deviceId?: string) => {
@@ -130,6 +176,48 @@ export function useCamera() {
     }
   }, [updateDeviceList]);
 
+  // Switch camera
+  const switchCamera = useCallback((newDeviceId: string) => {
+    if (!newDeviceId) return;
+    setSelectedDeviceId(newDeviceId);
+    localStorage.setItem('journal_active_camera_id', newDeviceId);
+    startCamera(newDeviceId);
+  }, [startCamera]);
+
+  // Quick switch toggle between Box Camera (Cam 1) and Book Camera (Cam 2)
+  const quickSwitchCamera = useCallback(() => {
+    if (devices.length < 2) return;
+    
+    // If currently on box camera, switch to book camera; otherwise switch to box camera
+    if (selectedDeviceId === boxCameraDeviceId && bookCameraDeviceId) {
+      switchCamera(bookCameraDeviceId);
+    } else if (boxCameraDeviceId) {
+      switchCamera(boxCameraDeviceId);
+    } else {
+      const otherDevice = devices.find(d => d.deviceId !== selectedDeviceId);
+      if (otherDevice) {
+        switchCamera(otherDevice.deviceId);
+      }
+    }
+  }, [devices, selectedDeviceId, boxCameraDeviceId, bookCameraDeviceId, switchCamera]);
+
+  // Auto-switch camera based on current capture step
+  const autoSwitchForStep = useCallback((step: string) => {
+    if (!autoSwitchCamera || devices.length < 2) return;
+
+    if (step === 'CAPTURE_SHOT_1' || step === 'CAPTURE_SHOT_2') {
+      const targetId = boxCameraDeviceId || devices[0]?.deviceId;
+      if (targetId && targetId !== selectedDeviceId) {
+        switchCamera(targetId);
+      }
+    } else if (step.startsWith('CAPTURE_SHOT_')) {
+      const targetId = bookCameraDeviceId || devices[1]?.deviceId || devices[0]?.deviceId;
+      if (targetId && targetId !== selectedDeviceId) {
+        switchCamera(targetId);
+      }
+    }
+  }, [autoSwitchCamera, devices, boxCameraDeviceId, bookCameraDeviceId, selectedDeviceId, switchCamera]);
+
   // Toggle flashlight / torch on smartphones
   const toggleTorch = useCallback(async () => {
     if (!streamRef.current) return;
@@ -186,12 +274,6 @@ export function useCamera() {
     };
   }, [isStreaming]);
 
-  // Switch camera
-  const switchCamera = useCallback((newDeviceId: string) => {
-    setSelectedDeviceId(newDeviceId);
-    startCamera(newDeviceId);
-  }, [startCamera]);
-
   useEffect(() => {
     startCamera(selectedDeviceId);
 
@@ -206,11 +288,19 @@ export function useCamera() {
     videoRef,
     devices,
     selectedDeviceId,
+    boxCameraDeviceId,
+    bookCameraDeviceId,
+    autoSwitchCamera,
     isStreaming,
     cameraError,
     resolution,
     hasTorch,
     isTorchOn,
+    setBoxCameraDeviceId,
+    setBookCameraDeviceId,
+    setAutoSwitchCamera,
+    quickSwitchCamera,
+    autoSwitchForStep,
     toggleTorch,
     startCamera,
     switchCamera,

@@ -58,17 +58,17 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Right: View Toggle, Manifest, Live Sync & Tools */}
         <div className="flex items-center space-x-2 sm:space-x-3">
           
-          {/* Station Role Toggle: PC 1 (Box Level) vs PC 2 (Book Level) */}
+          {/* Station Role Toggle: PC 1 (Box Only 1-2), PC 2 (Book Only 3-7), Full (Box + Books 1-7) */}
           {viewMode === 'CAPTURE' && (
-            <div className="flex items-center bg-gradient-to-r from-slate-100 to-blue-50/70 p-1 rounded-xl border border-slate-200/80 shadow-xs relative" title="Select PC Station Role">
+            <div className="flex items-center bg-gradient-to-r from-slate-100 to-blue-50/70 p-1 rounded-xl border border-slate-200/80 shadow-xs relative" title="Select Workstation Role">
               <button
                 onClick={() => setStationRole('box_level')}
-                className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+                className={`flex items-center space-x-1 px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
                   stationRole === 'box_level'
                     ? 'bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-md shadow-blue-500/25 scale-[1.02]'
                     : 'text-slate-600 hover:text-blue-700 hover:bg-white/60'
                 }`}
-                title="PC 1: Box Level (Takes Shot 1 & 2 only, then proceeds immediately)"
+                title="PC 1: Box Level (Takes Shot 1 & 2 only, then proceeds immediately to next box)"
               >
                 <Package className={`w-3.5 h-3.5 ${stationRole === 'box_level' ? 'text-white animate-pulse' : 'text-blue-600'}`} />
                 <span>PC 1 (Box 1-2)</span>
@@ -76,7 +76,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
               <button
                 onClick={() => setStationRole('book_level')}
-                className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+                className={`flex items-center space-x-1 px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
                   stationRole === 'book_level'
                     ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-500/25 scale-[1.02]'
                     : 'text-slate-600 hover:text-indigo-700 hover:bg-white/60'
@@ -85,6 +85,19 @@ export const Navbar: React.FC<NavbarProps> = ({
               >
                 <BookOpen className={`w-3.5 h-3.5 ${stationRole === 'book_level' ? 'text-white animate-pulse' : 'text-indigo-600'}`} />
                 <span>PC 2 (Book 3-7)</span>
+              </button>
+
+              <button
+                onClick={() => setStationRole('all_in_one')}
+                className={`flex items-center space-x-1 px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+                  stationRole === 'all_in_one'
+                    ? 'bg-gradient-to-r from-emerald-600 to-teal-700 text-white shadow-md shadow-emerald-500/25 scale-[1.02]'
+                    : 'text-slate-600 hover:text-emerald-700 hover:bg-white/60'
+                }`}
+                title="Full Station: Complete Verification (Captures both Box 1-2 and Book 3-7 on this PC)"
+              >
+                <Layers className={`w-3.5 h-3.5 ${stationRole === 'all_in_one' ? 'text-white animate-pulse' : 'text-emerald-600'}`} />
+                <span>Full (1-7)</span>
               </button>
             </div>
           )}

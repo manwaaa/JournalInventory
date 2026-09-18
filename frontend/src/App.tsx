@@ -49,10 +49,10 @@ import {
 export function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('CAPTURE');
 
-  // Station Role: 'box_level' (PC 1: Shots 1-2) | 'book_level' (PC 2: Shots 3-7)
+  // Station Role: 'box_level' (PC 1: Shots 1-2) | 'book_level' (PC 2: Shots 3-7) | 'all_in_one' (Full: Shots 1-7)
   const [stationRole, setStationRoleState] = useState<StationRole>(() => {
     const saved = localStorage.getItem('verification_station_role') as StationRole;
-    if (saved === 'box_level' || saved === 'book_level') return saved;
+    if (saved === 'box_level' || saved === 'book_level' || saved === 'all_in_one') return saved;
     return 'box_level';
   });
 
@@ -124,15 +124,28 @@ export function App() {
     videoRef,
     devices,
     selectedDeviceId,
+    boxCameraDeviceId,
+    bookCameraDeviceId,
+    autoSwitchCamera,
     isStreaming,
     cameraError,
     resolution,
     hasTorch,
     isTorchOn,
+    setBoxCameraDeviceId,
+    setBookCameraDeviceId,
+    setAutoSwitchCamera,
+    quickSwitchCamera,
+    autoSwitchForStep,
     toggleTorch,
     switchCamera,
     captureSnapshot
   } = useCamera();
+
+  // Auto-switch camera as steps advance (if Dual Camera auto-switching is enabled)
+  useEffect(() => {
+    autoSwitchForStep(currentStep);
+  }, [currentStep, autoSwitchForStep]);
 
   const { playAudioCue } = useSoundEffects(true);
 
@@ -869,9 +882,11 @@ export function App() {
                   <div className={`w-10 h-10 rounded-xl text-white flex items-center justify-center shadow-md shrink-0 mt-0.5 transition-all duration-300 ${
                     stationRole === 'box_level' 
                       ? 'bg-gradient-to-br from-blue-600 to-blue-700 shadow-blue-500/25' 
-                      : 'bg-gradient-to-br from-indigo-600 to-indigo-700 shadow-indigo-500/25'
+                      : stationRole === 'book_level'
+                        ? 'bg-gradient-to-br from-indigo-600 to-indigo-700 shadow-indigo-500/25'
+                        : 'bg-gradient-to-br from-emerald-600 to-teal-700 shadow-emerald-500/25'
                   }`}>
-                    {stationRole === 'box_level' ? <Package className="w-5 h-5 animate-pulse" /> : <Scan className="w-5 h-5 animate-pulse" />}
+                    {stationRole === 'box_level' ? <Package className="w-5 h-5 animate-pulse" /> : stationRole === 'book_level' ? <Scan className="w-5 h-5 animate-pulse" /> : <Layers className="w-5 h-5 animate-pulse" />}
                   </div>
                   <div className="space-y-0.5">
                     <div className="flex items-center space-x-2">
@@ -881,20 +896,26 @@ export function App() {
                       <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border shadow-xs transition-all duration-300 ${
                         stationRole === 'box_level' 
                           ? 'bg-blue-50 text-blue-800 border-blue-300 ring-2 ring-blue-500/10'
-                          : 'bg-indigo-50 text-indigo-800 border-indigo-300 ring-2 ring-indigo-500/10'
+                          : stationRole === 'book_level'
+                            ? 'bg-indigo-50 text-indigo-800 border-indigo-300 ring-2 ring-indigo-500/10'
+                            : 'bg-emerald-50 text-emerald-800 border-emerald-300 ring-2 ring-emerald-500/10'
                       }`}>
-                        {stationRole === 'box_level' ? '📦 PC 1: Station 1 (Box Level)' : '📖 PC 2: Station 2 (Book Level)'}
+                        {stationRole === 'box_level' ? '📦 PC 1: Station 1 (Box Level)' : stationRole === 'book_level' ? '📖 PC 2: Station 2 (Book Level)' : '⚡ Full Station (Box + Books)'}
                       </span>
                     </div>
                     <h3 className="text-base font-extrabold text-slate-900 transition-all duration-300">
                       {stationRole === 'box_level' 
                         ? 'PC 1: Select or Scan Box to Photograph (Shots 1 & 2)' 
-                        : 'PC 2: Scan Individual Journal (Shots 3 to 7)'}
+                        : stationRole === 'book_level'
+                          ? 'PC 2: Scan Individual Journal (Shots 3 to 7)'
+                          : 'Full Station: Complete Verification (Shots 1 to 7)'}
                     </h3>
                     <p className="text-xs text-slate-500 transition-all duration-300">
                       {stationRole === 'box_level'
                         ? 'Photograph the box and unboxed books once. All journals in this box will automatically inherit these photos on PC 2.'
-                        : 'Box & Unbox photos from PC 1 are automatically attached. Proceed directly with Shots 3 to 7 for each journal.'}
+                        : stationRole === 'book_level'
+                          ? 'Box & Unbox photos from PC 1 are automatically attached. Proceed directly with Shots 3 to 7 for each journal.'
+                          : 'Performs complete Box + Book verification (Shots 1 to 7). Running PC 1 and PC 2 simultaneously in this mode doubles total throughput!'}
                     </p>
                   </div>
                 </div>
@@ -1095,7 +1116,12 @@ export function App() {
                   cameraError={cameraError}
                   devices={devices}
                   selectedDeviceId={selectedDeviceId}
+                  boxCameraDeviceId={boxCameraDeviceId}
+                  bookCameraDeviceId={bookCameraDeviceId}
+                  autoSwitchCamera={autoSwitchCamera}
                   onSwitchCamera={switchCamera}
+                  onQuickSwitchCamera={quickSwitchCamera}
+                  onToggleAutoSwitch={() => setAutoSwitchCamera(!autoSwitchCamera)}
                   onCapture={handleCapturePhoto}
                   currentStep={currentStep}
                   resolution={resolution}
@@ -1333,7 +1359,14 @@ export function App() {
         onClose={() => setSettingsModalOpen(false)}
         config={systemConfig}
         currentStationRole={stationRole}
+        devices={devices}
+        boxCameraDeviceId={boxCameraDeviceId}
+        bookCameraDeviceId={bookCameraDeviceId}
+        autoSwitchCamera={autoSwitchCamera}
         onStationRoleChange={setStationRole}
+        onBoxCameraChange={setBoxCameraDeviceId}
+        onBookCameraChange={setBookCameraDeviceId}
+        onAutoSwitchCameraChange={setAutoSwitchCamera}
         onConfigSaved={(newCfg) => setSystemConfig(newCfg)}
       />
 

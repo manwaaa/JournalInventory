@@ -144,7 +144,9 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({
                 <p className="text-[9px] text-slate-400 truncate mt-0.5">
                   {step.shotNumber <= 2 && boxShotsInherited && status === 'completed'
                     ? '✓ Inherited (PC 1)'
-                    : step.sublabel}
+                    : stationRole === 'all_in_one'
+                      ? step.shotNumber <= 2 ? '📦 Box Level' : '📖 Book Level'
+                      : step.sublabel}
                 </p>
               </div>
             </div>

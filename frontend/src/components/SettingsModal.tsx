@@ -1,13 +1,37 @@
 import React, { useState, useEffect } from 'react';
-import { X, Settings, Folder, Save, Check, CloudUpload, ShieldCheck, Loader2, AlertCircle, CheckCircle2, Package, BookOpen, Layers, Network } from 'lucide-react';
-import { StationRole, SystemConfig } from '../types';
+import { 
+  X, 
+  Settings, 
+  Folder, 
+  Save, 
+  Check, 
+  CloudUpload, 
+  ShieldCheck, 
+  Loader2, 
+  AlertCircle, 
+  CheckCircle2, 
+  Package, 
+  BookOpen, 
+  Layers, 
+  Network,
+  Camera,
+  ArrowLeftRight
+} from 'lucide-react';
+import { CameraDevice, StationRole, SystemConfig } from '../types';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   config?: SystemConfig | null;
   currentStationRole?: StationRole;
+  devices?: CameraDevice[];
+  boxCameraDeviceId?: string;
+  bookCameraDeviceId?: string;
+  autoSwitchCamera?: boolean;
   onStationRoleChange?: (role: StationRole) => void;
+  onBoxCameraChange?: (id: string) => void;
+  onBookCameraChange?: (id: string) => void;
+  onAutoSwitchCameraChange?: (enabled: boolean) => void;
   onConfigSaved?: (newCfg: SystemConfig) => void;
   onConfigUpdated?: () => void;
 }
@@ -16,7 +40,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   currentStationRole = 'box_level',
+  devices = [],
+  boxCameraDeviceId = '',
+  bookCameraDeviceId = '',
+  autoSwitchCamera = true,
   onStationRoleChange,
+  onBoxCameraChange,
+  onBookCameraChange,
+  onAutoSwitchCameraChange,
   onConfigSaved,
   onConfigUpdated
 }) => {
@@ -37,6 +68,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     s3CustomEndpoint: ''
   });
   const [selectedRole, setSelectedRole] = useState<StationRole>(currentStationRole);
+  const [selectedBoxCam, setSelectedBoxCam] = useState<string>(boxCameraDeviceId);
+  const [selectedBookCam, setSelectedBookCam] = useState<string>(bookCameraDeviceId);
+  const [selectedAutoSwitch, setSelectedAutoSwitch] = useState<boolean>(autoSwitchCamera);
+
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [testingS3, setTestingS3] = useState(false);
@@ -48,8 +83,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         .then((res) => res.json())
         .then((data) => setConfig(data))
         .catch((err) => console.error('Error fetching config:', err));
+      
+      setSelectedRole(currentStationRole);
+      setSelectedBoxCam(boxCameraDeviceId || (devices[0]?.deviceId ?? ''));
+      setSelectedBookCam(bookCameraDeviceId || (devices[1]?.deviceId ?? devices[0]?.deviceId ?? ''));
+      setSelectedAutoSwitch(autoSwitchCamera);
     }
-  }, [isOpen]);
+  }, [isOpen, currentStationRole, boxCameraDeviceId, bookCameraDeviceId, autoSwitchCamera, devices]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,12 +98,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const res = await fetch('/api/system/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config)
+        body: JSON.stringify({
+          ...config,
+          stationRole: selectedRole,
+          boxCameraDeviceId: selectedBoxCam,
+          bookCameraDeviceId: selectedBookCam,
+          autoSwitchCamera: selectedAutoSwitch
+        })
       });
+
+      if (onBoxCameraChange) onBoxCameraChange(selectedBoxCam);
+      if (onBookCameraChange) onBookCameraChange(selectedBookCam);
+      if (onAutoSwitchCameraChange) onAutoSwitchCameraChange(selectedAutoSwitch);
+      if (onStationRoleChange) onStationRoleChange(selectedRole);
+
       if (res.ok) {
         const data = await res.json();
         setSavedSuccess(true);
-        if (onStationRoleChange) onStationRoleChange(selectedRole);
         if (onConfigSaved) onConfigSaved(data.config || config);
         if (onConfigUpdated) onConfigUpdated();
         setTimeout(() => {
@@ -117,7 +168,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
-      <div className="w-full max-w-lg rounded-2xl modal-card overflow-hidden">
+      <div className="w-full max-w-xl rounded-2xl modal-card overflow-hidden">
         
         {/* Modal Header */}
         <div className="p-5 border-b border-blue-100 flex items-center justify-between bg-gradient-to-r from-blue-50/70 to-indigo-50/50">
@@ -127,10 +178,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
             <div>
               <h3 className="text-base font-extrabold text-slate-900 tracking-tight">
-                Tool Preferences & Workstation
+                Workstation & Camera Settings
               </h3>
               <p className="text-xs text-slate-500">
-                Verification storage and system settings
+                Configure workstation roles, dual camera assignments, and storage
               </p>
             </div>
           </div>
@@ -167,19 +218,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </p>
           </div>
 
-          {/* 2-PC Station Workflow Role */}
+          {/* Workstation Workflow Role (PC 1 vs PC 2 vs Full Station) */}
           <div className="p-4 rounded-xl border border-blue-200 bg-gradient-to-r from-blue-50/70 to-indigo-50/50 space-y-3">
             <div className="flex items-center space-x-2 pb-1 border-b border-blue-100">
               <Network className="w-4 h-4 text-brand-700" />
-              <span className="font-bold text-slate-800 text-xs">Workstation Role (2-PC Pipeline Mode)</span>
+              <span className="font-bold text-slate-800 text-xs">Workstation Role & Workflow Option</span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              {/* Option 1: PC 1 (Box Only 1-2) */}
               <button
                 type="button"
                 onClick={() => {
                   setSelectedRole('box_level');
-                  if (onStationRoleChange) onStationRoleChange('box_level');
                 }}
                 className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
                   selectedRole === 'box_level'
@@ -192,20 +243,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <Package className="w-4 h-4" />
                   </div>
                   <div>
-                    <span className="text-xs font-extrabold text-blue-900 block">PC 1: Station 1 (Box Level)</span>
-                    <span className="text-[10px] font-semibold text-blue-600">Receiving & Unboxing</span>
+                    <span className="text-xs font-extrabold text-blue-900 block">PC 1 (Box Only)</span>
+                    <span className="text-[10px] font-semibold text-blue-600">Shots 1 & 2</span>
                   </div>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-snug">
-                  Takes <b>Shot 1 (Box)</b> and <b>Shot 2 (Unbox)</b> once per Box, then proceeds immediately to the next box.
+                  Takes <b>Shot 1 (Box)</b> and <b>Shot 2 (Unbox)</b>, then moves to next box.
                 </p>
               </button>
 
+              {/* Option 2: PC 2 (Book Only 3-7) */}
               <button
                 type="button"
                 onClick={() => {
                   setSelectedRole('book_level');
-                  if (onStationRoleChange) onStationRoleChange('book_level');
                 }}
                 className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
                   selectedRole === 'book_level'
@@ -218,23 +269,124 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <BookOpen className="w-4 h-4" />
                   </div>
                   <div>
-                    <span className="text-xs font-extrabold text-indigo-900 block">PC 2: Station 2 (Book Level)</span>
-                    <span className="text-[10px] font-semibold text-indigo-600">Individual Journal Inspection</span>
+                    <span className="text-xs font-extrabold text-indigo-900 block">PC 2 (Book Only)</span>
+                    <span className="text-[10px] font-semibold text-indigo-600">Shots 3 to 7</span>
                   </div>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-snug">
-                  Automatically inherits Shots 1 & 2 from PC 1, then captures <b>Shots 3 to 7</b> for each journal.
+                  Inherits Shots 1 & 2 from PC 1, captures <b>Shots 3 to 7</b> per journal.
+                </p>
+              </button>
+
+              {/* Option 3: Full Station (Box + Books 1-7) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedRole('all_in_one');
+                }}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  selectedRole === 'all_in_one'
+                    ? 'bg-gradient-to-br from-emerald-50 to-white border-emerald-500 ring-2 ring-emerald-500/20 shadow-md'
+                    : 'bg-white/70 border-slate-200 hover:bg-white'
+                }`}
+              >
+                <div className="flex items-center space-x-2 mb-1.5">
+                  <div className={`p-1.5 rounded-lg ${selectedRole === 'all_in_one' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-600'}`}>
+                    <Layers className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-extrabold text-emerald-900 block">Full (Box & Books)</span>
+                    <span className="text-[10px] font-semibold text-emerald-600">Shots 1 to 7</span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-snug">
+                  Performs full 1–7 sequence on this PC. Run PC 1 & PC 2 in parallel for 2x speed!
                 </p>
               </button>
             </div>
+          </div>
 
-            <div className="bg-white/80 p-2.5 rounded-lg border border-blue-100 text-[11px] text-slate-600 space-y-1">
-              <p className="font-semibold text-brand-900">💡 2-PC Connection Quick Setup:</p>
-              <ul className="list-disc list-inside space-y-0.5 text-slate-600 pl-1">
-                <li><b>Method 1 (Easiest)</b>: Start the tool on PC 1, and on PC 2 simply open browser to <code className="text-brand-700 bg-blue-50 px-1 py-0.2 rounded font-mono">http://&lt;PC1_IP&gt;:3001</code>.</li>
-                <li><b>Method 2</b>: Set the Storage Root Directory on both PCs to the same shared network folder.</li>
-              </ul>
+          {/* Dual Camera Setup Section */}
+          <div className="p-4 rounded-xl border border-indigo-200 bg-gradient-to-r from-indigo-50/60 to-purple-50/40 space-y-3">
+            <div className="flex items-center justify-between pb-1 border-b border-indigo-100">
+              <div className="flex items-center space-x-2">
+                <Camera className="w-4 h-4 text-indigo-700" />
+                <span className="font-bold text-slate-800 text-xs">Dual Camera Configuration</span>
+              </div>
+              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                devices.length >= 2 
+                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' 
+                  : 'bg-blue-100 text-blue-800 border border-blue-300'
+              }`}>
+                {devices.length} Camera{devices.length !== 1 ? 's' : ''} Connected
+              </span>
             </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Primary Camera (Box Shots 1 & 2) */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  📦 Camera 1 (Box & Unbox: Shots 1–2)
+                </label>
+                <select
+                  value={selectedBoxCam}
+                  onChange={(e) => setSelectedBoxCam(e.target.value)}
+                  className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer"
+                >
+                  {devices.length > 0 ? (
+                    devices.map((d) => (
+                      <option key={`box-${d.deviceId}`} value={d.deviceId}>
+                        {d.label}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">Default Camera</option>
+                  )}
+                </select>
+                <p className="text-[10px] text-slate-500 mt-0.5">Overhead wide-angle / label camera</p>
+              </div>
+
+              {/* Secondary Camera (Book Shots 3 to 7) */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  📖 Camera 2 (Book Inspection: Shots 3–7)
+                </label>
+                <select
+                  value={selectedBookCam}
+                  onChange={(e) => setSelectedBookCam(e.target.value)}
+                  className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer"
+                >
+                  {devices.length > 0 ? (
+                    devices.map((d) => (
+                      <option key={`book-${d.deviceId}`} value={d.deviceId}>
+                        {d.label}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">Default Camera</option>
+                  )}
+                </select>
+                <p className="text-[10px] text-slate-500 mt-0.5">Macro / document stand camera</p>
+              </div>
+            </div>
+
+            {/* Auto-Switch Toggle */}
+            <label className="flex items-center space-x-3 cursor-pointer pt-1">
+              <input
+                type="checkbox"
+                checked={selectedAutoSwitch}
+                onChange={(e) => setSelectedAutoSwitch(e.target.checked)}
+                className="w-4 h-4 rounded text-brand-700 focus:ring-brand-500 border-slate-300"
+              />
+              <div className="text-xs">
+                <span className="font-bold text-slate-800 block">
+                  Automatic Camera Switching by Step
+                </span>
+                <span className="text-slate-500 text-[11px]">
+                  Automatically switches to Camera 1 for Shots 1–2, and switches to Camera 2 for Shots 3–7
+                </span>
+              </div>
+            </label>
           </div>
 
           {/* Manifest Enforcement Toggle */}
@@ -288,7 +440,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   Auto-Open Windows Explorer
                 </span>
                 <span className="text-slate-500 text-[11px]">
-                  Pop open folder in Explorer when all 6 verification photos are saved
+                  Pop open folder in Explorer when verification photos are saved
                 </span>
               </div>
             </label>

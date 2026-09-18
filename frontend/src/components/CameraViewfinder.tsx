@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
-import { Camera, RefreshCw, Eye, EyeOff, AlertCircle, Zap, ZapOff } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Camera, RefreshCw, Eye, EyeOff, AlertCircle, Zap, ZapOff, ArrowRight, Package, ArrowLeftRight, Check } from 'lucide-react';
 import { AngleGuideOverlay } from './AngleGuideOverlay';
 import { CameraDevice, CaptureStep, SHOT_DEFINITIONS, StationRole } from '../types';
-import { CheckCircle2, ArrowRight, Package } from 'lucide-react';
 
 interface CameraViewfinderProps {
   videoRef: React.RefObject<HTMLVideoElement>;
@@ -10,7 +9,12 @@ interface CameraViewfinderProps {
   cameraError: string | null;
   devices: CameraDevice[];
   selectedDeviceId: string;
+  boxCameraDeviceId?: string;
+  bookCameraDeviceId?: string;
+  autoSwitchCamera?: boolean;
   onSwitchCamera: (deviceId: string) => void;
+  onQuickSwitchCamera?: () => void;
+  onToggleAutoSwitch?: () => void;
   onCapture: () => void;
   currentStep: CaptureStep;
   resolution: { width: number; height: number };
@@ -30,7 +34,12 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   cameraError,
   devices,
   selectedDeviceId,
+  boxCameraDeviceId,
+  bookCameraDeviceId,
+  autoSwitchCamera = true,
   onSwitchCamera,
+  onQuickSwitchCamera,
+  onToggleAutoSwitch,
   onCapture,
   currentStep,
   resolution,
@@ -46,6 +55,23 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   const [showGuide, setShowGuide] = useState<boolean>(true);
   const [triggerFlash, setTriggerFlash] = useState<boolean>(false);
 
+  // Keyboard shortcut listener for 'C' to quickly swap cameras
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      if ((e.key === 'c' || e.key === 'C') && devices.length > 1 && onQuickSwitchCamera) {
+        e.preventDefault();
+        onQuickSwitchCamera();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [devices.length, onQuickSwitchCamera]);
+
   const handleCaptureClick = () => {
     if (isCapturing || !isStreaming) return;
     setTriggerFlash(true);
@@ -59,42 +85,94 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
 
   const isBoxStationFinished = stationRole === 'box_level' && isBoxLevelDone;
 
+  const getCameraLabel = (device: CameraDevice) => {
+    let roleTag = '';
+    if (device.deviceId === boxCameraDeviceId && device.deviceId === bookCameraDeviceId) {
+      roleTag = ' (All Shots)';
+    } else if (device.deviceId === boxCameraDeviceId) {
+      roleTag = ' 📦 [Box Cam 1-2]';
+    } else if (device.deviceId === bookCameraDeviceId) {
+      roleTag = ' 📖 [Book Cam 3-7]';
+    }
+    return `${device.label}${roleTag}`;
+  };
+
   return (
     <div className="relative w-full rounded-2xl overflow-hidden white-card shadow-lg bg-slate-950">
       
       {/* Top Floating Controls Bar */}
-      <div className="absolute top-3 left-3 right-3 z-20 flex items-center justify-between pointer-events-auto">
+      <div className="absolute top-3 left-3 right-3 z-20 flex flex-wrap items-center justify-between gap-2 pointer-events-auto">
         
-        {/* Camera Selector */}
-        {devices.length > 1 ? (
-          <select
-            value={selectedDeviceId}
-            onChange={(e) => onSwitchCamera(e.target.value)}
-            className="bg-black/70 backdrop-blur-md text-white text-xs rounded-xl px-3 py-1.5 border border-white/20 outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer"
-          >
-            {devices.map((d) => (
-              <option key={d.deviceId} value={d.deviceId} className="bg-slate-900 text-white">
-                {d.label}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <div className="bg-black/70 backdrop-blur-md text-white text-xs px-3 py-1.5 rounded-xl border border-white/20 flex items-center space-x-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span className="font-semibold">Live Camera</span>
-          </div>
-        )}
+        {/* Left: Camera Selector & Dual Camera Quick Switch */}
+        <div className="flex items-center space-x-1.5 sm:space-x-2">
+          {devices.length > 1 ? (
+            <>
+              <select
+                value={selectedDeviceId}
+                onChange={(e) => onSwitchCamera(e.target.value)}
+                className="bg-black/80 backdrop-blur-md text-white text-xs rounded-xl px-3 py-1.5 border border-white/20 outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer max-w-[180px] sm:max-w-[240px] truncate"
+                title="Select Active Camera"
+              >
+                {devices.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId} className="bg-slate-900 text-white">
+                    {getCameraLabel(d)}
+                  </option>
+                ))}
+              </select>
 
-        {/* Status & Guide toggle */}
+              {/* 1-Click Quick Camera Swap Button */}
+              {onQuickSwitchCamera && (
+                <button
+                  type="button"
+                  onClick={onQuickSwitchCamera}
+                  title="Swap between Camera 1 & Camera 2 (or press 'C' key)"
+                  className="bg-brand-600/90 hover:bg-brand-500 text-white text-[11px] font-bold px-2.5 py-1.5 rounded-xl border border-brand-400/40 shadow-sm backdrop-blur-md flex items-center space-x-1 transition-all active:scale-95 cursor-pointer"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Swap (C)</span>
+                </button>
+              )}
+
+              {/* Auto-Switch Toggle Badge */}
+              {onToggleAutoSwitch && (
+                <button
+                  type="button"
+                  onClick={onToggleAutoSwitch}
+                  title={autoSwitchCamera ? "Auto-switching is active (Box Cam for 1-2, Book Cam for 3-7). Click to toggle." : "Auto-switching is OFF. Click to turn ON."}
+                  className={`text-[10px] font-bold px-2.5 py-1.5 rounded-xl border backdrop-blur-md transition-all cursor-pointer ${
+                    autoSwitchCamera
+                      ? 'bg-emerald-600/80 hover:bg-emerald-500 text-white border-emerald-400/40'
+                      : 'bg-black/70 hover:bg-black/90 text-slate-400 border-white/10'
+                  }`}
+                >
+                  <span className="hidden sm:inline">Auto-Cam: </span>
+                  <span>{autoSwitchCamera ? 'ON' : 'OFF'}</span>
+                </button>
+              )}
+            </>
+          ) : (
+            <div className="bg-black/70 backdrop-blur-md text-white text-xs px-3 py-1.5 rounded-xl border border-white/20 flex items-center space-x-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span className="font-semibold">Live Camera</span>
+            </div>
+          )}
+        </div>
+
+        {/* Right: Station Role Badge & Guide Toggle */}
         <div className="flex items-center space-x-2">
           {stationRole === 'box_level' && (
             <span className="bg-blue-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg shadow-sm border border-blue-400/40">
-              📦 PC 1 (Box Level)
+              📦 PC 1 (Box Only 1-2)
             </span>
           )}
           {stationRole === 'book_level' && (
             <span className="bg-indigo-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg shadow-sm border border-indigo-400/40">
-              📖 PC 2 (Book Level)
+              📖 PC 2 (Book Only 3-7)
+            </span>
+          )}
+          {stationRole === 'all_in_one' && (
+            <span className="bg-emerald-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg shadow-sm border border-emerald-400/40">
+              ⚡ Full Station (1-7)
             </span>
           )}
 
@@ -167,7 +245,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
                 onClick={onNextJournal}
                 className="flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-sm text-white btn-primary-gradient shadow-lg shadow-brand-500/30 hover:scale-105 active:scale-95 transition-all cursor-pointer"
               >
-                <span>Proceed to Next Journal</span>
+                <span>Proceed to Next Box</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             )}
@@ -210,7 +288,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
                   ? 'bg-blue-900/60 text-blue-300 border-blue-800'
                   : 'bg-indigo-900/60 text-indigo-300 border-indigo-800'
               }`}>
-                {currentDef.scope === 'box_level' ? '📦 PC 1 Box Level' : '📖 PC 2 Book Level'}
+                {currentDef.scope === 'box_level' ? '📦 Box Level' : '📖 Book Level'}
               </span>
               {stationRole === 'book_level' && hasBoxShots && shotNum === 3 && (
                 <span className="ml-2 text-[10px] font-bold text-emerald-400">
