@@ -53,11 +53,12 @@ export function useSessionSync({ onSessionSync, enabled = true }: UseSessionSync
     };
   }, [enabled, onSessionSync]);
 
-  const resetRemoteSession = useCallback(async () => {
+  const resetRemoteSession = useCallback(async (opts?: { clearBoxContext?: boolean; lotNumber?: string; boxNumber?: string }) => {
     try {
       await fetch('/api/session/reset', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts || {})
       });
     } catch (err) {
       console.error('Failed to reset remote session:', err);

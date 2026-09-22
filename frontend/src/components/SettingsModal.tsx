@@ -306,6 +306,67 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
+          {/* Multi-PC LAN Peer Synchronization Section */}
+          <div className="p-4 rounded-xl border border-sky-200 bg-gradient-to-r from-sky-50/70 to-blue-50/40 space-y-3">
+            <div className="flex items-center justify-between pb-1 border-b border-sky-100">
+              <div className="flex items-center space-x-2">
+                <Network className="w-4 h-4 text-sky-700" />
+                <span className="font-bold text-slate-800 text-xs">Multi-PC LAN Peer Sync (PC 1 ↔ PC 2)</span>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={config.peerSyncEnabled || false}
+                  onChange={(e) => setConfig({ ...config, peerSyncEnabled: e.target.checked })}
+                  className="sr-only peer"
+                />
+                <div className="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-sky-600"></div>
+                <span className="ml-2 text-xs font-bold text-slate-700">
+                  {config.peerSyncEnabled ? 'Active' : 'Disabled'}
+                </span>
+              </label>
+            </div>
+
+            <p className="text-[11px] text-slate-600">
+              When enabled, <b>Shot 1 (Box)</b> and <b>Shot 2 (Unbox)</b> captured on PC 1 are automatically synced to PC 2 across your local network so PC 2 will not picture them!
+            </p>
+
+            {config.peerSyncEnabled && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Other PC's IP Address (e.g. 192.168.1.50)
+                  </label>
+                  <input
+                    type="text"
+                    value={config.peerIp || ''}
+                    onChange={(e) => setConfig({ ...config, peerIp: e.target.value })}
+                    placeholder="e.g. 192.168.1.50"
+                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs outline-none font-mono focus:ring-2 focus:ring-brand-500"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">
+                    If this is PC 2, enter the IP address of PC 1.
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Peer Port
+                  </label>
+                  <input
+                    type="number"
+                    value={config.peerPort || 3001}
+                    onChange={(e) => setConfig({ ...config, peerPort: parseInt(e.target.value, 10) || 3001 })}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs outline-none font-mono focus:ring-2 focus:ring-brand-500"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">
+                    Default is 3001.
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Dual Camera Setup Section */}
           <div className="p-4 rounded-xl border border-indigo-200 bg-gradient-to-r from-indigo-50/60 to-purple-50/40 space-y-3">
             <div className="flex items-center justify-between pb-1 border-b border-indigo-100">

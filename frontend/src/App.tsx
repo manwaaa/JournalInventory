@@ -118,6 +118,7 @@ export function App() {
 
   const isbnInputRef = useRef<HTMLInputElement | null>(null);
   const quickSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingNextRef = useRef<boolean>(false);
 
   // Custom camera & sound hooks
   const {
@@ -203,24 +204,39 @@ export function App() {
           setBookDetails(event.session.bookDetails);
         }
       } else if (event.type === 'ISBN_INITIALIZED') {
-        if (stationRole === 'book_level' && event.session.activeIsbn === activeIsbn) {
+        if (stationRole === 'book_level' && (!activeIsbn || event.session.activeIsbn === activeIsbn)) {
           setActiveIsbn(event.session.activeIsbn);
           setIsbnInput(event.session.activeIsbn);
           setLotNumber(event.session.lotNumber || '');
           setBoxNumber(event.session.boxNumber || '');
-          setCurrentStep(event.session.currentStep);
-          setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
+          
+          const initialShots = event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null };
+          setShots(initialShots);
           setMetadata(event.session.metadata);
           setBookDetails(event.session.bookDetails);
+
+          // On PC 2, advance to first missing book shot (3 to 7)
+          let nextBookShot = 3;
+          for (let s = 3; s <= 7; s++) {
+            if (!initialShots[s]) {
+              nextBookShot = s;
+              break;
+            }
+          }
+          if (initialShots[3] && initialShots[4] && initialShots[5] && initialShots[6] && initialShots[7]) {
+            setCurrentStep('COMPLETE');
+          } else {
+            setCurrentStep(`CAPTURE_SHOT_${nextBookShot}` as CaptureStep);
+          }
           playAudioCue('beep');
         }
       } else if (event.type === 'BOX_INITIALIZED') {
-        if (stationRole === 'box_level' && event.session.activeIsbn === activeIsbn) {
+        if (stationRole === 'book_level' && (!activeIsbn || event.session.activeIsbn === activeIsbn)) {
           setActiveIsbn(event.session.activeIsbn);
           setIsbnInput('');
           setLotNumber(event.session.lotNumber || '');
           setBoxNumber(event.session.boxNumber || '');
-          setCurrentStep(event.session.currentStep);
+          setCurrentStep('CAPTURE_SHOT_3');
           setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
           setMetadata(event.session.metadata);
           setBookDetails(event.session.bookDetails);
@@ -229,36 +245,82 @@ export function App() {
         }
       } else if (event.type === 'BOX_SHOT_SAVED') {
         fetchBoxesList();
-        // If we are on PC 2 and currently viewing a book from this box, auto-update thumbnails 1 & 2
-        if (event.boxNumber && boxNumber && String(event.boxNumber).toLowerCase() === String(boxNumber).toLowerCase()) {
-          if (event.boxShots) {
-            setShots(prev => ({
-              ...prev,
-              1: event.boxShots.hasBoxShot ? {
-                filename: 'shot_1_box.jpg',
-                savedAt: new Date().toISOString(),
-                type: 'Box',
-                scope: 'box_level',
-                previewDataUrl: event.boxShots.boxShotUrl,
-                inheritedFromBox: true
-              } : prev[1],
-              2: event.boxShots.hasUnboxShot ? {
-                filename: 'shot_2_unbox.jpg',
-                savedAt: new Date().toISOString(),
-                type: 'Unbox',
-                scope: 'box_level',
-                previewDataUrl: event.boxShots.unboxShotUrl,
-                inheritedFromBox: true
-              } : prev[2]
-            }));
+        // When PC 1 captures Box/Unbox shot, immediately show it on PC 2
+        if (event.boxNumber) {
+          const isMatchingBox = !boxNumber || String(event.boxNumber).toLowerCase() === String(boxNumber).toLowerCase();
+          if (stationRole === 'book_level' && isMatchingBox) {
+            setLotNumber(event.lotNumber || lotNumber || '');
+            setBoxNumber(event.boxNumber);
+            if (event.boxShots) {
+              setShots(prev => ({
+                ...prev,
+                1: event.boxShots.hasBoxShot ? {
+                  filename: 'shot_1_box.jpg',
+                  savedAt: new Date().toISOString(),
+                  type: 'Box',
+                  scope: 'box_level',
+                  previewDataUrl: event.boxShots.boxShotUrl,
+                  inheritedFromBox: true
+                } : prev[1],
+                2: event.boxShots.hasUnboxShot ? {
+                  filename: 'shot_2_unbox.jpg',
+                  savedAt: new Date().toISOString(),
+                  type: 'Unbox',
+                  scope: 'box_level',
+                  previewDataUrl: event.boxShots.unboxShotUrl,
+                  inheritedFromBox: true
+                } : prev[2]
+              }));
+
+              if (event.boxShots.hasBoxShot && event.boxShots.hasUnboxShot) {
+                if (currentStep === 'CAPTURE_SHOT_1' || currentStep === 'CAPTURE_SHOT_2') {
+                  setCurrentStep('CAPTURE_SHOT_3');
+                }
+                playAudioCue('success');
+                setToastAlert({
+                  message: `✓ Box & Unbox photos received from PC 1 for Box ${event.boxNumber}! Ready for Book shots (Shots 3–7).`,
+                  type: 'info'
+                });
+              }
+            }
           }
         }
       } else if (event.type === 'SHOT_SAVED') {
-        if (event.isbn === activeIsbn) {
+        const isTargetMatch = event.isbn === activeIsbn || (stationRole === 'book_level' && !activeIsbn);
+        if (isTargetMatch) {
+          if (!activeIsbn && event.isbn) {
+            setActiveIsbn(event.isbn);
+            setIsbnInput(event.isbn);
+            setLotNumber(event.session.lotNumber || '');
+            setBoxNumber(event.session.boxNumber || '');
+          }
           if (event.session.shots) setShots(event.session.shots);
           if (event.session.metadata) setMetadata(event.session.metadata);
           if (event.session.bookDetails) setBookDetails(event.session.bookDetails);
-          setCurrentStep(event.session.currentStep);
+
+          if (stationRole === 'book_level') {
+            let nextBookShot = 3;
+            for (let s = 3; s <= 7; s++) {
+              if (!event.session.shots?.[s]) {
+                nextBookShot = s;
+                break;
+              }
+            }
+            if (event.session.shots?.[3] && event.session.shots?.[4] && event.session.shots?.[5] && event.session.shots?.[6] && event.session.shots?.[7]) {
+              setCurrentStep('COMPLETE');
+            } else {
+              setCurrentStep(`CAPTURE_SHOT_${nextBookShot}` as CaptureStep);
+            }
+            if (event.shotNumber === 2 && event.session.shots?.[1] && event.session.shots?.[2]) {
+              playAudioCue('success');
+              setToastAlert({
+                message: `✓ Box & Unbox photos completed on PC 1! You can now capture Shots 3 to 7 on PC 2.`,
+                type: 'info'
+              });
+            }
+          } else {
+            setCurrentStep(event.session.currentStep);
+          }
 
           if (event.isComplete) {
             playAudioCue('success');
@@ -269,12 +331,14 @@ export function App() {
         if (event.isbn === activeIsbn) {
           setActiveIsbn('');
           setIsbnInput('');
-          setLotNumber('');
-          setBoxNumber('');
+          if (stationRole === 'box_level') {
+            setLotNumber('');
+            setBoxNumber('');
+            setActiveBoxSummary(null);
+          }
           setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
           setMetadata(null);
           setBookDetails(null);
-          setActiveBoxSummary(null);
           setToastAlert(null);
           setDuplicateModal(null);
           setBlurWarning(null);
@@ -332,6 +396,12 @@ export function App() {
     const clean = code.trim();
     if (!clean) return;
 
+    // Immediately blur input so cursor stops blinking and keyboard capture shortcuts work hands-free
+    isbnInputRef.current?.blur();
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
     setToastAlert(null);
     playAudioCue('beep');
 
@@ -369,7 +439,9 @@ export function App() {
         body: JSON.stringify({ 
           isbn: clean,
           forceNewCopy,
-          targetIdentifier
+          targetIdentifier,
+          lotNumber: matchedLot || lotNumber || activeBoxSummary?.lotNumber || '',
+          boxNumber: matchedBox || boxNumber || activeBoxSummary?.boxNumber || ''
         })
       });
 
@@ -426,6 +498,7 @@ export function App() {
             savedAt: data.metadata?.shots?.[s]?.savedAt || new Date().toISOString(),
             type: SHOT_DEFINITIONS[s - 1]?.label || `Shot ${s}`,
             scope: SHOT_DEFINITIONS[s - 1]?.scope,
+            previewDataUrl: `/proofs/${encodeURIComponent(data.isbn)}/${encodeURIComponent(data.existingShots[s])}?t=${Date.now()}`,
             blurScore: data.metadata?.shots?.[s]?.blurScore
           };
         }
@@ -479,6 +552,12 @@ export function App() {
       }
 
       fetchStatus();
+      setTimeout(() => {
+        isbnInputRef.current?.blur();
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+      }, 50);
     } catch (err: any) {
       setToastAlert({
         message: err.message || 'Error initializing verification session',
@@ -643,6 +722,10 @@ export function App() {
     } finally {
       setIsCapturing(false);
       setBlurWarning(null);
+      if (pendingNextRef.current) {
+        pendingNextRef.current = false;
+        setTimeout(() => handleNextJournal(), 60);
+      }
     }
   };
 
@@ -737,6 +820,11 @@ export function App() {
 
   // Reset to next journal (Validation 4.1 enforced)
   const handleNextJournal = () => {
+    if (isCapturing) {
+      pendingNextRef.current = true;
+      return;
+    }
+
     let captured = 0;
     for (let s = 1; s <= 7; s++) {
       if (shots[s]) captured++;
@@ -752,19 +840,45 @@ export function App() {
         playAudioCue('error');
         return;
       }
+    } else if (stationRole === 'book_level') {
+      // PC 2 requires Shots 3 to 7
+      if (!shots[3] || !shots[4] || !shots[5] || !shots[6] || !shots[7]) {
+        handleIncompleteWarning();
+        return;
+      }
     } else {
-      if (captured < 7) {
+      const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
+      if (captured < 7 && !hasAllBookShots) {
         handleIncompleteWarning();
         return;
       }
     }
 
+    // Automatically ensure S3 upload is triggered when clicking Next Journal
+    if (activeIsbn && captured > 0) {
+      fetch('/api/s3/upload-isbn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isbn: activeIsbn })
+      }).catch(err => console.error('[S3 Upload on Next] Error:', err));
+    }
+
     playAudioCue('click');
-    resetRemoteSession();
+    resetRemoteSession({
+      clearBoxContext: stationRole === 'box_level',
+      lotNumber,
+      boxNumber
+    });
     setActiveIsbn('');
     setIsbnInput('');
-    setLotNumber('');
-    setBoxNumber('');
+    // For PC 1 (box_level), Next means proceeding to the next box.
+    // For PC 2 (book_level) and Standalone, keep active lotNumber & boxNumber so the box context
+    // and inherited Box / Unbox shots stay active for the remaining journals in this box!
+    if (stationRole === 'box_level') {
+      setLotNumber('');
+      setBoxNumber('');
+      setActiveBoxSummary(null);
+    }
     setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
     setMetadata(null);
     setBookDetails(null);
@@ -795,13 +909,31 @@ export function App() {
     window.location.href = `/api/capture/zip/${encodeURIComponent(targetIsbn)}`;
   };
 
-  // Global Spacebar shortcut to capture photo
+  // Global Keyboard shortcuts: Spacebar to capture photo, Enter to proceed to Next Journal
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space') {
-        const target = e.target as HTMLElement;
-        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
 
+      // Enter key: When session is complete or box level is done, proceed to Next Journal / Next Box hands-free
+      if (e.key === 'Enter') {
+        const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
+        const hasBoxShots = Boolean(shots[1] && shots[2]);
+
+        if (
+          currentStep === 'COMPLETE' ||
+          (stationRole === 'box_level' && (currentStep === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
+          (hasAllBookShots && !currentStep.startsWith('CAPTURE_SHOT_')) ||
+          (isCapturing && (currentStep === 'CAPTURE_SHOT_7' || (stationRole === 'box_level' && currentStep === 'CAPTURE_SHOT_2')))
+        ) {
+          e.preventDefault();
+          handleNextJournal();
+          return;
+        }
+      }
+
+      // Spacebar key: Capture photo
+      if (e.code === 'Space') {
         if (currentStep.startsWith('CAPTURE_SHOT_')) {
           e.preventDefault();
           handleCapturePhoto();
@@ -810,7 +942,7 @@ export function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentStep, activeIsbn, isCapturing, isStreaming]);
+  }, [currentStep, activeIsbn, isCapturing, isStreaming, stationRole, shots, handleNextJournal, handleCapturePhoto]);
 
   // Count captured shots
   let totalCapturedShots = 0;
@@ -971,6 +1103,10 @@ export function App() {
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
+                  isbnInputRef.current?.blur();
+                  if (document.activeElement instanceof HTMLElement) {
+                    document.activeElement.blur();
+                  }
                   handleProcessIsbn(isbnInput);
                 }}
                 className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1"
@@ -1025,6 +1161,16 @@ export function App() {
                       type="text"
                       value={isbnInput}
                       onChange={(e) => setIsbnInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          isbnInputRef.current?.blur();
+                          if (document.activeElement instanceof HTMLElement) {
+                            document.activeElement.blur();
+                          }
+                          handleProcessIsbn(isbnInput);
+                        }
+                      }}
                       placeholder={stationRole === 'box_level' ? "Scan any book barcode from box to auto-select box..." : "Scan barcode or type ISBN (e.g. 9780132350884)..."}
                       className="w-full pl-10 pr-24 py-2.5 text-xs font-mono text-slate-900 input-smooth rounded-full outline-none placeholder:text-slate-400"
                     />

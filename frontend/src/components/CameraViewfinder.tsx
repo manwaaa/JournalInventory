@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, RefreshCw, Eye, EyeOff, AlertCircle, Zap, ZapOff, ArrowRight, Package, ArrowLeftRight, Check } from 'lucide-react';
+import { Camera, RefreshCw, Eye, EyeOff, AlertCircle, Zap, ZapOff, ArrowRight, Package, ArrowLeftRight, Check, CheckCircle2 } from 'lucide-react';
 import { AngleGuideOverlay } from './AngleGuideOverlay';
 import { CameraDevice, CaptureStep, SHOT_DEFINITIONS, StationRole } from '../types';
 
@@ -245,10 +245,53 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
                 onClick={onNextJournal}
                 className="flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-sm text-white btn-primary-gradient shadow-lg shadow-brand-500/30 hover:scale-105 active:scale-95 transition-all cursor-pointer"
               >
-                <span>Proceed to Next Box</span>
+                <span>Proceed to Next Box (Enter ↵)</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             )}
+          </div>
+        )}
+
+        {/* Overlay when All Verification Shots are Completed */}
+        {currentStep === 'COMPLETE' && !isBoxStationFinished && (
+          <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm z-25 flex flex-col items-center justify-center p-6 text-center animate-fade-in">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 text-white flex items-center justify-center shadow-xl shadow-emerald-500/30 mb-3 animate-bounce">
+              <CheckCircle2 className="w-8 h-8" />
+            </div>
+            <h3 className="text-lg font-extrabold text-white mb-1">
+              Verification Photos Completed!
+            </h3>
+            <p className="text-xs text-emerald-200 max-w-sm mb-4 leading-relaxed">
+              All required photos are saved. Press <b className="text-white">Enter ↵</b> on your keyboard or click below to verify the next book.
+            </p>
+            {onNextJournal && (
+              <button
+                onClick={onNextJournal}
+                className="flex items-center space-x-2 px-7 py-3 rounded-xl font-bold text-sm text-white btn-primary-gradient shadow-xl shadow-brand-500/30 hover:scale-105 active:scale-95 transition-all cursor-pointer ring-2 ring-white/30"
+              >
+                <span>Proceed to Next Book (Enter ↵)</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Overlay for PC 2 while waiting for PC 1 to capture Box & Unbox */}
+        {stationRole === 'book_level' && !hasBoxShots && (currentStep === 'CAPTURE_SHOT_1' || currentStep === 'CAPTURE_SHOT_2') && (
+          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-xs z-25 flex flex-col items-center justify-center p-6 text-center animate-fade-in">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-blue-500 text-white flex items-center justify-center shadow-xl shadow-indigo-500/30 mb-3 animate-pulse">
+              <Package className="w-7 h-7" />
+            </div>
+            <h3 className="text-lg font-extrabold text-white mb-1">
+              Waiting for PC 1 (Box Level)
+            </h3>
+            <p className="text-xs text-indigo-200 max-w-sm mb-4 leading-relaxed">
+              PC 1 is capturing <b>Shot 1 (Box)</b> & <b>Shot 2 (Unbox)</b>. As soon as PC 1 snaps them, this screen will automatically activate for <b>Shot 3 (Front Cover)</b>!
+            </p>
+            <div className="flex items-center space-x-2 px-3.5 py-1.5 rounded-full bg-indigo-950/80 border border-indigo-700 text-indigo-300 text-[11px] font-semibold shadow-inner">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+              <span>Listening for live Box sync...</span>
+            </div>
           </div>
         )}
 
@@ -278,7 +321,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
       </div>
 
       {/* Bottom Shutter Capture Bar */}
-      {isStepCaptureActive && !isBoxStationFinished && (
+      {isStepCaptureActive && !isBoxStationFinished && !(stationRole === 'book_level' && !hasBoxShots && (currentStep === 'CAPTURE_SHOT_1' || currentStep === 'CAPTURE_SHOT_2')) && (
         <div className="p-3.5 bg-slate-900 border-t border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
           <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3 pl-1">
             <div className="text-xs text-slate-200">
@@ -290,9 +333,9 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               }`}>
                 {currentDef.scope === 'box_level' ? '📦 Box Level' : '📖 Book Level'}
               </span>
-              {stationRole === 'book_level' && hasBoxShots && shotNum === 3 && (
+              {stationRole !== 'box_level' && hasBoxShots && shotNum === 3 && (
                 <span className="ml-2 text-[10px] font-bold text-emerald-400">
-                  ✓ PC 1 Box Shots Loaded
+                  ✓ Box Shots 1 & 2 Loaded
                 </span>
               )}
             </div>

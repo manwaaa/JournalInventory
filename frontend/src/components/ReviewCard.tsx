@@ -53,6 +53,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
   onIncompleteWarning
 }) => {
   const [copied, setCopied] = useState(false);
+  const [copiedS3, setCopiedS3] = useState(false);
   const [selectedPreview, setSelectedPreview] = useState<string | null>(null);
   const [showBooksList, setShowBooksList] = useState(false);
 
@@ -64,7 +65,11 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
 
   const isComplete = shotsCount >= 7;
   const isBoxLevelDone = Boolean(shots[1] && shots[2]);
-  const canProceed = stationRole === 'box_level' ? isBoxLevelDone : isComplete;
+  const isBookLevelDone = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
+  const canProceed = stationRole === 'box_level' 
+    ? isBoxLevelDone 
+    : (stationRole === 'book_level' ? isBookLevelDone : (isComplete || isBookLevelDone));
+  const [isUploadingS3, setIsUploadingS3] = useState(false);
 
   const handleCopyPath = () => {
     if (!isbn) return;
@@ -74,13 +79,35 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleNextClick = () => {
-    if (!canProceed) {
-      if (onIncompleteWarning) {
-        onIncompleteWarning();
+  const handleCopyS3 = () => {
+    const link = metadata?.s3Upload?.shareableLink || metadata?.s3Upload?.s3FolderUri;
+    if (!link) return;
+    navigator.clipboard.writeText(link);
+    setCopiedS3(true);
+    setTimeout(() => setCopiedS3(false), 2500);
+  };
+
+  const handleTriggerManualS3 = async () => {
+    if (!isbn) return;
+    setIsUploadingS3(true);
+    try {
+      const res = await fetch('/api/s3/upload-isbn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isbn })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert('S3 Upload Failed: ' + (data.error || 'Server error'));
       }
-      return;
+    } catch (err: any) {
+      alert('S3 Upload Network Error: ' + err.message);
+    } finally {
+      setIsUploadingS3(false);
     }
+  };
+
+  const handleNextClick = () => {
     onNextJournal();
   };
 
@@ -208,7 +235,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
             }`}
           >
             {!canProceed && <Lock className="w-3.5 h-3.5 mr-0.5 text-slate-400" />}
-            <span>{stationRole === 'box_level' ? 'Proceed to Next Box' : 'Next Book'}</span>
+            <span>{stationRole === 'box_level' ? 'Proceed to Next Box (Enter ↵)' : 'Next Book (Enter ↵)'}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -337,22 +364,25 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
           </button>
 
           {metadata?.s3Upload ? (
-            <span
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl font-semibold text-xs text-emerald-700 bg-emerald-50/90 border border-emerald-200/90 shadow-xs"
-              title={`Automatically synced to S3: ${metadata.s3Upload.s3FolderUri}`}
+            <button
+              onClick={handleCopyS3}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl font-semibold text-xs text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 shadow-xs cursor-pointer transition-colors"
+              title={`Click to copy AWS S3 Location:\n${metadata.s3Upload.s3FolderUri}`}
             >
               <CloudUpload className="w-3.5 h-3.5 text-emerald-600" />
-              <span>✓ S3 Auto-Synced</span>
-            </span>
-          ) : isComplete ? (
-            <span
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl font-semibold text-xs text-brand-700 bg-blue-50/80 border border-blue-200/80 shadow-xs"
-              title="Automatically syncing to S3 in background..."
+              <span>{copiedS3 ? '✓ S3 Link Copied!' : '✓ S3 Auto-Synced'}</span>
+            </button>
+          ) : (
+            <button
+              onClick={handleTriggerManualS3}
+              disabled={isUploadingS3}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl font-semibold text-xs text-brand-700 bg-blue-50 hover:bg-blue-100 border border-blue-300 shadow-xs cursor-pointer transition-colors disabled:opacity-50"
+              title="Click to immediately send proof photos to AWS S3"
             >
-              <CloudUpload className="w-3.5 h-3.5 text-brand-600 animate-pulse" />
-              <span>Syncing to S3...</span>
-            </span>
-          ) : null}
+              <CloudUpload className={`w-3.5 h-3.5 text-brand-600 ${isUploadingS3 ? 'animate-bounce' : ''}`} />
+              <span>{isUploadingS3 ? 'Sending to S3...' : 'Upload to S3 Now'}</span>
+            </button>
+          )}
 
           <button
             onClick={handleCopyPath}

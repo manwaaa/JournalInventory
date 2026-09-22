@@ -175,6 +175,7 @@ export interface SystemConfig {
   blurCheckEnabled?: boolean;
   peerSyncEnabled?: boolean;
   peerIp?: string;
+  peerPort?: number;
   stationRole?: StationRole;
   enforceManifest?: boolean;
   boxCameraDeviceId?: string;
