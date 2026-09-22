@@ -11,7 +11,9 @@ import {
   Search, 
   Check, 
   RefreshCw,
-  BookOpen
+  BookOpen,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import { ManifestData, ManifestItem } from '../types';
 
@@ -33,6 +35,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
   const [filterType, setFilterType] = useState<'all' | 'processable' | 'non_processable'>('all');
   const [pastedText, setPastedText] = useState('');
   const [showPasteArea, setShowPasteArea] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(false);
 
   const fetchManifest = async () => {
     setLoading(true);
@@ -394,11 +397,15 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
-      <div className="w-full max-w-4xl max-h-[90vh] rounded-2xl modal-card overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+      <div className={`w-full transition-all duration-200 rounded-2xl modal-card overflow-hidden flex flex-col shadow-2xl ${
+        isMaximized 
+          ? 'max-w-[98vw] h-[96vh]' 
+          : 'max-w-6xl xl:max-w-7xl 2xl:max-w-[1500px] max-h-[92vh]'
+      }`}>
         
         {/* Header */}
-        <div className="p-5 border-b border-blue-100 flex items-center justify-between bg-gradient-to-r from-blue-50/70 to-indigo-50/50">
+        <div className="p-4 sm:p-5 border-b border-blue-100 flex items-center justify-between bg-gradient-to-r from-blue-50/70 to-indigo-50/50">
           <div className="flex items-center space-x-3">
             <div className="p-2.5 rounded-xl btn-primary-gradient text-white shadow-md shadow-brand-500/20">
               <FileSpreadsheet className="w-5 h-5" />
@@ -413,12 +420,21 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
             </div>
           </div>
 
-          <button
-            onClick={onClose}
-            className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-white transition-colors cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center space-x-1.5">
+            <button
+              onClick={() => setIsMaximized(!isMaximized)}
+              className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-white transition-colors cursor-pointer"
+              title={isMaximized ? "Restore default width" : "Maximize to full screen"}
+            >
+              {isMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={onClose}
+              className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-white transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Stats Strip */}
@@ -575,59 +591,89 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
               <p className="text-xs text-slate-400 mt-1">Upload an Excel (.xlsx) or CSV manifest to begin verifying journals.</p>
             </div>
           ) : (
-            <div className="rounded-xl border border-slate-200 overflow-hidden">
-              <table className="w-full text-left text-xs border-collapse">
+            <div className="rounded-xl border border-slate-200 overflow-x-auto shadow-inner bg-white">
+              <table className="w-full min-w-[980px] text-left text-xs border-collapse table-fixed">
+                <colgroup>
+                  <col style={{ width: '4%' }} />   {/* # */}
+                  <col style={{ width: '13%' }} />  {/* ISBN / Barcode */}
+                  <col style={{ width: '8%' }} />   {/* Lot No. */}
+                  <col style={{ width: '8%' }} />   {/* Box No. */}
+                  <col style={{ width: '26%' }} />  {/* Journal Title */}
+                  <col style={{ width: '13%' }} />  {/* Vol • Issue • Year */}
+                  <col style={{ width: '8%' }} />   {/* Print ISSN */}
+                  <col style={{ width: '11%' }} />  {/* Publisher / Remarks */}
+                  <col style={{ width: '9%' }} />   {/* Status */}
+                </colgroup>
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
-                    <th className="py-2.5 px-3">Status</th>
+                    <th className="py-2.5 px-3 text-center">#</th>
                     <th className="py-2.5 px-3">ISBN / Barcode</th>
-                    <th className="py-2.5 px-3">Lot & Box</th>
-                    <th className="py-2.5 px-3">Journal Title / Issue Details</th>
-                    <th className="py-2.5 px-3">ISSN & Publisher</th>
+                    <th className="py-2.5 px-3 text-center">Lot No.</th>
+                    <th className="py-2.5 px-3 text-center">Box No.</th>
+                    <th className="py-2.5 px-3">Journal Title</th>
+                    <th className="py-2.5 px-3">Vol &bull; Issue &bull; Year</th>
+                    <th className="py-2.5 px-3">Print ISSN</th>
+                    <th className="py-2.5 px-3">Publisher / Remarks</th>
+                    <th className="py-2.5 px-3 text-center">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-sans">
                   {filteredItems.slice(0, 300).map((item, idx) => (
-                    <tr key={idx} className="hover:bg-blue-50/40 transition-colors">
-                      <td className="py-2 px-3 shrink-0">
+                    <tr key={idx} className="hover:bg-blue-50/50 transition-colors h-11">
+                      <td className="py-2 px-3 text-slate-400 text-[11px] font-mono text-center">
+                        {item.sNo || idx + 1}
+                      </td>
+                      <td className="py-2 px-3 font-mono font-bold text-slate-900 select-all whitespace-nowrap">
+                        {item.isbn}
+                      </td>
+                      <td className="py-2 px-3 text-center">
+                        <span className="inline-block px-2 py-0.5 rounded bg-blue-50 text-brand-700 border border-blue-200/80 font-mono text-[11px] whitespace-nowrap font-bold">
+                          {item.lotNumber || '—'}
+                        </span>
+                      </td>
+                      <td className="py-2 px-3 font-mono text-indigo-700 font-bold text-center whitespace-nowrap">
+                        {item.boxNumber || '—'}
+                      </td>
+                      <td className="py-2 px-3 text-slate-900 font-bold">
+                        <div className="truncate" title={item.title}>
+                          {item.title || '—'}
+                        </div>
+                      </td>
+                      <td className="py-2 px-3 text-slate-600">
+                        <div className="flex items-center gap-1 text-[10px] whitespace-nowrap">
+                          {item.volume && <span className="px-1.5 py-0.5 rounded bg-slate-100 font-semibold text-slate-700 whitespace-nowrap">V.{item.volume}</span>}
+                          {item.issues && <span className="px-1.5 py-0.5 rounded bg-slate-100 font-semibold text-slate-700 whitespace-nowrap">Iss.{item.issues}</span>}
+                          {item.publicationYear && <span className="px-1.5 py-0.5 rounded bg-slate-100 font-semibold text-slate-600 whitespace-nowrap">{item.publicationYear}</span>}
+                          {!item.volume && !item.issues && !item.publicationYear && <span className="text-slate-400">—</span>}
+                        </div>
+                      </td>
+                      <td className="py-2 px-3 font-mono text-[11px] text-emerald-700 font-semibold whitespace-nowrap">
+                        {item.printIssn || '—'}
+                      </td>
+                      <td className="py-2 px-3 text-slate-500 text-[11px]">
+                        <div className="truncate" title={item.publisher || item.notes}>
+                          {item.publisher || item.notes || '—'}
+                        </div>
+                      </td>
+                      <td className="py-2 px-3 text-center shrink-0">
                         {item.isProcessable ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-300">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-300 whitespace-nowrap">
                             <Check className="w-3 h-3" />
                             Processable
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-300">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-300 whitespace-nowrap">
                             <X className="w-3 h-3" />
-                            Not Processable
+                            Blocked
                           </span>
                         )}
-                      </td>
-                      <td className="py-2 px-3 font-mono font-bold text-slate-900">
-                        {item.isbn}
-                      </td>
-                      <td className="py-2 px-3 text-slate-600">
-                        <span className="font-semibold text-brand-700">{item.lotNumber || '—'}</span>
-                        {item.boxNumber ? ` • Box ${item.boxNumber}` : ''}
-                      </td>
-                      <td className="py-2 px-3 text-slate-800">
-                        <div className="font-bold text-slate-800 truncate max-w-sm">{item.title || '—'}</div>
-                        <div className="flex flex-wrap items-center gap-1 mt-0.5 text-[10px] text-slate-500">
-                          {item.volume && <span className="px-1.5 py-0.2 rounded bg-blue-50 text-blue-700 font-semibold">Vol {item.volume}</span>}
-                          {item.issues && <span className="px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 font-semibold">Issue {item.issues}</span>}
-                          {item.publicationYear && <span className="px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 font-semibold">{item.publicationYear}</span>}
-                          {item.notes && <span className="text-slate-400 italic">({item.notes})</span>}
-                        </div>
-                      </td>
-                      <td className="py-2 px-3 text-slate-600">
-                        {item.printIssn && <div className="font-mono text-[10px] text-emerald-700 font-semibold">ISSN: {item.printIssn}</div>}
-                        {item.publisher && <div className="text-[10px] text-slate-500 truncate max-w-xs">{item.publisher}</div>}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
               {filteredItems.length > 300 && (
-                <div className="p-2 text-center text-xs text-slate-400 bg-slate-50 border-t border-slate-200 font-semibold">
+                <div className="p-2.5 text-center text-xs text-slate-500 bg-slate-50 border-t border-slate-200 font-semibold">
                   Showing first 300 of {filteredItems.length} journals. Use search to filter specific records.
                 </div>
               )}
