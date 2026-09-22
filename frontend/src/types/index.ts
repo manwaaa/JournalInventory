@@ -24,6 +24,9 @@ export interface BookDetails {
   subjects?: string[];
   coverUrl?: string | null;
   source?: string;
+  volume?: string;
+  issues?: string;
+  printIssn?: string;
 }
 
 export type ShotScope = 'box_level' | 'book_level';
@@ -102,11 +105,17 @@ export interface ProofItem {
 }
 
 export interface ManifestItem {
+  sNo?: string;
   isbn: string;
   lotNumber?: string;
   boxNumber?: string;
   title?: string;
   author?: string;
+  publisher?: string;
+  printIssn?: string;
+  publicationYear?: string;
+  volume?: string;
+  issues?: string;
   isProcessable: boolean;
   reason?: string;
   notes?: string;

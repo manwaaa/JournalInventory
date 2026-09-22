@@ -151,9 +151,38 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
           </div>
 
           {metadata?.bookDetails?.title && (
-            <p className="text-xs font-semibold text-slate-700">
-              {metadata.bookDetails.title} {metadata.bookDetails.authors ? `— ${metadata.bookDetails.authors}` : ''}
-            </p>
+            <div className="space-y-1">
+              <p className="text-xs font-bold text-slate-800">
+                {metadata.bookDetails.title} {metadata.bookDetails.authors ? `— ${metadata.bookDetails.authors}` : ''}
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                {metadata.bookDetails.volume && (
+                  <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200 font-semibold">
+                    Vol: {metadata.bookDetails.volume}
+                  </span>
+                )}
+                {metadata.bookDetails.issues && (
+                  <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">
+                    Issue: {metadata.bookDetails.issues}
+                  </span>
+                )}
+                {metadata.bookDetails.publishYear && (
+                  <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200 font-semibold">
+                    Year: {metadata.bookDetails.publishYear}
+                  </span>
+                )}
+                {metadata.bookDetails.printIssn && (
+                  <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 font-mono font-semibold">
+                    ISSN: {metadata.bookDetails.printIssn}
+                  </span>
+                )}
+                {metadata.bookDetails.publisher && (
+                  <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-medium truncate max-w-xs">
+                    {metadata.bookDetails.publisher}
+                  </span>
+                )}
+              </div>
+            </div>
           )}
         </div>
 

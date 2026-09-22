@@ -386,11 +386,17 @@ app.post('/api/manifest/import', (req, res) => {
     }
 
     const cleanItems = items.map(item => ({
+      sNo: item.sNo ? String(item.sNo).trim() : '',
       isbn: String(item.isbn || '').trim(),
       lotNumber: item.lotNumber ? String(item.lotNumber).trim() : '',
       boxNumber: item.boxNumber ? String(item.boxNumber).trim() : '',
       title: item.title ? String(item.title).trim() : '',
       author: item.author ? String(item.author).trim() : '',
+      publisher: item.publisher ? String(item.publisher).trim() : '',
+      printIssn: item.printIssn ? String(item.printIssn).trim() : '',
+      publicationYear: item.publicationYear ? String(item.publicationYear).trim() : '',
+      volume: item.volume ? String(item.volume).trim() : '',
+      issues: item.issues ? String(item.issues).trim() : '',
       isProcessable: item.isProcessable !== false && String(item.isProcessable).toLowerCase() !== 'false' && String(item.isProcessable).toLowerCase() !== 'no',
       reason: item.reason ? String(item.reason).trim() : '',
       notes: item.notes ? String(item.notes).trim() : '',
@@ -1200,7 +1206,16 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       currentStep: initialStep,
       shots: shotsState,
       metadata,
-      bookDetails: metadata?.bookDetails || (manifestMatch?.title ? { title: manifestMatch.title, authors: manifestMatch.author } : null),
+      bookDetails: metadata?.bookDetails || (manifestMatch?.title ? { 
+        title: manifestMatch.title, 
+        authors: manifestMatch.author || '',
+        publisher: manifestMatch.publisher || '',
+        publishYear: manifestMatch.publicationYear || '',
+        printIssn: manifestMatch.printIssn || '',
+        volume: manifestMatch.volume || '',
+        issues: manifestMatch.issues || '',
+        source: 'Manifest'
+      } : null),
       copyNumber,
       isProcessable
     };

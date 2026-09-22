@@ -1071,14 +1071,36 @@ export function App() {
                       </span>
                     )}
 
-                    <div className="flex items-center space-x-1.5 text-slate-700">
+                    <div className="flex flex-wrap items-center gap-1.5 text-slate-700">
                       <BookOpen className="w-4 h-4 text-brand-700 shrink-0" />
                       {isLookingUpMeta ? (
                         <span className="text-slate-500 animate-pulse">Looking up journal details...</span>
                       ) : bookDetails?.title ? (
-                        <span className="font-bold text-slate-800">
-                          {bookDetails.title} {bookDetails.authors ? `— ${bookDetails.authors}` : ''}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-bold text-slate-800">
+                            {bookDetails.title} {bookDetails.authors ? `— ${bookDetails.authors}` : ''}
+                          </span>
+                          {bookDetails.volume && (
+                            <span className="px-1.5 py-0.2 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-semibold">
+                              Vol: {bookDetails.volume}
+                            </span>
+                          )}
+                          {bookDetails.issues && (
+                            <span className="px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-semibold">
+                              Issue: {bookDetails.issues}
+                            </span>
+                          )}
+                          {bookDetails.publishYear && (
+                            <span className="px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-semibold">
+                              {bookDetails.publishYear}
+                            </span>
+                          )}
+                          {bookDetails.printIssn && (
+                            <span className="px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-mono font-semibold">
+                              ISSN: {bookDetails.printIssn}
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <span className="text-slate-500 font-mono">Target: {activeIsbn}</span>
                       )}
