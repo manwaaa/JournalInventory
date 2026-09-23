@@ -926,42 +926,65 @@ export function App() {
     window.location.href = `/api/capture/zip/${encodeURIComponent(targetIsbn)}`;
   };
 
-  // Global Keyboard shortcuts: Spacebar to capture photo, Enter to proceed to Next Journal
+  // Refs to avoid stale closures in global keyboard & scanner listeners
+  const shotsRef = useRef(shots);
+  shotsRef.current = shots;
+  const currentStepRef = useRef(currentStep);
+  currentStepRef.current = currentStep;
+  const activeIsbnRef = useRef(activeIsbn);
+  activeIsbnRef.current = activeIsbn;
+  const stationRoleRef = useRef(stationRole);
+  stationRoleRef.current = stationRole;
+  const isCapturingRef = useRef(isCapturing);
+  isCapturingRef.current = isCapturing;
+  const isbnInputRefValue = useRef(isbnInput);
+  isbnInputRefValue.current = isbnInput;
+
+  // Global Keyboard shortcuts: Enter / Space to capture photo; Enter to start/proceed in 1 press
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
 
-      // Enter key: When session is complete or box level is done, proceed to Next Journal in 1 single press!
-      if (e.key === 'Enter') {
-        const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
-        const hasBoxShots = Boolean(shots[1] && shots[2]);
-        const isReadyForNext = currentStep === 'COMPLETE' ||
-          (stationRole === 'box_level' && (currentStep === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
-          (hasAllBookShots && !currentStep.startsWith('CAPTURE_SHOT_')) ||
-          (isCapturing && (currentStep === 'CAPTURE_SHOT_7' || (stationRole === 'box_level' && currentStep === 'CAPTURE_SHOT_2')));
+      const step = currentStepRef.current;
+      const currentShots = shotsRef.current;
+      const curIsbn = activeIsbnRef.current;
+      const role = stationRoleRef.current;
+      const inputVal = isbnInputRefValue.current;
 
-        if (activeIsbn && isReadyForNext) {
+      // 1. Shutter Trigger: Spacebar or Enter during active photo capture (Shots 1 to 7)
+      if ((e.code === 'Space' || e.key === 'Enter') && step.startsWith('CAPTURE_SHOT_') && !isInput) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleCapturePhoto();
+        return;
+      }
+
+      // 2. Enter key: 1-click proceed to next journal when complete, or start if input has text
+      if (e.key === 'Enter') {
+        // If user is inside an input with text, let the input's onKeyDown/onSubmit handle it directly
+        if (isInput && inputVal.trim()) {
+          return;
+        }
+
+        const hasAllBookShots = Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
+        const hasBoxShots = Boolean(currentShots[1] && currentShots[2]);
+        const isReadyForNext = step === 'COMPLETE' ||
+          (role === 'box_level' && (step === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
+          (hasAllBookShots && !step.startsWith('CAPTURE_SHOT_')) ||
+          (isCapturingRef.current && (step === 'CAPTURE_SHOT_7' || (role === 'box_level' && step === 'CAPTURE_SHOT_2')));
+
+        if (curIsbn && isReadyForNext) {
           e.preventDefault();
           e.stopPropagation();
           handleNextJournal();
           return;
         }
       }
-
-      if (isInput) return;
-
-      // Spacebar key: Capture photo
-      if (e.code === 'Space') {
-        if (currentStep.startsWith('CAPTURE_SHOT_')) {
-          e.preventDefault();
-          handleCapturePhoto();
-        }
-      }
     };
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [currentStep, activeIsbn, isCapturing, isStreaming, stationRole, shots, handleNextJournal, handleCapturePhoto]);
+  }, [handleCapturePhoto, handleNextJournal]);
 
   // Count captured shots
   let totalCapturedShots = 0;
@@ -1122,11 +1145,16 @@ export function App() {
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  isbnInputRef.current?.blur();
-                  if (document.activeElement instanceof HTMLElement) {
-                    document.activeElement.blur();
+                  const val = isbnInput.trim();
+                  if (val) {
+                    isbnInputRef.current?.blur();
+                    if (document.activeElement instanceof HTMLElement) {
+                      document.activeElement.blur();
+                    }
+                    handleProcessIsbn(val);
+                  } else if (currentStep === 'COMPLETE') {
+                    handleNextJournal();
                   }
-                  handleProcessIsbn(isbnInput);
                 }}
                 className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1"
               >
@@ -1198,20 +1226,23 @@ export function App() {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
-                          const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
-                          const hasBoxShots = Boolean(shots[1] && shots[2]);
-                          const isReadyForNext = currentStep === 'COMPLETE' ||
-                            (stationRole === 'box_level' && (currentStep === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
-                            (hasAllBookShots && !currentStep.startsWith('CAPTURE_SHOT_'));
-
-                          if (activeIsbn && isReadyForNext) {
-                            handleNextJournal();
-                          } else if (isbnInput.trim()) {
+                          const val = isbnInput.trim();
+                          if (val) {
                             isbnInputRef.current?.blur();
                             if (document.activeElement instanceof HTMLElement) {
                               document.activeElement.blur();
                             }
-                            handleProcessIsbn(isbnInput.trim());
+                            handleProcessIsbn(val);
+                          } else {
+                            const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
+                            const hasBoxShots = Boolean(shots[1] && shots[2]);
+                            const isReadyForNext = currentStep === 'COMPLETE' ||
+                              (stationRole === 'box_level' && (currentStep === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
+                              (hasAllBookShots && !currentStep.startsWith('CAPTURE_SHOT_'));
+
+                            if (activeIsbn && isReadyForNext) {
+                              handleNextJournal();
+                            }
                           }
                         }
                       }}
