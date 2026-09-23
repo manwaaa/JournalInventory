@@ -43,9 +43,9 @@ The server will start on `http://localhost:3001` and is accessible across the lo
    http://<PC1-IP-ADDRESS>:3001
    ```
 3. Set **PC 1** to `📦 PC 1 (Box: 1-2)` and **PC 2** to `📖 PC 2 (Book: 3-7)` in the top navigation bar. Both PCs will immediately share the same storage folder, manifest, and live photos over the local network!
-### ☁️ AWS S3 Synchronization Settings
-Configure in the Settings modal or `.env` / `backend/config.json`:
-- **S3 Bucket Name**: `innoscanmussgp1-s3`
-- **AWS Region**: `ap-southeast-1`
-- **Folder Prefix (Path)**: `innoscanmussgp1/JournalVerificationImages/`
 
+S3 Bucket Name = innoscanmussgp1-s3
+AWS Region = ap-southeast-1
+AWS Access Key ID = AKIAXBLCTMJDWX3BKHI6 
+AWS Secret Access Key = 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
+Folder Prefix (Path) = innoscanmussgp1/JournalVerificationImages/
