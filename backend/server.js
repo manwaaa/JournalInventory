@@ -68,7 +68,15 @@ function sanitizeIsbn(isbn) {
 
 // Helper to extract base ISBN from copy names (e.g. 9780198826545_Copy2 -> 9780198826545)
 function getBaseIsbn(identifier) {
+  if (!identifier || typeof identifier !== 'string') return '';
   return identifier.replace(/_Copy\d+$/i, '');
+}
+
+// Helper to extract copy number from identifier (e.g. 9780198826545_Copy2 -> 2, otherwise 1)
+function getCopyNumber(identifier) {
+  if (!identifier || typeof identifier !== 'string') return 1;
+  const match = identifier.match(/_Copy(\d+)$/i);
+  return match ? parseInt(match[1], 10) : 1;
 }
 
 // 7 Shot definitions & filenames (isbn_<type>.jpg)
