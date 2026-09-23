@@ -212,6 +212,121 @@ function saveManifest() {
   }
 }
 
+// Universal manifest lookup helper: handles ISBN, sanitized, digits-only, ISSN, and copy names
+function findManifestItem(identifier) {
+  if (!identifier || !manifestData.items || manifestData.items.length === 0) return null;
+  const raw = String(identifier).trim();
+  const clean = sanitizeIsbn(raw);
+  const base = getBaseIsbn(clean);
+  const digitsOnly = raw.replace(/[^0-9Xx]/g, '');
+
+  return manifestData.items.find(item => {
+    if (!item) return false;
+    const itemIsbnRaw = String(item.isbn || '').trim();
+    const itemClean = sanitizeIsbn(itemIsbnRaw);
+    const itemDigits = itemIsbnRaw.replace(/[^0-9Xx]/g, '');
+
+    // 1. Direct match (exact or case-insensitive)
+    if (itemIsbnRaw.toLowerCase() === raw.toLowerCase()) return true;
+    if (itemClean.toLowerCase() === clean.toLowerCase()) return true;
+    if (itemClean.toLowerCase() === base.toLowerCase()) return true;
+
+    // 2. Digits-only match (ignores dashes/spaces)
+    if (digitsOnly.length > 0 && itemDigits.length > 0) {
+      if (itemDigits === digitsOnly) return true;
+      if (digitsOnly.length === 13 && digitsOnly.startsWith('978') && digitsOnly.slice(3, 12) === itemDigits.slice(0, 9)) return true;
+      if (itemDigits.length === 13 && itemDigits.startsWith('978') && itemDigits.slice(3, 12) === digitsOnly.slice(0, 9)) return true;
+    }
+
+    // 3. Match against printIssn
+    if (item.printIssn) {
+      const issnRaw = String(item.printIssn).trim();
+      const issnDigits = issnRaw.replace(/[^0-9Xx]/g, '');
+      if (issnRaw.toLowerCase() === raw.toLowerCase()) return true;
+      if (digitsOnly.length > 0 && issnDigits === digitsOnly) return true;
+    }
+
+    // 4. Match against sNo if scanned
+    if (item.sNo && String(item.sNo).trim() === raw) return true;
+
+    return false;
+  }) || null;
+}
+
+// Automatically synchronizes and self-heals all metadata files with manifest Lot, Box, and Title info
+async function selfHealAllMetadataWithManifest() {
+  if (!manifestData.items || manifestData.items.length === 0 || !fs.existsSync(config.storagePath)) return;
+  try {
+    const metaDir = getMetadataDir();
+    if (!fs.existsSync(metaDir)) return;
+    const metaFiles = await fs.readdir(metaDir);
+    let healedCount = 0;
+
+    for (const f of metaFiles) {
+      if (!f.endsWith('.json')) continue;
+      const cleanIsbn = f.slice(0, -5);
+      const metaPath = path.join(metaDir, f);
+      let metadata = await fs.readJson(metaPath).catch(() => null);
+      if (!metadata) continue;
+
+      const baseIsbn = metadata.isbn || getBaseIsbn(cleanIsbn);
+      const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(cleanIsbn);
+
+      if (manifestMatch) {
+        let modified = false;
+
+        // Self-heal Lot Number if missing or generic
+        const isCurrentLotGeneric = !metadata.lotNumber || 
+          metadata.lotNumber === 'Unassigned' || 
+          metadata.lotNumber === 'Unassigned Lot' || 
+          (metadata.lotNumber === 'Lot-1' && manifestMatch.lotNumber && manifestMatch.lotNumber !== 'Lot-1');
+
+        if (isCurrentLotGeneric && manifestMatch.lotNumber) {
+          metadata.lotNumber = manifestMatch.lotNumber;
+          modified = true;
+        }
+
+        // Self-heal Box Number if missing or generic
+        const isCurrentBoxGeneric = !metadata.boxNumber || 
+          metadata.boxNumber === 'Unassigned' || 
+          metadata.boxNumber === 'Unassigned Box';
+
+        if (isCurrentBoxGeneric && manifestMatch.boxNumber) {
+          metadata.boxNumber = manifestMatch.boxNumber;
+          modified = true;
+        }
+
+        // Self-heal Book Details if missing
+        if (!metadata.bookDetails && manifestMatch.title) {
+          metadata.bookDetails = {
+            title: manifestMatch.title,
+            authors: manifestMatch.author || '',
+            publisher: manifestMatch.publisher || '',
+            publishYear: manifestMatch.publicationYear || '',
+            printIssn: manifestMatch.printIssn || '',
+            volume: manifestMatch.volume || '',
+            issues: manifestMatch.issues || '',
+            source: 'Manifest'
+          };
+          modified = true;
+        }
+
+        if (modified) {
+          metadata.updatedAt = new Date().toISOString();
+          await fs.writeJson(metaPath, metadata, { spaces: 2 });
+          healedCount++;
+        }
+      }
+    }
+
+    if (healedCount > 0) {
+      console.log(`[Manifest Self-Heal] Successfully synced Lot & Box info for ${healedCount} journal(s) from manifest!`);
+    }
+  } catch (err) {
+    console.warn('[Manifest Self-Heal Warning]', err.message);
+  }
+}
+
 // Ensure storage directory exists
 try {
   fs.ensureDirSync(config.storagePath);
@@ -337,6 +452,7 @@ async function migrateAllLegacyMetadata() {
     if (migratedCount > 0) {
       console.log(`[Metadata Cleanup] Successfully removed metadata.json from ${migratedCount} photo folder(s)`);
     }
+    await selfHealAllMetadataWithManifest();
   } catch (e) {
     console.error('[Metadata Migration Error]', e);
   }
@@ -500,7 +616,7 @@ app.get('/api/manifest', (req, res) => {
   res.json(manifestData);
 });
 
-app.post('/api/manifest/import', (req, res) => {
+app.post('/api/manifest/import', async (req, res) => {
   try {
     const { items, filename } = req.body;
     if (!Array.isArray(items)) {
@@ -540,6 +656,9 @@ app.post('/api/manifest/import', (req, res) => {
     saveManifest();
     broadcastSession('MANIFEST_UPDATED', { manifestData });
 
+    // Automatically synchronize and heal Lot/Box info across all existing journal proofs on disk
+    await selfHealAllMetadataWithManifest();
+
     res.json({
       success: true,
       manifestData
@@ -552,8 +671,6 @@ app.post('/api/manifest/import', (req, res) => {
 
 app.get('/api/manifest/check/:isbn', (req, res) => {
   const rawIsbn = req.params.isbn;
-  const cleanIsbn = sanitizeIsbn(rawIsbn);
-  const numericOnly = rawIsbn.replace(/[^0-9Xx]/g, '');
 
   if (!manifestData.items || manifestData.items.length === 0) {
     return res.json({
@@ -563,12 +680,7 @@ app.get('/api/manifest/check/:isbn', (req, res) => {
     });
   }
 
-  const match = manifestData.items.find(item => {
-    const itemNum = item.isbn.replace(/[^0-9Xx]/g, '');
-    return item.isbn.toLowerCase() === rawIsbn.toLowerCase() ||
-      item.isbn.toLowerCase() === cleanIsbn.toLowerCase() ||
-      (numericOnly.length > 0 && itemNum === numericOnly);
-  });
+  const match = findManifestItem(rawIsbn);
 
   if (match) {
     return res.json({
@@ -1530,29 +1642,19 @@ app.post('/api/capture/init-isbn', async (req, res) => {
     const cleanBaseIsbn = sanitizeIsbn(isbn);
     const baseIsbnOnly = getBaseIsbn(cleanBaseIsbn);
 
-    // Check Manifest validation
-    let manifestMatch = null;
+    // Universal manifest matching
+    const manifestMatch = findManifestItem(cleanBaseIsbn) || findManifestItem(isbn) || findManifestItem(baseIsbnOnly);
     let isProcessable = true;
     let nonProcessableReason = '';
 
-    if (manifestData.items && manifestData.items.length > 0) {
-      const numericOnly = isbn.replace(/[^0-9Xx]/g, '');
-      manifestMatch = manifestData.items.find(item => {
-        const itemNum = item.isbn.replace(/[^0-9Xx]/g, '');
-        return item.isbn.toLowerCase() === isbn.toLowerCase() ||
-          item.isbn.toLowerCase() === cleanBaseIsbn.toLowerCase() ||
-          (numericOnly.length > 0 && itemNum === numericOnly);
-      });
-
-      if (manifestMatch) {
-        isProcessable = manifestMatch.isProcessable;
-        if (!isProcessable) {
-          nonProcessableReason = manifestMatch.reason || 'Journal is marked as Not Processable in the imported manifest.';
-        }
-      } else if (config.enforceManifest) {
-        isProcessable = false;
-        nonProcessableReason = 'ISBN is not listed in the imported manifest (Strict Mode Active).';
+    if (manifestMatch) {
+      isProcessable = manifestMatch.isProcessable;
+      if (!isProcessable) {
+        nonProcessableReason = manifestMatch.reason || 'Journal is marked as Not Processable in the imported manifest.';
       }
+    } else if (config.enforceManifest && manifestData.items && manifestData.items.length > 0) {
+      isProcessable = false;
+      nonProcessableReason = 'ISBN is not listed in the imported manifest (Strict Mode Active).';
     }
 
     const existingCopies = await findExistingCopies(baseIsbnOnly);
@@ -1623,8 +1725,13 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       }
     }
 
-    const resolvedLot = manifestMatch?.lotNumber || metadata?.lotNumber || lotNumber || currentSession.lotNumber || 'Lot-1';
-    const resolvedBox = manifestMatch?.boxNumber || metadata?.boxNumber || boxNumber || currentSession.boxNumber || '';
+    const resolvedLot = (lotNumber && lotNumber !== 'Unassigned' && lotNumber !== 'Unassigned Lot' && lotNumber !== 'Lot-1')
+      ? lotNumber
+      : (manifestMatch?.lotNumber || metadata?.lotNumber || currentSession.lotNumber || lotNumber || 'Unassigned Lot');
+
+    const resolvedBox = (boxNumber && boxNumber !== 'Unassigned' && boxNumber !== 'Unassigned Box')
+      ? boxNumber
+      : (manifestMatch?.boxNumber || metadata?.boxNumber || currentSession.boxNumber || boxNumber || '');
 
     currentSession = {
       activeIsbn: activeIdentifier,
@@ -1722,18 +1829,15 @@ app.post('/api/capture/save-shot', async (req, res) => {
     const buffer = Buffer.from(cleanBase64, 'base64');
     await fs.writeFile(filePath, buffer);
 
-    // Auto-lookup manifest if lot or box is missing
-    let manifestMatchForShot = null;
-    if (manifestData.items && manifestData.items.length > 0) {
-      const numericTarget = baseIsbnOnly.replace(/[^0-9Xx]/g, '');
-      manifestMatchForShot = manifestData.items.find(i => {
-        const itemNum = i.isbn.replace(/[^0-9Xx]/g, '');
-        return sanitizeIsbn(i.isbn) === baseIsbnOnly || (numericTarget && itemNum === numericTarget);
-      });
-    }
+    // Universal manifest lookup for lot & box
+    const manifestMatchForShot = findManifestItem(baseIsbnOnly) || findManifestItem(cleanIsbn) || findManifestItem(isbn);
+    const resolvedLot = (lotNumber && lotNumber !== 'Unassigned' && lotNumber !== 'Unassigned Lot' && lotNumber !== 'Lot-1')
+      ? lotNumber
+      : (manifestMatchForShot?.lotNumber || currentSession.lotNumber || lotNumber || 'Unassigned Lot');
 
-    const resolvedLot = manifestMatchForShot?.lotNumber || lotNumber || currentSession.lotNumber || 'Lot-1';
-    const resolvedBox = manifestMatchForShot?.boxNumber || boxNumber || currentSession.boxNumber || '';
+    const resolvedBox = (boxNumber && boxNumber !== 'Unassigned' && boxNumber !== 'Unassigned Box')
+      ? boxNumber
+      : (manifestMatchForShot?.boxNumber || currentSession.boxNumber || boxNumber || '');
 
     let metadata = readIsbnMetadata(cleanIsbn) || {
       identifier: cleanIsbn,
@@ -2365,7 +2469,7 @@ app.get('/api/gallery/export-csv', async (req, res) => {
 
     for (const dir of dirEntries) {
       const folderPath = path.join(config.storagePath, dir.name);
-      const meta = readIsbnMetadata(dir.name);
+      let meta = readIsbnMetadata(dir.name);
 
       let stat = null;
       try {
@@ -2387,12 +2491,26 @@ app.get('/api/gallery/export-csv', async (req, res) => {
       const copyMatch = dir.name.match(/_Copy(\d+)$/i);
       const copyNum = meta?.copyNumber || (copyMatch ? copyMatch[1] : '1');
       const baseIsbn = meta?.isbn || getBaseIsbn(dir.name);
-      const lotNum = meta?.lotNumber || 'Unassigned';
-      const boxNum = meta?.boxNumber || '';
-      const title = meta?.bookDetails?.title || '';
-      const authors = meta?.bookDetails?.authors || '';
-      const publisher = meta?.bookDetails?.publisher || '';
-      const year = meta?.bookDetails?.publishYear || '';
+      const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(dir.name);
+
+      // Robust Lot Resolution
+      let lotNum = meta?.lotNumber;
+      if (!lotNum || lotNum === 'Unassigned' || lotNum === 'Unassigned Lot' || (lotNum === 'Lot-1' && manifestMatch?.lotNumber && manifestMatch.lotNumber !== 'Lot-1')) {
+        if (manifestMatch?.lotNumber) lotNum = manifestMatch.lotNumber;
+      }
+      if (!lotNum) lotNum = 'Unassigned Lot';
+
+      // Robust Box Resolution
+      let boxNum = meta?.boxNumber;
+      if (!boxNum || boxNum === 'Unassigned' || boxNum === 'Unassigned Box') {
+        if (manifestMatch?.boxNumber) boxNum = manifestMatch.boxNumber;
+      }
+      if (!boxNum) boxNum = '';
+
+      const title = meta?.bookDetails?.title || manifestMatch?.title || '';
+      const authors = meta?.bookDetails?.authors || manifestMatch?.author || '';
+      const publisher = meta?.bookDetails?.publisher || manifestMatch?.publisher || '';
+      const year = meta?.bookDetails?.publishYear || manifestMatch?.publicationYear || '';
       const operator = meta?.operator || 'Inventory Operator';
       const station = meta?.station || config.watermarkStation || '';
       const createdAt = meta?.createdAt ? new Date(meta.createdAt).toLocaleString() : '';
@@ -2451,7 +2569,7 @@ app.get('/api/gallery/list', async (req, res) => {
     const items = [];
     for (const dir of dirEntries) {
       const folderPath = path.join(config.storagePath, dir.name);
-      const metadata = readIsbnMetadata(dir.name);
+      let metadata = readIsbnMetadata(dir.name);
 
       let stat = null;
       try {
@@ -2473,12 +2591,50 @@ app.get('/api/gallery/list', async (req, res) => {
       const copyMatch = dir.name.match(/_Copy(\d+)$/i);
       const copyNumber = metadata?.copyNumber || (copyMatch ? parseInt(copyMatch[1], 10) : 1);
       const baseIsbn = metadata?.isbn || getBaseIsbn(dir.name);
+      const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(dir.name);
+
+      // Robust Lot Resolution:
+      let lotNumber = metadata?.lotNumber;
+      if (!lotNumber || lotNumber === 'Unassigned' || lotNumber === 'Unassigned Lot' || (lotNumber === 'Lot-1' && manifestMatch?.lotNumber && manifestMatch.lotNumber !== 'Lot-1')) {
+        if (manifestMatch?.lotNumber) {
+          lotNumber = manifestMatch.lotNumber;
+        }
+      }
+      if (!lotNumber) lotNumber = 'Unassigned Lot';
+
+      // Robust Box Resolution:
+      let boxNumber = metadata?.boxNumber;
+      if (!boxNumber || boxNumber === 'Unassigned' || boxNumber === 'Unassigned Box') {
+        if (manifestMatch?.boxNumber) {
+          boxNumber = manifestMatch.boxNumber;
+        }
+      }
+      if (!boxNumber) boxNumber = '';
+
+      // Auto self-heal metadata on disk if it was missing Lot or Box
+      if (metadata && (metadata.lotNumber !== lotNumber || metadata.boxNumber !== boxNumber || (!metadata.bookDetails && manifestMatch?.title))) {
+        metadata.lotNumber = lotNumber;
+        metadata.boxNumber = boxNumber;
+        if (!metadata.bookDetails && manifestMatch?.title) {
+          metadata.bookDetails = {
+            title: manifestMatch.title,
+            authors: manifestMatch.author || '',
+            publisher: manifestMatch.publisher || '',
+            publishYear: manifestMatch.publicationYear || '',
+            printIssn: manifestMatch.printIssn || '',
+            volume: manifestMatch.volume || '',
+            issues: manifestMatch.issues || '',
+            source: 'Manifest'
+          };
+        }
+        saveIsbnMetadata(dir.name, metadata).catch(() => {});
+      }
 
       items.push({
         isbn: dir.name,
         baseIsbn,
-        lotNumber: metadata?.lotNumber || 'Unassigned Lot',
-        boxNumber: metadata?.boxNumber || '',
+        lotNumber,
+        boxNumber,
         copyNumber,
         folderPath,
         shotsCount,
