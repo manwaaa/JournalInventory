@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   Barcode, 
   ArrowRight, 
@@ -1406,9 +1407,9 @@ export function App() {
       </main>
 
       {/* Quick Search Modal (Ctrl+K) */}
-      {quickSearchOpen && (
+      {quickSearchOpen && createPortal(
         <div 
-          className="fixed inset-0 z-50 flex items-start justify-center pt-20 p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
+          className="fixed inset-0 z-[99999] flex items-start justify-center pt-20 p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
           onClick={() => setQuickSearchOpen(false)}
         >
           <div 
@@ -1447,12 +1448,13 @@ export function App() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Duplicate Copy Modal */}
-      {duplicateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm animate-fade-in">
+      {duplicateModal && createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-md rounded-2xl modal-card p-6 space-y-4">
             <div className="flex items-center space-x-3">
               <div className="p-2.5 rounded-xl bg-purple-50 text-purple-700 border border-purple-200">
@@ -1518,12 +1520,13 @@ export function App() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Blur Sharpness Warning */}
-      {blurWarning && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm animate-fade-in">
+      {blurWarning && createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-lg rounded-2xl modal-card p-6 space-y-4">
             <div className="flex items-center space-x-3">
               <div className="p-2.5 rounded-xl bg-amber-50 text-amber-600 border border-amber-200">
@@ -1562,7 +1565,8 @@ export function App() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Manifest Import Modal */}

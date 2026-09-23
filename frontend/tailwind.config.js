@@ -43,27 +43,27 @@ export default {
       keyframes: {
         fadeIn: {
           '0%': { opacity: '0', transform: 'translateY(6px)' },
-          '100%': { opacity: '1', transform: 'translateY(0)' }
+          '100%': { opacity: '1', transform: 'none' }
         },
         slideDown: {
           '0%': { opacity: '0', transform: 'translateY(-12px)' },
-          '100%': { opacity: '1', transform: 'translateY(0)' }
+          '100%': { opacity: '1', transform: 'none' }
         },
         scaleIn: {
           '0%': { opacity: '0', transform: 'scale(0.97)' },
-          '100%': { opacity: '1', transform: 'scale(1)' }
+          '100%': { opacity: '1', transform: 'none' }
         },
         pageTransition: {
-          '0%': { opacity: '0', transform: 'translateY(12px) scale(0.99)' },
-          '100%': { opacity: '1', transform: 'translateY(0) scale(1)' }
+          '0%': { opacity: '0', transform: 'translateY(8px)' },
+          '100%': { opacity: '1', transform: 'none' }
         },
         roleTransition: {
-          '0%': { opacity: '0', transform: 'translateX(10px) scale(0.98)' },
-          '100%': { opacity: '1', transform: 'translateX(0) scale(1)' }
+          '0%': { opacity: '0', transform: 'translateX(8px)' },
+          '100%': { opacity: '1', transform: 'none' }
         },
         tabSwitch: {
-          '0%': { opacity: '0.4', transform: 'scale(0.96)' },
-          '100%': { opacity: '1', transform: 'scale(1)' }
+          '0%': { opacity: '0.4', transform: 'scale(0.98)' },
+          '100%': { opacity: '1', transform: 'none' }
         }
       }
     },

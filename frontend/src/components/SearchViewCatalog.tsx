@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   Search, 
   ChevronDown, 
@@ -23,9 +24,23 @@ import {
   ZoomOut,
   RotateCw,
   ChevronLeft,
-  X
+  ChevronRight as ChevronRightIcon,
+  X,
+  LayoutGrid,
+  Maximize2
 } from 'lucide-react';
 import { ProofItem, SHOT_DEFINITIONS } from '../types';
+
+export const getShotUrl = (item: ProofItem | null | undefined, shotNumber: number): string | null => {
+  if (!item) return null;
+  const numKey = shotNumber;
+  const strKey = String(shotNumber);
+  if (item.shots && item.shots[numKey]) return item.shots[numKey];
+  if (item.shots && item.shots[strKey]) return item.shots[strKey];
+  const urlField = (item as any)[`shot${shotNumber}Url`];
+  if (urlField) return urlField;
+  return null;
+};
 
 interface SearchViewCatalogProps {
   onSelectIsbnForCapture: (isbn: string) => void;
@@ -747,51 +762,82 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
         })}
       </div>
 
-      {/* 7 Shots Detailed Inspection Modal */}
-      {selectedPhotoModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm animate-fade-in">
-          <div className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-2xl bg-white shadow-2xl border border-blue-100 overflow-hidden">
-            <div className="p-4 border-b border-blue-100 flex items-center justify-between bg-blue-50/40">
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900 font-mono">
-                  {selectedPhotoModal.isbn} — 7 Verification Shots
-                </h3>
-                <p className="text-xs text-slate-500">
-                  {selectedPhotoModal.item.metadata?.bookDetails?.title || 'Journal verification photos'}
-                </p>
+      {/* 7 Shots Detailed Overview Modal (Rendered in Portal to avoid clipping) */}
+      {selectedPhotoModal && createPortal(
+        <div 
+          className="fixed inset-0 z-[99998] flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-sm animate-fade-in"
+          onClick={() => setSelectedPhotoModal(null)}
+        >
+          <div 
+            className="w-full max-w-5xl max-h-[92vh] flex flex-col rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b border-blue-100 flex items-center justify-between bg-gradient-to-r from-blue-50/70 to-indigo-50/50">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 rounded-xl btn-primary-gradient text-white shadow-md shadow-brand-500/20">
+                  <LayoutGrid className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-base sm:text-lg font-extrabold text-slate-900 font-mono tracking-tight">
+                      {selectedPhotoModal.isbn}
+                    </h3>
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-brand-800 border border-blue-200">
+                      7 Verification Shots
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 font-medium truncate max-w-lg">
+                    {selectedPhotoModal.item.metadata?.bookDetails?.title || 'Journal Proof Verification Package'}
+                    {selectedPhotoModal.item.metadata?.lotNumber ? ` • Lot ${selectedPhotoModal.item.metadata.lotNumber}` : ''}
+                    {selectedPhotoModal.item.metadata?.boxNumber ? ` • Box ${selectedPhotoModal.item.metadata.boxNumber}` : ''}
+                  </p>
+                </div>
               </div>
 
-              <button
-                onClick={() => setSelectedPhotoModal(null)}
-                className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-white transition-colors"
-              >
-                ✕
-              </button>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => {
+                    setLightboxData({
+                      item: selectedPhotoModal.item,
+                      currentShotNumber: 1,
+                      zoomLevel: 1,
+                      rotation: 0
+                    });
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200 text-xs font-bold flex items-center space-x-1.5 transition-colors cursor-pointer"
+                  title="Open full-screen Lightbox starting at Shot 1"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                  <span>Fullscreen HD</span>
+                </button>
+                <button
+                  onClick={() => setSelectedPhotoModal(null)}
+                  className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                  title="Close (Esc)"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
+            {/* S3 Status Pill (if uploaded) */}
             {selectedPhotoModal.item.metadata?.s3Upload && (
-              <div className="mx-4 mt-3 px-3.5 py-2.5 rounded-xl bg-emerald-50/90 border border-emerald-200 flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-900 shadow-xs">
-                <div className="flex items-center space-x-2.5">
-                  <div className="p-1.5 rounded-lg bg-emerald-100 text-emerald-700">
-                    <CloudUpload className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <span className="font-bold block text-emerald-900 text-xs">
-                      Saved to AWS S3 Cloud Storage
-                    </span>
-                    <span className="font-mono text-[11px] text-emerald-700 select-all block">
-                      {selectedPhotoModal.item.metadata.s3Upload.s3FolderUri}
-                    </span>
-                  </div>
+              <div className="mx-4 sm:mx-6 mt-3 px-3.5 py-2 rounded-xl bg-emerald-50 border border-emerald-200 flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-900">
+                <div className="flex items-center space-x-2">
+                  <CloudUpload className="w-4 h-4 text-emerald-600" />
+                  <span className="font-bold">AWS S3 Synced:</span>
+                  <span className="font-mono text-[11px] text-emerald-700 select-all truncate max-w-sm">
+                    {selectedPhotoModal.item.metadata.s3Upload.s3FolderUri}
+                  </span>
                 </div>
-
                 <div className="flex items-center space-x-2">
                   {selectedPhotoModal.item.metadata.s3Upload.shareableLink && (
                     <a
                       href={selectedPhotoModal.item.metadata.s3Upload.shareableLink}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center space-x-1 px-2.5 py-1 text-[11px] font-bold bg-white text-emerald-800 border border-emerald-300 rounded-lg hover:bg-emerald-100 transition-colors"
+                      className="px-2.5 py-1 text-[11px] font-bold bg-white text-emerald-800 border border-emerald-300 rounded-lg hover:bg-emerald-100 transition-colors flex items-center space-x-1"
                     >
                       <ExternalLink className="w-3 h-3" />
                       <span>Open Link</span>
@@ -802,64 +848,130 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                       const link = selectedPhotoModal.item.metadata?.s3Upload?.shareableLink || selectedPhotoModal.item.metadata?.s3Upload?.s3FolderUri;
                       if (link) handleCopyS3Link(selectedPhotoModal.isbn, link);
                     }}
-                    className="inline-flex items-center space-x-1 px-2.5 py-1 text-[11px] font-bold bg-emerald-700 text-white rounded-lg hover:bg-emerald-600 transition-colors cursor-pointer shadow-xs"
+                    className="px-2.5 py-1 text-[11px] font-bold bg-emerald-700 text-white rounded-lg hover:bg-emerald-600 transition-colors cursor-pointer"
                   >
-                    {copiedS3Id === selectedPhotoModal.isbn ? (
-                      <>
-                        <Check className="w-3 h-3" />
-                        <span>Copied!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3 h-3" />
-                        <span>Copy S3 Link</span>
-                      </>
-                    )}
+                    {copiedS3Id === selectedPhotoModal.isbn ? '✓ Link Copied' : 'Copy S3 Link'}
                   </button>
                 </div>
               </div>
             )}
 
-            <div className="p-4 overflow-y-auto grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {/* 7 Shots Grid */}
+            <div className="p-4 sm:p-6 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 flex-1">
               {SHOT_DEFINITIONS.map((def) => {
-                const shotUrl = selectedPhotoModal.item.shots?.[def.shotNumber];
+                const shotUrl = getShotUrl(selectedPhotoModal.item, def.shotNumber);
 
                 return (
-                  <div key={def.shotNumber} className="rounded-xl border border-blue-100 p-2.5 bg-slate-50 space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-800">{def.label}</span>
-                      <span className="text-[10px] font-semibold text-slate-400">{def.scope === 'box_level' ? 'Box' : 'Book'}</span>
+                  <div 
+                    key={def.shotNumber} 
+                    className="rounded-2xl border border-slate-200 bg-slate-50/60 p-3 flex flex-col justify-between hover:border-brand-300 hover:bg-blue-50/20 transition-all group"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center space-x-1.5">
+                        <span className="w-5 h-5 rounded-md bg-brand-600 text-white text-[10px] font-bold flex items-center justify-center font-mono">
+                          {def.shotNumber}
+                        </span>
+                        <span className="text-xs font-bold text-slate-800 truncate">{def.label}</span>
+                      </div>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        def.scope === 'box_level' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-brand-800'
+                      }`}>
+                        {def.scope === 'box_level' ? 'Box' : 'Book'}
+                      </span>
                     </div>
 
-                    <div className="relative aspect-[4/3] rounded-lg overflow-hidden bg-slate-950 flex items-center justify-center border border-slate-200">
-                      {shotUrl ? (
-                        <img
-                          src={shotUrl}
-                          alt={def.label}
-                          className="w-full h-full object-contain cursor-pointer hover:opacity-90 transition-opacity"
-                          onClick={() => setLightboxData({
+                    <div 
+                      className="relative aspect-[4/3] rounded-xl overflow-hidden bg-slate-950 flex items-center justify-center border border-slate-200 shadow-xs cursor-pointer group-hover:shadow-md transition-all"
+                      onClick={() => {
+                        if (shotUrl) {
+                          setLightboxData({
                             item: selectedPhotoModal.item,
                             currentShotNumber: def.shotNumber,
                             zoomLevel: 1,
                             rotation: 0
-                          })}
-                        />
+                          });
+                        }
+                      }}
+                    >
+                      {shotUrl ? (
+                        <>
+                          <img
+                            src={shotUrl}
+                            alt={def.label}
+                            className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-200"
+                            loading="lazy"
+                          />
+                          <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <span className="px-2.5 py-1 rounded-lg bg-black/80 text-white text-xs font-bold flex items-center space-x-1 backdrop-blur-xs">
+                              <ZoomIn className="w-3.5 h-3.5" />
+                              <span>Inspect HD</span>
+                            </span>
+                          </div>
+                        </>
                       ) : (
-                        <span className="text-xs text-slate-500">Missing</span>
+                        <div className="text-center p-3 text-slate-500">
+                          <AlertCircle className="w-6 h-6 mx-auto mb-1 text-slate-600" />
+                          <span className="text-xs font-semibold block">Not Captured</span>
+                        </div>
                       )}
                     </div>
+
+                    {shotUrl && (
+                      <button
+                        onClick={() => {
+                          setLightboxData({
+                            item: selectedPhotoModal.item,
+                            currentShotNumber: def.shotNumber,
+                            zoomLevel: 1,
+                            rotation: 0
+                          });
+                        }}
+                        className="mt-2 w-full py-1 text-[11px] font-bold text-brand-700 bg-white hover:bg-brand-50 rounded-lg border border-brand-200 transition-colors flex items-center justify-center space-x-1 cursor-pointer"
+                      >
+                        <ZoomIn className="w-3 h-3" />
+                        <span>Inspect Shot {def.shotNumber}</span>
+                      </button>
+                    )}
                   </div>
                 );
               })}
             </div>
+
+            {/* Modal Footer Actions */}
+            <div className="p-3 sm:p-4 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => onOpenExplorer(selectedPhotoModal.isbn)}
+                  className="px-3 py-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-amber-50 rounded-xl border border-slate-200 hover:border-amber-300 transition-colors flex items-center space-x-1.5 cursor-pointer shadow-xs"
+                >
+                  <FolderOpen className="w-4 h-4 text-amber-500" />
+                  <span>Open Folder</span>
+                </button>
+                <button
+                  onClick={() => onDownloadZip(selectedPhotoModal.isbn)}
+                  className="px-3 py-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-blue-50 rounded-xl border border-slate-200 hover:border-blue-300 transition-colors flex items-center space-x-1.5 cursor-pointer shadow-xs"
+                >
+                  <Download className="w-4 h-4 text-brand-600" />
+                  <span>Download ZIP</span>
+                </button>
+              </div>
+
+              <button
+                onClick={() => setSelectedPhotoModal(null)}
+                className="px-4 py-1.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-colors cursor-pointer shadow-xs"
+              >
+                Close
+              </button>
+            </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {/* Crystal-Clear High-Resolution Photo Lightbox Inspector */}
+      {/* Crystal-Clear High-Resolution Photo Lightbox Inspector (Rendered in Portal) */}
       {lightboxData && (() => {
         const def = SHOT_DEFINITIONS.find(d => d.shotNumber === lightboxData.currentShotNumber) || SHOT_DEFINITIONS[0];
-        const shotUrl = lightboxData.item.shots?.[lightboxData.currentShotNumber];
+        const shotUrl = getShotUrl(lightboxData.item, lightboxData.currentShotNumber);
 
         const handlePrev = (e: React.MouseEvent) => {
           e.stopPropagation();
@@ -893,9 +1005,9 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
           setLightboxData(prev => prev ? { ...prev, rotation: (prev.rotation + 90) % 360 } : null);
         };
 
-        return (
+        return createPortal(
           <div 
-            className="fixed inset-0 z-[100] bg-slate-950/98 flex flex-col items-stretch justify-between animate-fade-in select-none"
+            className="fixed inset-0 z-[99999] bg-slate-950/98 flex flex-col items-stretch justify-between animate-fade-in select-none"
             onClick={() => setLightboxData(null)}
           >
             {/* Top Controls Bar */}
@@ -913,12 +1025,12 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                     <span className="text-xs font-normal text-slate-400 font-mono">({lightboxData.item.isbn})</span>
                   </h3>
                   <p className="text-[11px] text-slate-400 truncate max-w-md">
-                    {lightboxData.item.metadata?.bookDetails?.title || `Lot: ${lightboxData.item.lotNumber} • Box: ${lightboxData.item.boxNumber}`}
+                    {lightboxData.item.metadata?.bookDetails?.title || `Lot: ${lightboxData.item.lotNumber || 'Unassigned'} • Box: ${lightboxData.item.boxNumber || 'Unassigned'}`}
                   </p>
                 </div>
               </div>
 
-              {/* Toolbar: Zoom, Rotate, Open Raw, Close */}
+              {/* Toolbar: Zoom, Rotate, Grid View, Open Raw, Close */}
               <div className="flex items-center space-x-2">
                 {/* Zoom Controls */}
                 <div className="flex items-center bg-white/10 rounded-xl p-0.5 border border-white/15">
@@ -955,6 +1067,22 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                   className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 border border-white/15 transition-colors cursor-pointer"
                 >
                   <RotateCw className="w-4 h-4" />
+                </button>
+
+                <button
+                  onClick={() => {
+                    setSelectedPhotoModal({
+                      isbn: lightboxData.item.isbn,
+                      shots: lightboxData.item.shots,
+                      item: lightboxData.item
+                    });
+                    setLightboxData(null);
+                  }}
+                  title="View all 7 shots in grid overview"
+                  className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold text-slate-200 border border-white/15 transition-colors flex items-center space-x-1 cursor-pointer"
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  <span>Grid View</span>
                 </button>
 
                 {shotUrl && (
@@ -1022,7 +1150,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                 title="Next Shot (Right Arrow)"
                 className="absolute right-4 z-20 p-3 rounded-full bg-black/60 hover:bg-black/90 text-white border border-white/20 backdrop-blur-md transition-all active:scale-95 cursor-pointer shadow-xl"
               >
-                <ChevronRight className="w-6 h-6" />
+                <ChevronRightIcon className="w-6 h-6" />
               </button>
             </div>
 
@@ -1032,7 +1160,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
               onClick={(e) => e.stopPropagation()}
             >
               {SHOT_DEFINITIONS.map((d) => {
-                const thumbUrl = lightboxData.item.shots?.[d.shotNumber];
+                const thumbUrl = getShotUrl(lightboxData.item, d.shotNumber);
                 const isSelected = d.shotNumber === lightboxData.currentShotNumber;
 
                 return (
@@ -1060,7 +1188,8 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                 );
               })}
             </div>
-          </div>
+          </div>,
+          document.body
         );
       })()}
 

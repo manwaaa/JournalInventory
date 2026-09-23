@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   X, 
   Search, 
@@ -97,8 +98,8 @@ export const RecentCapturesModal: React.FC<RecentCapturesModalProps> = ({
     return i.isbn.toLowerCase().includes(query) || title.includes(query) || author.includes(query);
   });
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
       <div className="w-full max-w-4xl max-h-[85vh] flex flex-col rounded-2xl modal-card overflow-hidden">
         
         {/* Modal Header */}
@@ -283,6 +284,7 @@ export const RecentCapturesModal: React.FC<RecentCapturesModalProps> = ({
         </div>
 
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

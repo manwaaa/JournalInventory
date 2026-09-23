@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   FolderOpen, 
   Download, 
@@ -399,9 +400,9 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
       </div>
 
       {/* High-Res Fullscreen Modal Preview */}
-      {selectedPreview && (
+      {selectedPreview && createPortal(
         <div
-          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 backdrop-blur-sm cursor-pointer"
+          className="fixed inset-0 z-[99999] bg-black/95 flex items-center justify-center p-4 backdrop-blur-sm cursor-pointer animate-fade-in select-none"
           onClick={() => setSelectedPreview(null)}
         >
           <div className="relative max-w-5xl max-h-[90vh] flex flex-col items-center">
@@ -410,9 +411,10 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
               alt="Verification Full View"
               className="max-h-[85vh] max-w-full rounded-xl object-contain shadow-2xl border border-white/20"
             />
-            <p className="text-white/80 text-xs mt-2 font-medium">Click anywhere to close preview</p>
+            <p className="text-white/80 text-xs mt-2 font-medium">Click anywhere or press Esc to close preview</p>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
     </div>

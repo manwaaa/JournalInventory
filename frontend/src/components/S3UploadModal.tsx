@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   X, 
   CloudUpload, 
@@ -190,8 +191,8 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
   const lot = item?.lotNumber || item?.metadata?.lotNumber || 'Unassigned Lot';
   const box = item?.boxNumber || item?.metadata?.boxNumber || '';
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
       <div className="w-full max-w-xl rounded-2xl modal-card overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
         
         {/* Modal Header */}
@@ -503,7 +504,8 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
         </div>
 
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
 

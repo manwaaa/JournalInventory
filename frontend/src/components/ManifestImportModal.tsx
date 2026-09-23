@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import { 
   X, 
@@ -396,8 +397,8 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
     return true;
   });
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
       <div className={`w-full transition-all duration-200 rounded-2xl modal-card overflow-hidden flex flex-col shadow-2xl ${
         isMaximized 
           ? 'max-w-[98vw] h-[96vh]' 
@@ -682,6 +683,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
         </div>
 
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
