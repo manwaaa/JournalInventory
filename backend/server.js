@@ -90,13 +90,24 @@ function getShotFilename(shotNumber, identifier) {
   return `${prefix}${def.suffix}`;
 }
 
+function isValidImageFile(filePath) {
+  try {
+    if (!filePath || typeof filePath !== 'string' || !fs.existsSync(filePath)) return false;
+    const stat = fs.statSync(filePath);
+    return stat.isFile() && stat.size > 1024; // Must be at least 1 KB
+  } catch (e) {
+    return false;
+  }
+}
+
 function findShotFileInFolder(folderPath, shotNumber, identifier) {
   const def = SHOT_DEFINITIONS[shotNumber];
   if (!def || !fs.existsSync(folderPath)) return null;
 
   // 1. Direct match with identifier prefix (e.g. 9780198826545_box.jpg)
   const targetName = getShotFilename(shotNumber, identifier);
-  if (fs.existsSync(path.join(folderPath, targetName))) {
+  const targetPath = path.join(folderPath, targetName);
+  if (isValidImageFile(targetPath)) {
     return targetName;
   }
 
@@ -106,13 +117,20 @@ function findShotFileInFolder(folderPath, shotNumber, identifier) {
     const suffix = def.suffix.toLowerCase();
 
     // Check files ending with this shot's suffix (e.g. any *_box.jpg, *_front cover.jpg)
-    const suffixMatch = files.find(f => f.toLowerCase().endsWith(suffix));
-    if (suffixMatch) return suffixMatch;
+    for (const f of files) {
+      if (f.toLowerCase().endsWith(suffix)) {
+        const fullP = path.join(folderPath, f);
+        if (isValidImageFile(fullP)) return f;
+      }
+    }
 
     // Check legacy names
     for (const leg of def.legacyNames) {
       const legMatch = files.find(f => f.toLowerCase() === leg.toLowerCase() || f.toLowerCase().endsWith(leg.toLowerCase()));
-      if (legMatch) return legMatch;
+      if (legMatch) {
+        const fullP = path.join(folderPath, legMatch);
+        if (isValidImageFile(fullP)) return legMatch;
+      }
     }
   } catch (e) {}
 
@@ -940,8 +958,8 @@ function getBoxKey(lotNumber, boxNumber) {
 
 function dirHasBoxShots(dirPath) {
   if (!dirPath || !fs.existsSync(dirPath)) return false;
-  return fs.existsSync(path.join(dirPath, 'shot_1_box.jpg')) ||
-         fs.existsSync(path.join(dirPath, 'shot_2_unbox.jpg')) ||
+  return isValidImageFile(path.join(dirPath, 'shot_1_box.jpg')) ||
+         isValidImageFile(path.join(dirPath, 'shot_2_unbox.jpg')) ||
          Boolean(findShotFileInFolder(dirPath, 1, 'shot_1')) ||
          Boolean(findShotFileInFolder(dirPath, 2, 'shot_2'));
 }
@@ -954,23 +972,21 @@ function findBoxStorageDir(lotNumber, boxNumber) {
 
   // 1. Direct match with exact key
   const directKey = getBoxKey(lotNumber, boxNumber);
-  let fallbackCandidate = null;
   if (directKey) {
     const directPath = path.join(boxesBaseDir, directKey);
-    if (fs.existsSync(directPath)) {
-      if (dirHasBoxShots(directPath)) return directPath;
-      fallbackCandidate = directPath;
+    if (fs.existsSync(directPath) && dirHasBoxShots(directPath)) {
+      return directPath;
     }
   }
 
-  // 2. Scan _boxes directory for matching folder
+  // 2. Scan _boxes directory for matching folder that actively contains verified shots
   const normBox = normalizeBoxString(boxNumber);
   const normLot = normalizeLotString(lotNumber);
 
   try {
     const entries = fs.readdirSync(boxesBaseDir);
 
-    // Look for matching lot + box ignoring case and punctuation
+    // Look for matching lot + box
     for (const entry of entries) {
       const parts = entry.split('__');
       if (parts.length >= 2) {
@@ -978,31 +994,25 @@ function findBoxStorageDir(lotNumber, boxNumber) {
         const entryBoxNorm = normalizeBoxString(parts.slice(1).join('__'));
         if (entryBoxNorm === normBox && (entryLotNorm === normLot || normLot === 'unassigned' || entryLotNorm === 'unassigned')) {
           const candidate = path.join(boxesBaseDir, entry);
-          if (fs.existsSync(candidate)) {
-            if (dirHasBoxShots(candidate)) return candidate;
-            if (!fallbackCandidate) fallbackCandidate = candidate;
-          }
+          if (dirHasBoxShots(candidate)) return candidate;
         }
       }
     }
 
-    // Look for matching box number alone across any lot in _boxes
+    // Look for matching box number alone across any lot in _boxes ONLY IF it has shots
     for (const entry of entries) {
       const parts = entry.split('__');
       const entryBoxNorm = normalizeBoxString(parts.length >= 2 ? parts.slice(1).join('__') : entry);
       if (entryBoxNorm === normBox) {
         const candidate = path.join(boxesBaseDir, entry);
-        if (fs.existsSync(candidate)) {
-          if (dirHasBoxShots(candidate)) return candidate;
-          if (!fallbackCandidate) fallbackCandidate = candidate;
-        }
+        if (dirHasBoxShots(candidate)) return candidate;
       }
     }
   } catch (err) {
     console.warn('[Box Storage] Error searching _boxes directory:', err.message);
   }
 
-  return fallbackCandidate;
+  return null;
 }
 
 function getBoxStorageDir(lotNumber, boxNumber) {
@@ -1014,13 +1024,16 @@ function getBoxStorageDir(lotNumber, boxNumber) {
 }
 
 function getBoxShots(lotNumber, boxNumber) {
-  const boxDir = findBoxStorageDir(lotNumber, boxNumber) || getBoxStorageDir(lotNumber, boxNumber);
+  const boxDir = findBoxStorageDir(lotNumber, boxNumber);
   if (!boxDir || !fs.existsSync(boxDir)) {
     return { hasBoxShot: false, hasUnboxShot: false, boxShotUrl: null, unboxShotUrl: null, boxMeta: null };
   }
 
-  const hasBoxShot = fs.existsSync(path.join(boxDir, 'shot_1_box.jpg'));
-  const hasUnboxShot = fs.existsSync(path.join(boxDir, 'shot_2_unbox.jpg'));
+  const shot1File = isValidImageFile(path.join(boxDir, 'shot_1_box.jpg')) ? 'shot_1_box.jpg' : findShotFileInFolder(boxDir, 1, 'shot_1');
+  const shot2File = isValidImageFile(path.join(boxDir, 'shot_2_unbox.jpg')) ? 'shot_2_unbox.jpg' : findShotFileInFolder(boxDir, 2, 'shot_2');
+
+  const hasBoxShot = Boolean(shot1File);
+  const hasUnboxShot = Boolean(shot2File);
 
   let boxMeta = null;
   try {
@@ -1032,15 +1045,17 @@ function getBoxShots(lotNumber, boxNumber) {
   return {
     hasBoxShot,
     hasUnboxShot,
-    boxShotUrl: hasBoxShot ? `/proofs/_boxes/${encodeURIComponent(key)}/shot_1_box.jpg` : null,
-    unboxShotUrl: hasUnboxShot ? `/proofs/_boxes/${encodeURIComponent(key)}/shot_2_unbox.jpg` : null,
+    boxShotUrl: hasBoxShot ? `/proofs/_boxes/${encodeURIComponent(key)}/${encodeURIComponent(shot1File)}` : null,
+    unboxShotUrl: hasUnboxShot ? `/proofs/_boxes/${encodeURIComponent(key)}/${encodeURIComponent(shot2File)}` : null,
     boxMeta
   };
 }
 
 async function saveBoxShotToFile(lotNumber, boxNumber, shotNumber, buffer, blurScore) {
-  const boxDir = getBoxStorageDir(lotNumber, boxNumber);
-  if (!boxDir) return null;
+  if (!buffer || buffer.length < 100) return null;
+  const key = getBoxKey(lotNumber, boxNumber);
+  if (!key) return null;
+  const boxDir = path.join(config.storagePath, '_boxes', key);
   fs.ensureDirSync(boxDir);
 
   const filename = shotNumber === 1 ? 'shot_1_box.jpg' : 'shot_2_unbox.jpg';
@@ -1058,10 +1073,11 @@ async function saveBoxShotToFile(lotNumber, boxNumber, shotNumber, buffer, blurS
     try { meta = fs.readJsonSync(metaPath); } catch (e) {}
   }
   meta.updatedAt = new Date().toISOString();
+  meta.shots = meta.shots || {};
   meta.shots[shotNumber] = {
     filename,
     savedAt: new Date().toISOString(),
-    type: SHOT_DEFINITIONS[shotNumber].type,
+    type: SHOT_DEFINITIONS[shotNumber]?.type || (shotNumber === 1 ? 'Box' : 'Unbox'),
     blurScore: blurScore || null
   };
   await fs.writeJson(metaPath, meta, { spaces: 2 });
@@ -1113,14 +1129,16 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
             if (shot1File || shot2File) {
               const fallbackBoxDir = path.join(config.storagePath, '_boxes', getBoxKey(m?.lotNumber || lotNumber, boxNumber));
               fs.ensureDirSync(fallbackBoxDir);
-              if (shot1File && !fs.existsSync(path.join(fallbackBoxDir, 'shot_1_box.jpg'))) {
+              if (shot1File && isValidImageFile(path.join(candidateFolder, shot1File)) && !isValidImageFile(path.join(fallbackBoxDir, 'shot_1_box.jpg'))) {
                 fs.copySync(path.join(candidateFolder, shot1File), path.join(fallbackBoxDir, 'shot_1_box.jpg'));
               }
-              if (shot2File && !fs.existsSync(path.join(fallbackBoxDir, 'shot_2_unbox.jpg'))) {
+              if (shot2File && isValidImageFile(path.join(candidateFolder, shot2File)) && !isValidImageFile(path.join(fallbackBoxDir, 'shot_2_unbox.jpg'))) {
                 fs.copySync(path.join(candidateFolder, shot2File), path.join(fallbackBoxDir, 'shot_2_unbox.jpg'));
               }
-              boxDir = fallbackBoxDir;
-              break;
+              if (dirHasBoxShots(fallbackBoxDir)) {
+                boxDir = fallbackBoxDir;
+                break;
+              }
             }
           }
         }
@@ -1139,16 +1157,20 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
         const p1Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_1_box.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
         if (p1Res && p1Res.ok) {
           const buf1 = Buffer.from(await p1Res.arrayBuffer());
-          fs.ensureDirSync(destBoxDir);
-          await fs.writeFile(path.join(destBoxDir, 'shot_1_box.jpg'), buf1);
-          boxDir = destBoxDir;
+          if (buf1.length > 1024) {
+            fs.ensureDirSync(destBoxDir);
+            await fs.writeFile(path.join(destBoxDir, 'shot_1_box.jpg'), buf1);
+            boxDir = destBoxDir;
+          }
         }
         const p2Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_2_unbox.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
         if (p2Res && p2Res.ok) {
           const buf2 = Buffer.from(await p2Res.arrayBuffer());
-          fs.ensureDirSync(destBoxDir);
-          await fs.writeFile(path.join(destBoxDir, 'shot_2_unbox.jpg'), buf2);
-          boxDir = destBoxDir;
+          if (buf2.length > 1024) {
+            fs.ensureDirSync(destBoxDir);
+            await fs.writeFile(path.join(destBoxDir, 'shot_2_unbox.jpg'), buf2);
+            boxDir = destBoxDir;
+          }
         }
       }
     } catch (peerErr) {}
@@ -1164,19 +1186,19 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
   const targetPath1 = path.join(folderPath, targetShot1);
   const targetPath2 = path.join(folderPath, targetShot2);
 
-  const sourceFile1 = findShotFileInFolder(boxDir, 1, 'shot_1') || (fs.existsSync(path.join(boxDir, 'shot_1_box.jpg')) ? 'shot_1_box.jpg' : null);
-  const sourceFile2 = findShotFileInFolder(boxDir, 2, 'shot_2') || (fs.existsSync(path.join(boxDir, 'shot_2_unbox.jpg')) ? 'shot_2_unbox.jpg' : null);
+  const sourceFile1 = isValidImageFile(path.join(boxDir, 'shot_1_box.jpg')) ? 'shot_1_box.jpg' : findShotFileInFolder(boxDir, 1, 'shot_1');
+  const sourceFile2 = isValidImageFile(path.join(boxDir, 'shot_2_unbox.jpg')) ? 'shot_2_unbox.jpg' : findShotFileInFolder(boxDir, 2, 'shot_2');
 
   const sourcePath1 = sourceFile1 ? path.join(boxDir, sourceFile1) : null;
   const sourcePath2 = sourceFile2 ? path.join(boxDir, sourceFile2) : null;
 
-  if (sourcePath1 && fs.existsSync(sourcePath1) && !fs.existsSync(targetPath1)) {
+  if (sourcePath1 && isValidImageFile(sourcePath1) && !isValidImageFile(targetPath1)) {
     fs.ensureDirSync(folderPath);
     await fs.copy(sourcePath1, targetPath1);
     inherited1 = true;
   }
 
-  if (sourcePath2 && fs.existsSync(sourcePath2) && !fs.existsSync(targetPath2)) {
+  if (sourcePath2 && isValidImageFile(sourcePath2) && !isValidImageFile(targetPath2)) {
     fs.ensureDirSync(folderPath);
     await fs.copy(sourcePath2, targetPath2);
     inherited2 = true;
@@ -1573,22 +1595,20 @@ app.post('/api/capture/save-shot', async (req, res) => {
       });
     }
 
-    if (!req.body.isReplication && config.peerSyncEnabled && config.peerIp) {
-      replicateToPeer({
-        isbn: cleanIsbn,
-        shotNumber: sNum,
-        imageBase64,
-        operatorName,
-        bookDetails,
-        blurScore,
-        metadata
-      });
-    }
-
-    // If Shot 1 (Box) or Shot 2 (Unbox), save to box-level storage for all books in this box
+    // If Shot 1 (Box) or Shot 2 (Unbox), save to box-level storage and replicate to peer PC
     if (sNum === 1 || sNum === 2) {
       if (resolvedBox) {
         await saveBoxShotToFile(resolvedLot, resolvedBox, sNum, buffer, blurScore);
+
+        if (!req.body.isReplication && config.peerSyncEnabled && config.peerIp) {
+          replicateBoxShotToPeer({
+            lotNumber: resolvedLot,
+            boxNumber: resolvedBox,
+            shotNumber: sNum,
+            imageBase64,
+            blurScore
+          });
+        }
 
         // Propagate to any other books in this box that are already scanned or in manifest
         if (manifestData.items && manifestData.items.length > 0) {

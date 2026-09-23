@@ -119,6 +119,7 @@ export function App() {
   const isbnInputRef = useRef<HTMLInputElement | null>(null);
   const quickSearchInputRef = useRef<HTMLInputElement | null>(null);
   const pendingNextRef = useRef<boolean>(false);
+  const scanTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Custom camera & sound hooks
   const {
@@ -871,6 +872,9 @@ export function App() {
     });
     setActiveIsbn('');
     setIsbnInput('');
+    if (isbnInputRef.current) {
+      isbnInputRef.current.value = '';
+    }
     // For PC 1 (box_level), Next means proceeding to the next box.
     // For PC 2 (book_level) and Standalone, keep active lotNumber & boxNumber so the box context
     // and inherited Box / Unbox shots stay active for the remaining journals in this box!
@@ -887,7 +891,9 @@ export function App() {
     setBlurWarning(null);
     setCurrentStep('SCAN_ISBN');
     fetchStatus();
-    setTimeout(() => isbnInputRef.current?.focus(), 150);
+    setTimeout(() => {
+      isbnInputRef.current?.focus();
+    }, 100);
   };
 
   // Open Explorer
@@ -913,24 +919,26 @@ export function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
 
-      // Enter key: When session is complete or box level is done, proceed to Next Journal / Next Box hands-free
+      // Enter key: When session is complete or box level is done, proceed to Next Journal in 1 single press!
       if (e.key === 'Enter') {
         const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
         const hasBoxShots = Boolean(shots[1] && shots[2]);
-
-        if (
-          currentStep === 'COMPLETE' ||
+        const isReadyForNext = currentStep === 'COMPLETE' ||
           (stationRole === 'box_level' && (currentStep === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
           (hasAllBookShots && !currentStep.startsWith('CAPTURE_SHOT_')) ||
-          (isCapturing && (currentStep === 'CAPTURE_SHOT_7' || (stationRole === 'box_level' && currentStep === 'CAPTURE_SHOT_2')))
-        ) {
+          (isCapturing && (currentStep === 'CAPTURE_SHOT_7' || (stationRole === 'box_level' && currentStep === 'CAPTURE_SHOT_2')));
+
+        if (activeIsbn && isReadyForNext) {
           e.preventDefault();
+          e.stopPropagation();
           handleNextJournal();
           return;
         }
       }
+
+      if (isInput) return;
 
       // Spacebar key: Capture photo
       if (e.code === 'Space') {
@@ -940,8 +948,8 @@ export function App() {
         }
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [currentStep, activeIsbn, isCapturing, isStreaming, stationRole, shots, handleNextJournal, handleCapturePhoto]);
 
   // Count captured shots
@@ -1160,15 +1168,40 @@ export function App() {
                       ref={isbnInputRef}
                       type="text"
                       value={isbnInput}
-                      onChange={(e) => setIsbnInput(e.target.value)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setIsbnInput(val);
+                        if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+                        if (val.trim().length >= 8) {
+                          scanTimeoutRef.current = setTimeout(() => {
+                            if (currentStep === 'SCAN_ISBN' && val.trim() === isbnInputRef.current?.value.trim()) {
+                              isbnInputRef.current?.blur();
+                              if (document.activeElement instanceof HTMLElement) {
+                                document.activeElement.blur();
+                              }
+                              handleProcessIsbn(val.trim());
+                            }
+                          }, 120);
+                        }
+                      }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
-                          isbnInputRef.current?.blur();
-                          if (document.activeElement instanceof HTMLElement) {
-                            document.activeElement.blur();
+                          const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
+                          const hasBoxShots = Boolean(shots[1] && shots[2]);
+                          const isReadyForNext = currentStep === 'COMPLETE' ||
+                            (stationRole === 'box_level' && (currentStep === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
+                            (hasAllBookShots && !currentStep.startsWith('CAPTURE_SHOT_'));
+
+                          if (activeIsbn && isReadyForNext) {
+                            handleNextJournal();
+                          } else if (isbnInput.trim()) {
+                            isbnInputRef.current?.blur();
+                            if (document.activeElement instanceof HTMLElement) {
+                              document.activeElement.blur();
+                            }
+                            handleProcessIsbn(isbnInput.trim());
                           }
-                          handleProcessIsbn(isbnInput);
                         }
                       }}
                       placeholder={stationRole === 'box_level' ? "Scan any book barcode from box to auto-select box..." : "Scan barcode or type ISBN (e.g. 9780132350884)..."}
@@ -1291,6 +1324,7 @@ export function App() {
                   onQuickSwitchCamera={quickSwitchCamera}
                   onToggleAutoSwitch={() => setAutoSwitchCamera(!autoSwitchCamera)}
                   onCapture={handleCapturePhoto}
+                  onRetakeShot={handleRetakeShot}
                   currentStep={currentStep}
                   resolution={resolution}
                   isCapturing={isCapturing}

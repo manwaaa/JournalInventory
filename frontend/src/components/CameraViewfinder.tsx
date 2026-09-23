@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, RefreshCw, Eye, EyeOff, AlertCircle, Zap, ZapOff, ArrowRight, Package, ArrowLeftRight, Check, CheckCircle2 } from 'lucide-react';
-import { AngleGuideOverlay } from './AngleGuideOverlay';
+import { Camera, RefreshCw, AlertCircle, Zap, ZapOff, ArrowRight, Package, ArrowLeftRight, Check, CheckCircle2, RotateCcw } from 'lucide-react';
 import { CameraDevice, CaptureStep, SHOT_DEFINITIONS, StationRole } from '../types';
 
 interface CameraViewfinderProps {
@@ -16,6 +15,7 @@ interface CameraViewfinderProps {
   onQuickSwitchCamera?: () => void;
   onToggleAutoSwitch?: () => void;
   onCapture: () => void;
+  onRetakeShot?: (shotNumber: number) => void;
   currentStep: CaptureStep;
   resolution: { width: number; height: number };
   isCapturing: boolean;
@@ -41,6 +41,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   onQuickSwitchCamera,
   onToggleAutoSwitch,
   onCapture,
+  onRetakeShot,
   currentStep,
   resolution,
   isCapturing,
@@ -52,7 +53,6 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   isTorchOn = false,
   onToggleTorch
 }) => {
-  const [showGuide, setShowGuide] = useState<boolean>(true);
   const [triggerFlash, setTriggerFlash] = useState<boolean>(false);
 
   // Keyboard shortcut listener for 'C' to quickly swap cameras
@@ -196,16 +196,6 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               {isTorchOn ? <Zap className="w-4 h-4 fill-current" /> : <ZapOff className="w-4 h-4 text-slate-400" />}
             </button>
           )}
-
-          {isStepCaptureActive && !isBoxStationFinished && (
-            <button
-              onClick={() => setShowGuide(!showGuide)}
-              title={showGuide ? "Hide Angle Guide" : "Show Angle Guide"}
-              className="bg-black/70 backdrop-blur-md text-white p-1.5 rounded-xl border border-white/20 hover:bg-black/90 transition-colors"
-            >
-              {showGuide ? <Eye className="w-4 h-4 text-brand-400" /> : <EyeOff className="w-4 h-4 text-slate-400" />}
-            </button>
-          )}
         </div>
       </div>
 
@@ -226,8 +216,6 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           <div className="absolute inset-0 bg-white z-30 animate-shutter-flash pointer-events-none" />
         )}
 
-        <AngleGuideOverlay currentStep={currentStep} visible={showGuide && isStepCaptureActive && !isBoxStationFinished} />
-
         {/* Overlay for PC 1 when Box Level (1 & 2) is finished */}
         {isBoxStationFinished && (
           <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm z-25 flex flex-col items-center justify-center p-6 text-center animate-fade-in">
@@ -240,15 +228,35 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             <p className="text-xs text-blue-200 max-w-sm mb-4 leading-relaxed">
               Shot 1 (Box) and Shot 2 (Unbox) are safely saved. PC 2 can now continue with Shots 3 to 7 (Book Level).
             </p>
-            {onNextJournal && (
-              <button
-                onClick={onNextJournal}
-                className="flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-sm text-white btn-primary-gradient shadow-lg shadow-brand-500/30 hover:scale-105 active:scale-95 transition-all cursor-pointer"
-              >
-                <span>Proceed to Next Box (Enter ↵)</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            )}
+            <div className="flex flex-wrap items-center justify-center gap-2 mt-1">
+              {onRetakeShot && (
+                <>
+                  <button
+                    onClick={() => onRetakeShot(1)}
+                    className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl font-semibold text-xs text-white bg-white/10 hover:bg-white/20 border border-white/20 transition-all active:scale-95 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Retake 1. Box</span>
+                  </button>
+                  <button
+                    onClick={() => onRetakeShot(2)}
+                    className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl font-semibold text-xs text-white bg-white/10 hover:bg-white/20 border border-white/20 transition-all active:scale-95 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Retake 2. Unbox</span>
+                  </button>
+                </>
+              )}
+              {onNextJournal && (
+                <button
+                  onClick={onNextJournal}
+                  className="flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs text-white btn-primary-gradient shadow-lg shadow-brand-500/30 hover:scale-105 active:scale-95 transition-all cursor-pointer"
+                >
+                  <span>Proceed to Next Box (Enter ↵)</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
         )}
 

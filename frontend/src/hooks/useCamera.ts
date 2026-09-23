@@ -100,6 +100,7 @@ export function useCamera() {
   // Start camera stream
   const startCamera = useCallback(async (deviceId?: string) => {
     const requestId = ++activeRequestId.current;
+    setIsStreaming(false);
     setCameraError(null);
     setIsTorchOn(false);
 
@@ -136,7 +137,18 @@ export function useCamera() {
 
         try {
           await video.play();
-          setIsStreaming(true);
+          // Give video a brief moment to decode first live frame
+          if (video.videoWidth > 0) {
+            setIsStreaming(true);
+            setResolution({ width: video.videoWidth, height: video.videoHeight });
+          } else {
+            video.onloadedmetadata = () => {
+              if (requestId === activeRequestId.current) {
+                setIsStreaming(true);
+                setResolution({ width: video.videoWidth, height: video.videoHeight });
+              }
+            };
+          }
         } catch (playErr: any) {
           if (playErr.name === 'AbortError' || playErr.message?.includes('interrupted')) {
             return;
@@ -238,22 +250,51 @@ export function useCamera() {
   // Capture snapshot to Base64 JPEG with optional watermark and blur evaluation
   const captureSnapshot = useCallback((options?: number | CaptureOptions): CaptureResult | null => {
     if (!videoRef.current || !isStreaming) return null;
+    const video = videoRef.current;
+
+    // Check video readiness & genuine dimensions
+    if (
+      video.readyState < 2 || 
+      !video.videoWidth || 
+      !video.videoHeight || 
+      video.videoWidth < 20 || 
+      video.videoHeight < 20 ||
+      video.paused ||
+      video.ended
+    ) {
+      console.warn('[useCamera] Camera frame not ready yet (readyState: ' + video.readyState + ', dimensions: ' + video.videoWidth + 'x' + video.videoHeight + ')');
+      return null;
+    }
 
     const opts: CaptureOptions = typeof options === 'number' 
       ? { quality: options } 
       : (options || { quality: 0.95 });
 
     const quality = opts.quality ?? 0.95;
-    const video = videoRef.current;
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 1920;
-    canvas.height = video.videoHeight || 1080;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
 
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
 
     // Draw full resolution video frame to canvas
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Verify canvas is not completely black/empty
+    try {
+      const sample = ctx.getImageData(0, 0, Math.min(canvas.width, 80), Math.min(canvas.height, 80)).data;
+      let nonZero = 0;
+      for (let i = 0; i < sample.length; i += 4) {
+        if (sample[i] > 10 || sample[i + 1] > 10 || sample[i + 2] > 10) {
+          nonZero++;
+        }
+      }
+      if (nonZero === 0 && video.readyState < 4) {
+        console.warn('[useCamera] Video frame is completely blank/black, skipping capture until live frame renders.');
+        return null;
+      }
+    } catch (e) {}
 
     // Calculate sharpness score before watermark (to measure genuine frame sharpness)
     const sharpnessScore = calculateSharpnessScore(canvas);
