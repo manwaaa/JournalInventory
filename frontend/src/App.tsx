@@ -132,6 +132,16 @@ export function App() {
     isStreaming,
     cameraError,
     resolution,
+    rotation,
+    flipHorizontal,
+    flipVertical,
+    rotateCamera,
+    toggleFlipHorizontal,
+    toggleFlipVertical,
+    setRotation,
+    setFlipHorizontal,
+    setFlipVertical,
+    resetOrientation,
     hasTorch,
     isTorchOn,
     setBoxCameraDeviceId,
@@ -1335,6 +1345,13 @@ export function App() {
                   hasTorch={hasTorch}
                   isTorchOn={isTorchOn}
                   onToggleTorch={toggleTorch}
+                  rotation={rotation}
+                  flipHorizontal={flipHorizontal}
+                  flipVertical={flipVertical}
+                  onRotate={rotateCamera}
+                  onToggleFlipH={toggleFlipHorizontal}
+                  onToggleFlipV={toggleFlipVertical}
+                  onResetOrientation={resetOrientation}
                 />
               </div>
 
@@ -1565,6 +1582,12 @@ export function App() {
         boxCameraDeviceId={boxCameraDeviceId}
         bookCameraDeviceId={bookCameraDeviceId}
         autoSwitchCamera={autoSwitchCamera}
+        rotation={rotation}
+        flipHorizontal={flipHorizontal}
+        flipVertical={flipVertical}
+        onRotationChange={setRotation}
+        onFlipHorizontalChange={setFlipHorizontal}
+        onFlipVerticalChange={setFlipVertical}
         onStationRoleChange={setStationRole}
         onBoxCameraChange={setBoxCameraDeviceId}
         onBookCameraChange={setBookCameraDeviceId}

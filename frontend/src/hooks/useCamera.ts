@@ -40,6 +40,64 @@ export function useCamera() {
     return saved === null ? true : saved === 'true';
   });
 
+  // Camera Orientation & Flipping
+  const [rotation, setRotationState] = useState<number>(() => {
+    const saved = localStorage.getItem('journal_camera_rotation');
+    return saved ? (parseInt(saved, 10) || 0) : 0;
+  });
+  const [flipHorizontal, setFlipHorizontalState] = useState<boolean>(() => {
+    return localStorage.getItem('journal_camera_flip_h') === 'true';
+  });
+  const [flipVertical, setFlipVerticalState] = useState<boolean>(() => {
+    return localStorage.getItem('journal_camera_flip_v') === 'true';
+  });
+
+  const setRotation = useCallback((deg: number) => {
+    const normalized = ((deg % 360) + 360) % 360;
+    setRotationState(normalized);
+    localStorage.setItem('journal_camera_rotation', String(normalized));
+  }, []);
+
+  const rotateCamera = useCallback(() => {
+    setRotationState((prev) => {
+      const next = (prev + 90) % 360;
+      localStorage.setItem('journal_camera_rotation', String(next));
+      return next;
+    });
+  }, []);
+
+  const setFlipHorizontal = useCallback((flipped: boolean) => {
+    setFlipHorizontalState(flipped);
+    localStorage.setItem('journal_camera_flip_h', String(flipped));
+  }, []);
+
+  const toggleFlipHorizontal = useCallback(() => {
+    setFlipHorizontalState((prev) => {
+      const next = !prev;
+      localStorage.setItem('journal_camera_flip_h', String(next));
+      return next;
+    });
+  }, []);
+
+  const setFlipVertical = useCallback((flipped: boolean) => {
+    setFlipVerticalState(flipped);
+    localStorage.setItem('journal_camera_flip_v', String(flipped));
+  }, []);
+
+  const toggleFlipVertical = useCallback(() => {
+    setFlipVerticalState((prev) => {
+      const next = !prev;
+      localStorage.setItem('journal_camera_flip_v', String(next));
+      return next;
+    });
+  }, []);
+
+  const resetOrientation = useCallback(() => {
+    setRotation(0);
+    setFlipHorizontal(false);
+    setFlipVertical(false);
+  }, [setRotation, setFlipHorizontal, setFlipVertical]);
+
   const [hasTorch, setHasTorch] = useState<boolean>(false);
   const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
 
@@ -272,14 +330,22 @@ export function useCamera() {
 
     const quality = opts.quality ?? 0.95;
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+
+    // If rotated 90 or 270 degrees, swap canvas dimensions
+    const isSwapped = rotation === 90 || rotation === 270;
+    canvas.width = isSwapped ? video.videoHeight : video.videoWidth;
+    canvas.height = isSwapped ? video.videoWidth : video.videoHeight;
 
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
 
-    // Draw full resolution video frame to canvas
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    // Apply rotation & flip transformations centered on canvas
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate((rotation * Math.PI) / 180);
+    ctx.scale(flipHorizontal ? -1 : 1, flipVertical ? -1 : 1);
+    ctx.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2, video.videoWidth, video.videoHeight);
+    ctx.restore();
 
     // Verify canvas is not completely black/empty
     try {
@@ -313,7 +379,7 @@ export function useCamera() {
       sharpnessScore,
       isBlurry: blurry
     };
-  }, [isStreaming]);
+  }, [isStreaming, rotation, flipHorizontal, flipVertical]);
 
   useEffect(() => {
     startCamera(selectedDeviceId);
@@ -335,6 +401,16 @@ export function useCamera() {
     isStreaming,
     cameraError,
     resolution,
+    rotation,
+    flipHorizontal,
+    flipVertical,
+    rotateCamera,
+    toggleFlipHorizontal,
+    toggleFlipVertical,
+    setRotation,
+    setFlipHorizontal,
+    setFlipVertical,
+    resetOrientation,
     hasTorch,
     isTorchOn,
     setBoxCameraDeviceId,

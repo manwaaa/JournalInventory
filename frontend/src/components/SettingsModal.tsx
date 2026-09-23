@@ -13,9 +13,12 @@ import {
   Package, 
   BookOpen, 
   Layers, 
-  Network,
-  Camera,
-  ArrowLeftRight
+  Network, 
+  Camera, 
+  ArrowLeftRight,
+  RotateCw,
+  FlipHorizontal,
+  FlipVertical
 } from 'lucide-react';
 import { CameraDevice, StationRole, SystemConfig } from '../types';
 
@@ -28,6 +31,12 @@ interface SettingsModalProps {
   boxCameraDeviceId?: string;
   bookCameraDeviceId?: string;
   autoSwitchCamera?: boolean;
+  rotation?: number;
+  flipHorizontal?: boolean;
+  flipVertical?: boolean;
+  onRotationChange?: (deg: number) => void;
+  onFlipHorizontalChange?: (flip: boolean) => void;
+  onFlipVerticalChange?: (flip: boolean) => void;
   onStationRoleChange?: (role: StationRole) => void;
   onBoxCameraChange?: (id: string) => void;
   onBookCameraChange?: (id: string) => void;
@@ -44,6 +53,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   boxCameraDeviceId = '',
   bookCameraDeviceId = '',
   autoSwitchCamera = true,
+  rotation = 0,
+  flipHorizontal = false,
+  flipVertical = false,
+  onRotationChange,
+  onFlipHorizontalChange,
+  onFlipVerticalChange,
   onStationRoleChange,
   onBoxCameraChange,
   onBookCameraChange,
@@ -448,6 +463,98 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </span>
               </div>
             </label>
+
+            {/* Camera Orientation & Mirroring */}
+            <div className="pt-2 border-t border-indigo-100">
+              <label className="block text-[11px] font-bold text-slate-700 mb-2">
+                🔄 Camera Orientation & Mirroring (Per Station)
+              </label>
+              
+              <div className="flex flex-wrap items-center gap-2">
+                {/* 0° */}
+                <button
+                  type="button"
+                  onClick={() => onRotationChange && onRotationChange(0)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    rotation === 0
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  0° (Normal)
+                </button>
+
+                {/* 90° */}
+                <button
+                  type="button"
+                  onClick={() => onRotationChange && onRotationChange(90)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    rotation === 90
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  90° (Clockwise)
+                </button>
+
+                {/* 180° */}
+                <button
+                  type="button"
+                  onClick={() => onRotationChange && onRotationChange(180)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    rotation === 180
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  180° (Inverted)
+                </button>
+
+                {/* 270° */}
+                <button
+                  type="button"
+                  onClick={() => onRotationChange && onRotationChange(270)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    rotation === 270
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  270° (Counter-CW)
+                </button>
+
+                {/* Flip Horizontal */}
+                <button
+                  type="button"
+                  onClick={() => onFlipHorizontalChange && onFlipHorizontalChange(!flipHorizontal)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition-all cursor-pointer ${
+                    flipHorizontal
+                      ? 'bg-amber-600 text-white shadow-sm'
+                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <FlipHorizontal className="w-3.5 h-3.5" />
+                  <span>Flip Horizontal {flipHorizontal ? '(ON)' : ''}</span>
+                </button>
+
+                {/* Flip Vertical */}
+                <button
+                  type="button"
+                  onClick={() => onFlipVerticalChange && onFlipVerticalChange(!flipVertical)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition-all cursor-pointer ${
+                    flipVertical
+                      ? 'bg-amber-600 text-white shadow-sm'
+                      : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <FlipVertical className="w-3.5 h-3.5" />
+                  <span>Flip Vertical {flipVertical ? '(ON)' : ''}</span>
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-500 mt-1.5">
+                Rotates & flips both the live viewfinder and the saved photo proof files on this PC.
+              </p>
+            </div>
           </div>
 
           {/* Manifest Enforcement Toggle */}

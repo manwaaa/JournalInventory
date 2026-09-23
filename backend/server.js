@@ -246,6 +246,93 @@ function saveConfig() {
   }
 }
 
+// -------------------------------------------------------------
+// Centralized Metadata Management (.metadata/ directory)
+// Keeps photo folders clean so ONLY pictures are inside each folder
+// -------------------------------------------------------------
+function getMetadataDir() {
+  const metaDir = path.join(config.storagePath, '.metadata');
+  if (!fs.existsSync(metaDir)) {
+    try { fs.mkdirpSync(metaDir); } catch (e) {}
+  }
+  return metaDir;
+}
+
+function getMetadataPath(cleanIsbn) {
+  return path.join(getMetadataDir(), `${cleanIsbn}.json`);
+}
+
+function readIsbnMetadata(cleanIsbn) {
+  if (!cleanIsbn) return null;
+  const newPath = getMetadataPath(cleanIsbn);
+  if (fs.existsSync(newPath)) {
+    try { return fs.readJsonSync(newPath); } catch (e) {}
+  }
+
+  // Backwards-compatible check: legacy metadata.json inside photo folder
+  const folderPath = path.join(config.storagePath, cleanIsbn);
+  const legacyPath = path.join(folderPath, 'metadata.json');
+  if (fs.existsSync(legacyPath)) {
+    try {
+      const data = fs.readJsonSync(legacyPath);
+      // Auto-migrate legacy metadata.json out of the photo folder
+      try {
+        fs.writeJsonSync(newPath, data, { spaces: 2 });
+        fs.removeSync(legacyPath);
+        console.log(`[Metadata Migration] Migrated metadata.json for ${cleanIsbn} to .metadata/ directory`);
+      } catch (migErr) {}
+      return data;
+    } catch (e) {}
+  }
+  return null;
+}
+
+async function saveIsbnMetadata(cleanIsbn, metadata) {
+  if (!cleanIsbn || !metadata) return metadata;
+  const newPath = getMetadataPath(cleanIsbn);
+  await fs.writeJson(newPath, metadata, { spaces: 2 });
+
+  // Clean up any legacy metadata.json from photo folder so only pictures remain
+  const folderPath = path.join(config.storagePath, cleanIsbn);
+  const legacyPath = path.join(folderPath, 'metadata.json');
+  if (fs.existsSync(legacyPath)) {
+    try { await fs.remove(legacyPath); } catch (e) {}
+  }
+  return metadata;
+}
+
+// Background cleanup: migrate all legacy metadata.json files out of photo folders
+async function migrateAllLegacyMetadata() {
+  try {
+    if (!fs.existsSync(config.storagePath)) return;
+    const entries = await fs.readdir(config.storagePath);
+    let migratedCount = 0;
+    for (const entry of entries) {
+      if (entry.startsWith('.') || entry.startsWith('_')) continue;
+      const folderPath = path.join(config.storagePath, entry);
+      const stat = await fs.stat(folderPath).catch(() => null);
+      if (!stat || !stat.isDirectory()) continue;
+
+      const legacyMetaPath = path.join(folderPath, 'metadata.json');
+      if (fs.existsSync(legacyMetaPath)) {
+        try {
+          const data = await fs.readJson(legacyMetaPath);
+          const newPath = getMetadataPath(entry);
+          await fs.writeJson(newPath, data, { spaces: 2 });
+          await fs.remove(legacyMetaPath);
+          migratedCount++;
+        } catch (err) {
+          console.warn(`[Metadata Cleanup] Failed for ${entry}:`, err.message);
+        }
+      }
+    }
+    if (migratedCount > 0) {
+      console.log(`[Metadata Cleanup] Successfully removed metadata.json from ${migratedCount} photo folder(s)`);
+    }
+  } catch (e) {
+    console.error('[Metadata Migration Error]', e);
+  }
+}
 
 // Global active capture session state (7 Shots)
 let currentSession = {
@@ -593,6 +680,9 @@ app.post('/api/system/config', (req, res) => {
   if (req.body.s3CustomEndpoint !== undefined) config.s3CustomEndpoint = String(req.body.s3CustomEndpoint).trim();
 
   saveConfig();
+  if (config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
+    scanAllPendingJournalsForS3().catch(() => {});
+  }
   res.json({ success: true, config });
 });
 
@@ -675,7 +765,7 @@ app.post('/api/s3/test-connection', async (req, res) => {
   }
 });
 
-// Core helper: Upload proof folder for a specific ISBN to S3
+// Core helper: Upload proof folder for a specific ISBN to S3 (Pictures ONLY, no metadata.json)
 async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
   const folderPath = path.join(config.storagePath, cleanIsbn);
   if (!fs.existsSync(folderPath)) {
@@ -698,15 +788,28 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     throw new Error('S3 is not configured. Please enter your AWS Bucket and Access Keys in Settings.');
   }
 
-  const filesInFolder = await fs.readdir(folderPath);
-  if (filesInFolder.length === 0) {
-    throw new Error(`Folder for ISBN ${cleanIsbn} is empty.`);
+  // Clean up any stray legacy metadata.json from photo folder
+  const legacyMetaPath = path.join(folderPath, 'metadata.json');
+  if (fs.existsSync(legacyMetaPath)) {
+    try {
+      const data = await fs.readJson(legacyMetaPath);
+      await saveIsbnMetadata(cleanIsbn, data);
+      await fs.remove(legacyMetaPath);
+    } catch (e) {}
+  }
+
+  // Only upload valid photo image files (exclude json/zip/hidden files)
+  const allFilesInFolder = await fs.readdir(folderPath);
+  const imageFiles = allFilesInFolder.filter(filename => filename.match(/\.(jpg|jpeg|png)$/i));
+
+  if (imageFiles.length === 0) {
+    throw new Error(`Folder for ISBN ${cleanIsbn} contains no captured picture files.`);
   }
 
   const uploadedFiles = [];
   const s3BaseFolderKey = `${prefix}${cleanIsbn}`;
 
-  for (const filename of filesInFolder) {
+  for (const filename of imageFiles) {
     const filePath = path.join(folderPath, filename);
     const stat = await fs.stat(filePath);
     if (!stat.isFile()) continue;
@@ -714,11 +817,8 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     const fileBuffer = await fs.readFile(filePath);
     const s3Key = `${s3BaseFolderKey}/${filename}`;
 
-    let contentType = 'application/octet-stream';
-    if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) contentType = 'image/jpeg';
-    else if (filename.endsWith('.png')) contentType = 'image/png';
-    else if (filename.endsWith('.json')) contentType = 'application/json';
-    else if (filename.endsWith('.zip')) contentType = 'application/zip';
+    let contentType = 'image/jpeg';
+    if (filename.endsWith('.png')) contentType = 'image/png';
 
     await s3.send(new PutObjectCommand({
       Bucket: targetBucket,
@@ -749,16 +849,16 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
 
   const s3FolderUri = `s3://${targetBucket}/${s3BaseFolderKey}/`;
   
-  // Choose best shareable link: front cover or first shot presigned URL or direct folder URL
+  // Choose best shareable link
   const mainPhoto = uploadedFiles.find(f => f.filename.includes('front cover') || f.filename.includes('box') || f.filename.endsWith('.jpg'));
   const shareableLink = mainPhoto?.presignedUrl || `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${s3BaseFolderKey}/`;
 
-  // Save S3 upload record into local metadata.json
-  const metaPath = path.join(folderPath, 'metadata.json');
-  let metadata = {};
-  if (fs.existsSync(metaPath)) {
-    try { metadata = await fs.readJson(metaPath); } catch (e) {}
-  }
+  // Save S3 upload record into centralized .metadata/ directory
+  let metadata = readIsbnMetadata(cleanIsbn) || {
+    identifier: cleanIsbn,
+    isbn: getBaseIsbn(cleanIsbn),
+    shots: {}
+  };
   metadata.s3Upload = {
     uploadedAt: new Date().toISOString(),
     bucket: targetBucket,
@@ -767,7 +867,7 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     shareableLink,
     fileCount: uploadedFiles.length
   };
-  await fs.writeJson(metaPath, metadata, { spaces: 2 });
+  await saveIsbnMetadata(cleanIsbn, metadata);
 
   if (currentSession.activeIsbn === cleanIsbn && currentSession.metadata) {
     currentSession.metadata.s3Upload = metadata.s3Upload;
@@ -778,7 +878,7 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     s3Upload: metadata.s3Upload
   });
 
-  console.log(`[S3 Auto-Upload] Successfully uploaded ${uploadedFiles.length} files for ${cleanIsbn} to ${s3FolderUri}`);
+  console.log(`[S3 Auto-Upload] Successfully uploaded ${uploadedFiles.length} photo(s) for ${cleanIsbn} to ${s3FolderUri}`);
 
   return {
     success: true,
@@ -792,6 +892,137 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     files: uploadedFiles
   };
 }
+
+// -------------------------------------------------------------
+// Background S3 Auto-Sync Queue & Periodic Scanner Engine
+// -------------------------------------------------------------
+let isSyncingS3 = false;
+const s3SyncQueue = new Set();
+let s3SyncProgress = {
+  isSyncing: false,
+  totalPending: 0,
+  completedCount: 0,
+  failedCount: 0,
+  currentIsbn: null,
+  lastSyncAt: null,
+  lastError: null
+};
+
+function enqueueS3Upload(cleanIsbn) {
+  if (!cleanIsbn || cleanIsbn.startsWith('.') || cleanIsbn.startsWith('_')) return;
+  s3SyncQueue.add(cleanIsbn);
+  processS3Queue().catch(err => console.error('[S3 Queue Error]', err));
+}
+
+async function processS3Queue() {
+  if (isSyncingS3 || s3SyncQueue.size === 0) return;
+  if (config.s3Enabled === false || !config.s3Bucket || !config.s3AccessKeyId || !config.s3SecretAccessKey) {
+    return;
+  }
+
+  isSyncingS3 = true;
+  s3SyncProgress.isSyncing = true;
+  s3SyncProgress.totalPending = s3SyncQueue.size;
+
+  try {
+    while (s3SyncQueue.size > 0) {
+      const nextIsbn = Array.from(s3SyncQueue)[0];
+      s3SyncQueue.delete(nextIsbn);
+      s3SyncProgress.currentIsbn = nextIsbn;
+
+      try {
+        await uploadIsbnToS3(nextIsbn);
+        s3SyncProgress.completedCount++;
+      } catch (err) {
+        console.error(`[S3 Auto-Sync] Error uploading ${nextIsbn}:`, err.message);
+        s3SyncProgress.failedCount++;
+        s3SyncProgress.lastError = `${nextIsbn}: ${err.message}`;
+      }
+    }
+  } finally {
+    isSyncingS3 = false;
+    s3SyncProgress.isSyncing = false;
+    s3SyncProgress.currentIsbn = null;
+    s3SyncProgress.lastSyncAt = new Date().toISOString();
+  }
+}
+
+async function scanAllPendingJournalsForS3(forceAll = false) {
+  try {
+    if (config.s3Enabled === false || !config.s3Bucket || !config.s3AccessKeyId || !config.s3SecretAccessKey) {
+      return { eligible: false, message: 'S3 credentials not configured' };
+    }
+    if (!fs.existsSync(config.storagePath)) {
+      return { eligible: true, queued: 0 };
+    }
+
+    const entries = await fs.readdir(config.storagePath);
+    let queuedCount = 0;
+
+    for (const entry of entries) {
+      if (entry.startsWith('.') || entry.startsWith('_')) continue;
+      const folderPath = path.join(config.storagePath, entry);
+      const stat = await fs.stat(folderPath).catch(() => null);
+      if (!stat || !stat.isDirectory()) continue;
+
+      const allFiles = await fs.readdir(folderPath).catch(() => []);
+      const imageFiles = allFiles.filter(f => f.match(/\.(jpg|jpeg|png)$/i));
+      if (imageFiles.length === 0) continue;
+
+      // Clean up legacy metadata.json from photo folder
+      const strayMeta = path.join(folderPath, 'metadata.json');
+      if (fs.existsSync(strayMeta)) {
+        try {
+          const m = await fs.readJson(strayMeta);
+          await saveIsbnMetadata(entry, m);
+          await fs.remove(strayMeta);
+        } catch (e) {}
+      }
+
+      const meta = readIsbnMetadata(entry);
+      const hasUploaded = Boolean(meta?.s3Upload?.uploadedAt);
+      const uploadedFileCount = meta?.s3Upload?.fileCount || 0;
+
+      // Queue for auto-upload if never uploaded, if new photos were added, or if forced
+      if (!hasUploaded || imageFiles.length > uploadedFileCount || forceAll) {
+        s3SyncQueue.add(entry);
+        queuedCount++;
+      }
+    }
+
+    if (queuedCount > 0) {
+      console.log(`[S3 Auto-Sync Daemon] Detected ${queuedCount} unuploaded journal(s). Automatically uploading in background...`);
+      processS3Queue().catch(err => console.error('[S3 Queue Error]', err));
+    }
+
+    return { eligible: true, queued: queuedCount, totalQueueSize: s3SyncQueue.size };
+  } catch (err) {
+    console.error('[S3 Scanner Error]', err);
+    return { eligible: false, error: err.message };
+  }
+}
+
+// Endpoint: Trigger full scan & sync of all pending journals to S3
+app.post('/api/s3/sync-all', async (req, res) => {
+  try {
+    const force = Boolean(req.body?.force);
+    await migrateAllLegacyMetadata();
+    const result = await scanAllPendingJournalsForS3(force);
+    res.json({ success: true, ...result, progress: s3SyncProgress });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint: Get current S3 background auto-sync status
+app.get('/api/s3/sync-status', (req, res) => {
+  res.json({
+    success: true,
+    queueSize: s3SyncQueue.size,
+    progress: s3SyncProgress,
+    s3Configured: Boolean(config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId)
+  });
+});
 
 // Upload proof folder for a specific ISBN to S3
 app.post('/api/s3/upload-isbn', async (req, res) => {
@@ -1113,11 +1344,7 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
         for (const dirName of allDirs) {
           if (dirName.startsWith('.') || dirName === '_boxes' || dirName === cleanIsbn) continue;
           const candidateFolder = path.join(config.storagePath, dirName);
-          const metaFile = path.join(candidateFolder, 'metadata.json');
-          let m = null;
-          if (fs.existsSync(metaFile)) {
-            try { m = fs.readJsonSync(metaFile); } catch (e) {}
-          }
+          const m = readIsbnMetadata(dirName);
           let candidateBox = m?.boxNumber;
           if (!candidateBox && manifestData.items) {
             const mItem = manifestData.items.find(i => sanitizeIsbn(i.isbn) === dirName);
@@ -1205,8 +1432,7 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
   }
 
   if (inherited1 || inherited2) {
-    const metaPath = path.join(folderPath, 'metadata.json');
-    let metadata = {
+    let metadata = readIsbnMetadata(cleanIsbn) || {
       identifier: cleanIsbn,
       isbn: getBaseIsbn(cleanIsbn),
       lotNumber: lotNumber || 'Unassigned',
@@ -1214,9 +1440,6 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
       updatedAt: new Date().toISOString(),
       shots: {}
     };
-    if (fs.existsSync(metaPath)) {
-      try { metadata = fs.readJsonSync(metaPath); } catch (e) {}
-    }
     metadata.shots = metadata.shots || {};
     if (inherited1) {
       metadata.shots[1] = {
@@ -1236,7 +1459,8 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
         inheritedFromBox: true
       };
     }
-    await fs.writeJson(metaPath, metadata, { spaces: 2 });
+    metadata.updatedAt = new Date().toISOString();
+    await saveIsbnMetadata(cleanIsbn, metadata);
   }
 
   return { inherited1, inherited2 };
@@ -1260,11 +1484,7 @@ async function findExistingCopies(baseIsbn) {
       if (foundFile) shotsCount++;
     }
 
-    let meta = null;
-    try {
-      meta = await fs.readJson(path.join(folderPath, 'metadata.json'));
-    } catch (e) {}
-
+    const meta = readIsbnMetadata(name);
     const copyMatch = name.match(/_Copy(\d+)$/i);
     const copyNumber = copyMatch ? parseInt(copyMatch[1], 10) : 1;
 
@@ -1355,13 +1575,7 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       }
     }
 
-    let metadata = null;
-    const metaPath = path.join(folderPath, 'metadata.json');
-    if (alreadyExists && fs.existsSync(metaPath)) {
-      try {
-        metadata = fs.readJsonSync(metaPath);
-      } catch (e) {}
-    }
+    let metadata = alreadyExists ? readIsbnMetadata(activeIdentifier) : null;
 
     // Determine initial capture step (first missing shot)
     let initialStep = 'CAPTURE_SHOT_1';
@@ -1438,22 +1652,21 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       copyNumber,
       folderPath,
       exists: alreadyExists,
-      existingShots,
       shotsCount: shotsFoundCount,
+      existingShots,
       metadata,
-      existingCopies,
-      hasDuplicateCopies: existingCopies.length > 0 && !forceNewCopy && !targetIdentifier,
+      bookDetails: currentSession.bookDetails,
       isProcessable,
       nonProcessableReason,
       manifestMatch
     });
   } catch (err) {
-    console.error('Error in init-isbn:', err);
-    res.status(500).json({ error: 'Failed to initialize verification session', details: err.message });
+    console.error('Error initializing ISBN folder:', err);
+    res.status(500).json({ error: 'Failed to initialize ISBN folder', details: err.message });
   }
 });
 
-// Save captured shot (1 to 7)
+// Save a captured shot (1 through 7)
 app.post('/api/capture/save-shot', async (req, res) => {
   try {
     const { 
@@ -1462,48 +1675,49 @@ app.post('/api/capture/save-shot', async (req, res) => {
       imageBase64, 
       operatorName, 
       bookDetails,
-      blurScore,
       lotNumber,
-      boxNumber
+      boxNumber,
+      blurScore
     } = req.body;
 
+    if (!isbn || !shotNumber || !imageBase64) {
+      return res.status(400).json({ error: 'Missing required parameters (isbn, shotNumber, imageBase64)' });
+    }
+
     const sNum = parseInt(shotNumber, 10);
-    if (!isbn || !imageBase64 || sNum < 1 || sNum > 7) {
-      return res.status(400).json({ error: 'Valid ISBN, shotNumber (1-7), and base64 image required' });
+    if (sNum < 1 || sNum > 7) {
+      return res.status(400).json({ error: 'Shot number must be between 1 and 7' });
     }
 
     const cleanIsbn = sanitizeIsbn(isbn);
     const baseIsbnOnly = getBaseIsbn(cleanIsbn);
-    const copyMatch = cleanIsbn.match(/_Copy(\d+)$/i);
-    const copyNumber = copyMatch ? parseInt(copyMatch[1], 10) : 1;
-
+    const copyNumber = getCopyNumber(cleanIsbn);
     const folderPath = path.join(config.storagePath, cleanIsbn);
-    fs.ensureDirSync(folderPath);
+    await fs.ensureDir(folderPath);
 
     const shotDef = SHOT_DEFINITIONS[sNum];
     const filename = getShotFilename(sNum, cleanIsbn);
     const filePath = path.join(folderPath, filename);
 
+    // Save image buffer to disk
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
     await fs.writeFile(filePath, buffer);
 
-    // Look up manifest to ensure lot and box are preserved from manifest
+    // Auto-lookup manifest if lot or box is missing
     let manifestMatchForShot = null;
     if (manifestData.items && manifestData.items.length > 0) {
-      const numericOnly = baseIsbnOnly.replace(/[^0-9Xx]/g, '');
-      manifestMatchForShot = manifestData.items.find(item => {
-        const itemNum = item.isbn.replace(/[^0-9Xx]/g, '');
-        return item.isbn.toLowerCase() === baseIsbnOnly.toLowerCase() ||
-          (numericOnly.length > 0 && itemNum === numericOnly);
+      const numericTarget = baseIsbnOnly.replace(/[^0-9Xx]/g, '');
+      manifestMatchForShot = manifestData.items.find(i => {
+        const itemNum = i.isbn.replace(/[^0-9Xx]/g, '');
+        return sanitizeIsbn(i.isbn) === baseIsbnOnly || (numericTarget && itemNum === numericTarget);
       });
     }
 
     const resolvedLot = manifestMatchForShot?.lotNumber || lotNumber || currentSession.lotNumber || 'Lot-1';
     const resolvedBox = manifestMatchForShot?.boxNumber || boxNumber || currentSession.boxNumber || '';
 
-    const metaPath = path.join(folderPath, 'metadata.json');
-    let metadata = {
+    let metadata = readIsbnMetadata(cleanIsbn) || {
       identifier: cleanIsbn,
       isbn: baseIsbnOnly,
       copyNumber,
@@ -1517,16 +1731,14 @@ app.post('/api/capture/save-shot', async (req, res) => {
       shots: {}
     };
 
-    if (fs.existsSync(metaPath)) {
-      try {
-        const savedMeta = fs.readJsonSync(metaPath);
-        metadata = { ...metadata, ...savedMeta, updatedAt: new Date().toISOString() };
-        if (bookDetails) {
-          metadata.bookDetails = { ...(metadata.bookDetails || {}), ...bookDetails };
-        }
-      } catch (e) {}
+    metadata.lotNumber = resolvedLot;
+    metadata.boxNumber = resolvedBox;
+    metadata.updatedAt = new Date().toISOString();
+    if (bookDetails) {
+      metadata.bookDetails = { ...(metadata.bookDetails || {}), ...bookDetails };
     }
 
+    metadata.shots = metadata.shots || {};
     metadata.shots[sNum] = {
       filename,
       sizeBytes: buffer.length,
@@ -1539,7 +1751,7 @@ app.post('/api/capture/save-shot', async (req, res) => {
     const totalShots = Object.keys(metadata.shots).length;
     metadata.isComplete = totalShots >= 7;
 
-    await fs.writeJson(metaPath, metadata, { spaces: 2 });
+    await saveIsbnMetadata(cleanIsbn, metadata);
 
     const newShotInfo = {
       filename,
@@ -1589,10 +1801,8 @@ app.post('/api/capture/save-shot', async (req, res) => {
     const isReadyForS3 = (totalShots >= 7) || isBookComplete;
 
     if (isReadyForS3 && config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
-      console.log(`[S3 Auto-Upload] Verification capture complete for ${cleanIsbn} (${totalShots} shots saved). Automatically uploading to S3 in background...`);
-      uploadIsbnToS3(cleanIsbn).catch(err => {
-        console.error(`[S3 Auto-Upload] Error uploading ${cleanIsbn} to S3:`, err.message);
-      });
+      console.log(`[S3 Auto-Upload] Verification capture complete for ${cleanIsbn} (${totalShots} shots saved). Enqueuing background upload...`);
+      enqueueS3Upload(cleanIsbn);
     }
 
     // If Shot 1 (Box) or Shot 2 (Unbox), save to box-level storage and replicate to peer PC
@@ -1968,8 +2178,7 @@ app.post('/api/sync/receive-shot', async (req, res) => {
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     await fs.writeFile(filePath, Buffer.from(cleanBase64, 'base64'));
 
-    const metaPath = path.join(folderPath, 'metadata.json');
-    let metadata = incomingMeta || {
+    let metadata = incomingMeta || readIsbnMetadata(cleanIsbn) || {
       identifier: cleanIsbn,
       isbn: getBaseIsbn(cleanIsbn),
       operator: operatorName || 'Peer Station',
@@ -1977,11 +2186,8 @@ app.post('/api/sync/receive-shot', async (req, res) => {
       shots: {}
     };
 
-    if (fs.existsSync(metaPath)) {
-      try {
-        const saved = fs.readJsonSync(metaPath);
-        metadata = { ...metadata, ...saved, updatedAt: new Date().toISOString() };
-      } catch (e) {}
+    if (incomingMeta) {
+      metadata = { ...metadata, ...incomingMeta, updatedAt: new Date().toISOString() };
     }
 
     metadata.shots = metadata.shots || {};
@@ -1996,7 +2202,7 @@ app.post('/api/sync/receive-shot', async (req, res) => {
     const totalShots = Object.keys(metadata.shots).length;
     metadata.isComplete = totalShots >= 7;
 
-    await fs.writeJson(metaPath, metadata, { spaces: 2 });
+    await saveIsbnMetadata(cleanIsbn, metadata);
 
     // If received shot is Shot 1 or 2, ensure it is also saved into _boxes storage on this PC
     if (sNum === 1 || sNum === 2) {
@@ -2053,9 +2259,7 @@ app.post('/api/sync/receive-shot', async (req, res) => {
       const isReadyForS3 = (totalShots >= 7) || isBookComplete;
 
       if (isReadyForS3 && config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
-        uploadIsbnToS3(cleanIsbn).catch(err => {
-          console.error(`[S3 Auto-Upload] Error uploading ${cleanIsbn} to S3:`, err.message);
-        });
+        enqueueS3Upload(cleanIsbn);
       }
     }
 
@@ -2065,8 +2269,8 @@ app.post('/api/sync/receive-shot', async (req, res) => {
   }
 });
 
-// Download ZIP of proof package (All 7 Shots)
-app.get('/api/capture/zip/:isbn', (req, res) => {
+// Download ZIP of proof package (Pictures ONLY, no metadata.json)
+app.get('/api/capture/zip/:isbn', async (req, res) => {
   const cleanIsbn = sanitizeIsbn(req.params.isbn);
   const folderPath = path.join(config.storagePath, cleanIsbn);
 
@@ -2083,8 +2287,16 @@ app.get('/api/capture/zip/:isbn', (req, res) => {
   });
 
   archive.pipe(res);
-  archive.directory(folderPath, false);
-  archive.finalize();
+  try {
+    const allFiles = await fs.readdir(folderPath);
+    const imageFiles = allFiles.filter(f => f.match(/\.(jpg|jpeg|png)$/i));
+    for (const file of imageFiles) {
+      archive.file(path.join(folderPath, file), { name: file });
+    }
+    archive.finalize();
+  } catch (err) {
+    archive.finalize();
+  }
 });
 
 // -------------------------------------------------------------
@@ -2103,7 +2315,7 @@ app.get('/api/gallery/export-csv', async (req, res) => {
     }
 
     const entries = await fs.readdir(config.storagePath, { withFileTypes: true });
-    const dirEntries = entries.filter(e => e.isDirectory());
+    const dirEntries = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('_'));
 
     const rows = [];
     const headers = [
@@ -2135,14 +2347,7 @@ app.get('/api/gallery/export-csv', async (req, res) => {
 
     for (const dir of dirEntries) {
       const folderPath = path.join(config.storagePath, dir.name);
-      const metaPath = path.join(folderPath, 'metadata.json');
-
-      let meta = null;
-      if (fs.existsSync(metaPath)) {
-        try {
-          meta = await fs.readJson(metaPath);
-        } catch (e) {}
-      }
+      const meta = readIsbnMetadata(dir.name);
 
       let stat = null;
       try {
@@ -2223,24 +2428,17 @@ app.get('/api/gallery/list', async (req, res) => {
     }
 
     const entries = await fs.readdir(config.storagePath, { withFileTypes: true });
-    const dirEntries = entries.filter(e => e.isDirectory());
+    const dirEntries = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('_'));
 
     const items = [];
     for (const dir of dirEntries) {
       const folderPath = path.join(config.storagePath, dir.name);
-      const metaPath = path.join(folderPath, 'metadata.json');
+      const metadata = readIsbnMetadata(dir.name);
 
       let stat = null;
       try {
         stat = await fs.stat(folderPath);
       } catch (e) {}
-
-      let metadata = null;
-      if (fs.existsSync(metaPath)) {
-        try {
-          metadata = await fs.readJson(metaPath);
-        } catch (e) {}
-      }
 
       const shots = {};
       let shotsCount = 0;
@@ -2338,3 +2536,19 @@ if (sslOptions) {
     console.error('Failed to start HTTPS server:', e);
   }
 }
+
+// -------------------------------------------------------------
+// Auto-Startup Daemon: Cleanup Metadata & Auto-Upload Pending Journals
+// -------------------------------------------------------------
+setTimeout(async () => {
+  console.log('[System Daemon] Running initial metadata migration & cleanup...');
+  await migrateAllLegacyMetadata();
+  console.log('[System Daemon] Scanning for unuploaded journals on disk to automatically upload to S3...');
+  await scanAllPendingJournalsForS3();
+}, 3000);
+
+// Recurring background S3 sync daemon every 30 seconds
+setInterval(async () => {
+  await scanAllPendingJournalsForS3();
+}, 30000);
+

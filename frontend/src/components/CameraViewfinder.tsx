@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, RefreshCw, AlertCircle, Zap, ZapOff, ArrowRight, Package, ArrowLeftRight, Check, CheckCircle2, RotateCcw } from 'lucide-react';
+import { Camera, RefreshCw, AlertCircle, Zap, ZapOff, ArrowRight, Package, ArrowLeftRight, Check, CheckCircle2, RotateCcw, RotateCw, FlipHorizontal, FlipVertical } from 'lucide-react';
 import { CameraDevice, CaptureStep, SHOT_DEFINITIONS, StationRole } from '../types';
 
 interface CameraViewfinderProps {
@@ -26,6 +26,13 @@ interface CameraViewfinderProps {
   hasTorch?: boolean;
   isTorchOn?: boolean;
   onToggleTorch?: () => void;
+  rotation?: number;
+  flipHorizontal?: boolean;
+  flipVertical?: boolean;
+  onRotate?: () => void;
+  onToggleFlipH?: () => void;
+  onToggleFlipV?: () => void;
+  onResetOrientation?: () => void;
 }
 
 export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
@@ -51,11 +58,18 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   onNextJournal,
   hasTorch = false,
   isTorchOn = false,
-  onToggleTorch
+  onToggleTorch,
+  rotation = 0,
+  flipHorizontal = false,
+  flipVertical = false,
+  onRotate,
+  onToggleFlipH,
+  onToggleFlipV,
+  onResetOrientation
 }) => {
   const [triggerFlash, setTriggerFlash] = useState<boolean>(false);
 
-  // Keyboard shortcut listener for 'C' to quickly swap cameras
+  // Keyboard shortcut listener for 'C' (swap cameras), 'R' (rotate 90°), and 'F' (flip mirror)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -65,12 +79,18 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
       if ((e.key === 'c' || e.key === 'C') && devices.length > 1 && onQuickSwitchCamera) {
         e.preventDefault();
         onQuickSwitchCamera();
+      } else if ((e.key === 'r' || e.key === 'R') && onRotate) {
+        e.preventDefault();
+        onRotate();
+      } else if ((e.key === 'f' || e.key === 'F') && onToggleFlipH) {
+        e.preventDefault();
+        onToggleFlipH();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [devices.length, onQuickSwitchCamera]);
+  }, [devices.length, onQuickSwitchCamera, onRotate, onToggleFlipH]);
 
   const handleCaptureClick = () => {
     if (isCapturing || !isStreaming) return;
@@ -158,8 +178,54 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           )}
         </div>
 
-        {/* Right: Station Role Badge & Guide Toggle */}
-        <div className="flex items-center space-x-2">
+        {/* Right: Station Role Badge, Orientation Controls & Flashlight */}
+        <div className="flex items-center space-x-1.5 sm:space-x-2">
+          {/* Rotate 90° Button */}
+          {onRotate && (
+            <button
+              type="button"
+              onClick={onRotate}
+              title={`Rotate Camera 90° (Hotkey: 'R' key) - Current: ${rotation}°`}
+              className={`px-2.5 py-1.5 rounded-xl border backdrop-blur-md text-[11px] font-bold flex items-center space-x-1 transition-all active:scale-95 cursor-pointer ${
+                rotation > 0
+                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-300 shadow-md shadow-amber-500/20'
+                  : 'bg-black/70 hover:bg-black/90 text-slate-200 border-white/20'
+              }`}
+            >
+              <RotateCw className="w-3.5 h-3.5" />
+              <span>{rotation > 0 ? `${rotation}°` : 'Rotate (R)'}</span>
+            </button>
+          )}
+
+          {/* Flip Horizontal / Mirror Button */}
+          {onToggleFlipH && (
+            <button
+              type="button"
+              onClick={onToggleFlipH}
+              title={`Flip Camera Horizontally / Mirror (Hotkey: 'F' key) - Current: ${flipHorizontal ? 'ON' : 'OFF'}`}
+              className={`px-2.5 py-1.5 rounded-xl border backdrop-blur-md text-[11px] font-bold flex items-center space-x-1 transition-all active:scale-95 cursor-pointer ${
+                flipHorizontal
+                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-300 shadow-md shadow-amber-500/20'
+                  : 'bg-black/70 hover:bg-black/90 text-slate-200 border-white/20'
+              }`}
+            >
+              <FlipHorizontal className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Flip (F)</span>
+            </button>
+          )}
+
+          {/* Reset Orientation Button */}
+          {(rotation > 0 || flipHorizontal || flipVertical) && onResetOrientation && (
+            <button
+              type="button"
+              onClick={onResetOrientation}
+              title="Reset camera rotation and flip to standard (0°)"
+              className="px-2 py-1.5 rounded-xl border backdrop-blur-md text-[10px] font-bold bg-black/70 hover:bg-black/90 text-amber-300 border-amber-400/40 transition-all active:scale-95 cursor-pointer"
+            >
+              <span>Reset</span>
+            </button>
+          )}
+
           {stationRole === 'box_level' && (
             <span className="bg-blue-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg shadow-sm border border-blue-400/40">
               📦 PC 1 (Box Only 1-2)
@@ -207,7 +273,15 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           autoPlay
           playsInline
           muted
-          className={`w-full h-full object-cover transition-opacity duration-300 ${
+          style={{
+            transform: `rotate(${rotation}deg) scale(${
+              rotation === 90 || rotation === 270
+                ? (resolution.width > 0 && resolution.height > 0 ? resolution.height / resolution.width : 9 / 16)
+                : 1
+            }) scaleX(${flipHorizontal ? -1 : 1}) scaleY(${flipVertical ? -1 : 1})`,
+            transformOrigin: 'center center'
+          }}
+          className={`w-full h-full object-contain transition-transform duration-300 ease-out ${
             isStreaming ? 'opacity-100' : 'opacity-0'
           }`}
         />

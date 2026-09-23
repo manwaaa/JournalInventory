@@ -18,7 +18,12 @@ import {
   CloudUpload,
   Copy,
   Check,
-  ExternalLink
+  ExternalLink,
+  ZoomIn,
+  ZoomOut,
+  RotateCw,
+  ChevronLeft,
+  X
 } from 'lucide-react';
 import { ProofItem, SHOT_DEFINITIONS } from '../types';
 
@@ -47,7 +52,37 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     shots: Record<string, string | null>;
     item: ProofItem;
   } | null>(null);
-  const [activePreviewImage, setActivePreviewImage] = useState<string | null>(null);
+  const [lightboxData, setLightboxData] = useState<{
+    item: ProofItem;
+    currentShotNumber: number;
+    zoomLevel: number;
+    rotation: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!lightboxData) return;
+      if (e.key === 'Escape') {
+        setLightboxData(null);
+      } else if (e.key === 'ArrowLeft') {
+        setLightboxData(prev => prev ? {
+          ...prev,
+          currentShotNumber: prev.currentShotNumber > 1 ? prev.currentShotNumber - 1 : 7,
+          zoomLevel: 1,
+          rotation: 0
+        } : null);
+      } else if (e.key === 'ArrowRight') {
+        setLightboxData(prev => prev ? {
+          ...prev,
+          currentShotNumber: prev.currentShotNumber < 7 ? prev.currentShotNumber + 1 : 1,
+          zoomLevel: 1,
+          rotation: 0
+        } : null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [lightboxData]);
 
   const toggleBoxExpand = (lotName: string, boxName: string) => {
     const boxKey = `${lotName}__${boxName}`;
@@ -87,6 +122,42 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     }
   };
 
+  const [syncStatus, setSyncStatus] = useState<{
+    isSyncing: boolean;
+    totalPending: number;
+    completedCount: number;
+    failedCount: number;
+    currentIsbn: string | null;
+  } | null>(null);
+
+  const checkSyncStatus = async () => {
+    try {
+      const res = await fetch('/api/s3/sync-status');
+      if (res.ok) {
+        const data = await res.json();
+        setSyncStatus(data.progress);
+      }
+    } catch (e) {}
+  };
+
+  const handleSyncAllS3 = async () => {
+    try {
+      const res = await fetch('/api/s3/sync-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: false })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(`✓ Automatic S3 Sync active! Detected ${data.queued || 0} unuploaded journal(s). Uploading in the background.`);
+        fetchItems();
+        checkSyncStatus();
+      }
+    } catch (err: any) {
+      alert(`Sync Error: ${err.message}`);
+    }
+  };
+
   const fetchItems = async () => {
     setLoading(true);
     try {
@@ -102,6 +173,11 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
 
   useEffect(() => {
     fetchItems();
+    checkSyncStatus();
+    const interval = setInterval(() => {
+      checkSyncStatus();
+    }, 8000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -229,18 +305,37 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
           </div>
 
           <div className="flex items-center space-x-2 shrink-0">
+            {/* Auto-Sync All to S3 Button */}
+            <button
+              onClick={handleSyncAllS3}
+              disabled={syncStatus?.isSyncing}
+              title="Automatically scan and upload all pending unuploaded journals to AWS S3"
+              className={`inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl text-xs font-bold border transition-all shadow-sm cursor-pointer ${
+                syncStatus?.isSyncing
+                  ? 'bg-amber-50 text-amber-900 border-amber-300 animate-pulse'
+                  : 'text-brand-800 bg-gradient-to-b from-blue-50 to-indigo-50 hover:from-blue-100 hover:to-indigo-100 border-blue-200/80'
+              }`}
+            >
+              <CloudUpload className={`w-4 h-4 ${syncStatus?.isSyncing ? 'animate-bounce text-amber-600' : 'text-brand-600'}`} />
+              <span>
+                {syncStatus?.isSyncing 
+                  ? `Syncing S3 (${syncStatus.completedCount}/${syncStatus.totalPending})...` 
+                  : 'Auto-Sync All to S3'}
+              </span>
+            </button>
+
             <button
               onClick={handleExportCsv}
-              className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-bold text-emerald-800 bg-gradient-to-b from-emerald-50 to-teal-50 hover:from-emerald-100 hover:to-teal-100 border border-emerald-200/80 transition-all shadow-sm"
+              className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-bold text-emerald-800 bg-gradient-to-b from-emerald-50 to-teal-50 hover:from-emerald-100 hover:to-teal-100 border border-emerald-200/80 transition-all shadow-sm cursor-pointer"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
               <span>Export Excel (CSV)</span>
             </button>
 
             <button
-              onClick={fetchItems}
+              onClick={() => { fetchItems(); checkSyncStatus(); }}
               title="Refresh Records"
-              className="p-2 rounded-xl text-slate-500 hover:text-brand-700 hover:bg-blue-50 border border-slate-200 transition-colors"
+              className="p-2 rounded-xl text-slate-500 hover:text-brand-700 hover:bg-blue-50 border border-slate-200 transition-colors cursor-pointer"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             </button>
@@ -428,13 +523,18 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                                   key={s}
                                                   onClick={() => {
                                                     if (shotUrl) {
-                                                      setActivePreviewImage(shotUrl);
+                                                      setLightboxData({
+                                                        item,
+                                                        currentShotNumber: s,
+                                                        zoomLevel: 1,
+                                                        rotation: 0
+                                                      });
                                                     }
                                                   }}
-                                                  title={`Shot ${s}: ${SHOT_DEFINITIONS[s - 1]?.label || 'Shot ' + s}`}
-                                                  className={`w-7 h-7 rounded-md overflow-hidden flex items-center justify-center border cursor-pointer transition-transform hover:scale-110 ${
+                                                  title={`Shot ${s}: ${SHOT_DEFINITIONS[s - 1]?.label || 'Shot ' + s} (Click to inspect full size)`}
+                                                  className={`w-7 h-7 rounded-md overflow-hidden flex items-center justify-center border cursor-pointer transition-transform hover:scale-110 active:scale-95 shadow-xs ${
                                                     shotUrl 
-                                                      ? 'bg-slate-900 border-blue-200' 
+                                                      ? 'bg-slate-900 border-blue-200 ring-1 ring-blue-400/20' 
                                                       : 'bg-slate-100 border-slate-200'
                                                   }`}
                                                 >
@@ -736,8 +836,13 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                         <img
                           src={shotUrl}
                           alt={def.label}
-                          className="w-full h-full object-contain cursor-pointer hover:opacity-90"
-                          onClick={() => setActivePreviewImage(shotUrl)}
+                          className="w-full h-full object-contain cursor-pointer hover:opacity-90 transition-opacity"
+                          onClick={() => setLightboxData({
+                            item: selectedPhotoModal.item,
+                            currentShotNumber: def.shotNumber,
+                            zoomLevel: 1,
+                            rotation: 0
+                          })}
                         />
                       ) : (
                         <span className="text-xs text-slate-500">Missing</span>
@@ -751,22 +856,213 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
         </div>
       )}
 
-      {/* Full Size High-Res Image Preview */}
-      {activePreviewImage && (
-        <div
-          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 backdrop-blur-sm cursor-pointer animate-fade-in"
-          onClick={() => setActivePreviewImage(null)}
-        >
-          <div className="relative max-w-5xl max-h-[90vh] flex flex-col items-center">
-            <img
-              src={activePreviewImage}
-              alt="Verification Photo Full"
-              className="max-h-[85vh] max-w-full rounded-2xl object-contain shadow-2xl border border-white/20"
-            />
-            <p className="text-white/80 text-xs mt-3 font-medium">Click anywhere to close full preview</p>
+      {/* Crystal-Clear High-Resolution Photo Lightbox Inspector */}
+      {lightboxData && (() => {
+        const def = SHOT_DEFINITIONS.find(d => d.shotNumber === lightboxData.currentShotNumber) || SHOT_DEFINITIONS[0];
+        const shotUrl = lightboxData.item.shots?.[lightboxData.currentShotNumber];
+
+        const handlePrev = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          const prevShot = lightboxData.currentShotNumber > 1 ? lightboxData.currentShotNumber - 1 : 7;
+          setLightboxData(prev => prev ? { ...prev, currentShotNumber: prevShot, zoomLevel: 1, rotation: 0 } : null);
+        };
+
+        const handleNext = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          const nextShot = lightboxData.currentShotNumber < 7 ? lightboxData.currentShotNumber + 1 : 1;
+          setLightboxData(prev => prev ? { ...prev, currentShotNumber: nextShot, zoomLevel: 1, rotation: 0 } : null);
+        };
+
+        const handleZoomIn = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          setLightboxData(prev => prev ? { ...prev, zoomLevel: Math.min(prev.zoomLevel + 0.5, 4) } : null);
+        };
+
+        const handleZoomOut = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          setLightboxData(prev => prev ? { ...prev, zoomLevel: Math.max(prev.zoomLevel - 0.5, 0.5) } : null);
+        };
+
+        const handleResetZoom = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          setLightboxData(prev => prev ? { ...prev, zoomLevel: 1, rotation: 0 } : null);
+        };
+
+        const handleRotate = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          setLightboxData(prev => prev ? { ...prev, rotation: (prev.rotation + 90) % 360 } : null);
+        };
+
+        return (
+          <div 
+            className="fixed inset-0 z-[100] bg-slate-950/98 flex flex-col items-stretch justify-between animate-fade-in select-none"
+            onClick={() => setLightboxData(null)}
+          >
+            {/* Top Controls Bar */}
+            <div 
+              className="p-3 sm:p-4 bg-slate-900/95 border-b border-white/10 flex flex-wrap items-center justify-between gap-3 text-white z-10"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center space-x-3">
+                <span className="px-2.5 py-1 rounded-lg bg-brand-600 text-white font-bold text-xs">
+                  Shot {def.shotNumber} of 7
+                </span>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>{def.label}</span>
+                    <span className="text-xs font-normal text-slate-400 font-mono">({lightboxData.item.isbn})</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 truncate max-w-md">
+                    {lightboxData.item.metadata?.bookDetails?.title || `Lot: ${lightboxData.item.lotNumber} • Box: ${lightboxData.item.boxNumber}`}
+                  </p>
+                </div>
+              </div>
+
+              {/* Toolbar: Zoom, Rotate, Open Raw, Close */}
+              <div className="flex items-center space-x-2">
+                {/* Zoom Controls */}
+                <div className="flex items-center bg-white/10 rounded-xl p-0.5 border border-white/15">
+                  <button
+                    onClick={handleZoomOut}
+                    title="Zoom Out (-)"
+                    className="p-1.5 hover:bg-white/20 rounded-lg text-slate-200 transition-colors cursor-pointer"
+                  >
+                    <ZoomOut className="w-4 h-4" />
+                  </button>
+                  <span className="px-2 text-xs font-mono font-bold text-slate-300">
+                    {Math.round(lightboxData.zoomLevel * 100)}%
+                  </span>
+                  <button
+                    onClick={handleZoomIn}
+                    title="Zoom In (+)"
+                    className="p-1.5 hover:bg-white/20 rounded-lg text-slate-200 transition-colors cursor-pointer"
+                  >
+                    <ZoomIn className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <button
+                  onClick={handleResetZoom}
+                  title="Reset Zoom to 100%"
+                  className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-slate-200 border border-white/15 transition-colors cursor-pointer"
+                >
+                  Fit
+                </button>
+
+                <button
+                  onClick={handleRotate}
+                  title="Rotate 90°"
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 border border-white/15 transition-colors cursor-pointer"
+                >
+                  <RotateCw className="w-4 h-4" />
+                </button>
+
+                {shotUrl && (
+                  <a
+                    href={shotUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open full resolution in a new tab"
+                    className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 border border-white/15 transition-colors flex items-center"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
+                )}
+
+                <button
+                  onClick={() => setLightboxData(null)}
+                  title="Close Lightbox (Esc)"
+                  className="p-2 rounded-xl bg-red-600/80 hover:bg-red-500 text-white font-bold transition-colors cursor-pointer ml-2"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Main Image Stage (with Pan / Zoom) */}
+            <div 
+              className="flex-1 relative flex items-center justify-center overflow-auto p-4 cursor-default"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Previous Button */}
+              <button
+                onClick={handlePrev}
+                title="Previous Shot (Left Arrow)"
+                className="absolute left-4 z-20 p-3 rounded-full bg-black/60 hover:bg-black/90 text-white border border-white/20 backdrop-blur-md transition-all active:scale-95 cursor-pointer shadow-xl"
+              >
+                <ChevronLeft className="w-6 h-6" />
+              </button>
+
+              {shotUrl ? (
+                <div 
+                  className="transition-transform duration-200 ease-out flex items-center justify-center max-w-full max-h-full"
+                  style={{
+                    transform: `scale(${lightboxData.zoomLevel}) rotate(${lightboxData.rotation}deg)`,
+                    transformOrigin: 'center center'
+                  }}
+                >
+                  <img
+                    src={shotUrl}
+                    alt={def.label}
+                    className="max-h-[72vh] max-w-[85vw] object-contain rounded-lg shadow-2xl border border-white/10"
+                    style={{ imageRendering: 'auto' }}
+                  />
+                </div>
+              ) : (
+                <div className="text-center text-slate-400 p-12 bg-slate-900/60 rounded-2xl border border-white/10">
+                  <AlertCircle className="w-12 h-12 mx-auto mb-3 text-slate-500" />
+                  <h4 className="text-base font-bold text-white mb-1">Shot {def.shotNumber} Not Captured</h4>
+                  <p className="text-xs text-slate-400">This shot is missing for ISBN {lightboxData.item.isbn}</p>
+                </div>
+              )}
+
+              {/* Next Button */}
+              <button
+                onClick={handleNext}
+                title="Next Shot (Right Arrow)"
+                className="absolute right-4 z-20 p-3 rounded-full bg-black/60 hover:bg-black/90 text-white border border-white/20 backdrop-blur-md transition-all active:scale-95 cursor-pointer shadow-xl"
+              >
+                <ChevronRight className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Bottom 7-Shot Thumbnail Strip */}
+            <div 
+              className="p-3 bg-slate-900/95 border-t border-white/10 flex items-center justify-center gap-2 overflow-x-auto z-10"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {SHOT_DEFINITIONS.map((d) => {
+                const thumbUrl = lightboxData.item.shots?.[d.shotNumber];
+                const isSelected = d.shotNumber === lightboxData.currentShotNumber;
+
+                return (
+                  <button
+                    key={d.shotNumber}
+                    onClick={() => setLightboxData(prev => prev ? { ...prev, currentShotNumber: d.shotNumber, zoomLevel: 1, rotation: 0 } : null)}
+                    className={`flex items-center space-x-2 px-3 py-1.5 rounded-xl border transition-all cursor-pointer shrink-0 ${
+                      isSelected
+                        ? 'bg-brand-600 text-white border-brand-400 shadow-md ring-2 ring-brand-400/40'
+                        : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 border-white/10'
+                    }`}
+                  >
+                    <div className="w-6 h-6 rounded bg-black overflow-hidden flex items-center justify-center shrink-0 border border-white/15">
+                      {thumbUrl ? (
+                        <img src={thumbUrl} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-[9px] font-mono text-slate-500">{d.shotNumber}</span>
+                      )}
+                    </div>
+                    <div className="text-left">
+                      <span className="text-xs font-bold block leading-tight">{d.shotNumber}. {d.label}</span>
+                      <span className="text-[10px] text-slate-400 block">{d.scope === 'box_level' ? 'Box' : 'Book'}</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
     </div>
   );
