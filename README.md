@@ -46,6 +46,6 @@ The server will start on `http://localhost:3001` and is accessible across the lo
 
 S3 Bucket Name = innoscanmussgp1-s3
 AWS Region = ap-southeast-1
-AWS Access Key ID = AKIAXBLCTMJDWX3BKHI6 
-AWS Secret Access Key = 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
+# AWS Access Key ID = AKIAXBLCTMJDWX3BKHI6 
+# AWS Secret Access Key = 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
 Folder Prefix (Path) = innoscanmussgp1/JournalVerificationImages/
