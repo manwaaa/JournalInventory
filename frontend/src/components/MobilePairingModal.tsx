@@ -32,10 +32,20 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
     }
   }, [systemStatus]);
 
+  // Check if app is running on a public cloud domain (Vercel, HTTPS, etc.)
+  const isCloudHost = typeof window !== 'undefined' && 
+    window.location.protocol === 'https:' && 
+    !window.location.hostname.includes('localhost') && 
+    !window.location.hostname.startsWith('127.') && 
+    !window.location.hostname.startsWith('192.168.') && 
+    !window.location.hostname.startsWith('10.');
+
   const httpsPort = systemStatus?.httpsPort || 3443;
-  const currentMobileUrl = selectedIp 
-    ? `https://${selectedIp}:${httpsPort}` 
-    : (systemStatus?.mobileHttpsUrl || `https://localhost:${httpsPort}`);
+  const currentMobileUrl = isCloudHost
+    ? window.location.origin
+    : (selectedIp 
+        ? `https://${selectedIp}:${httpsPort}` 
+        : (systemStatus?.mobileHttpsUrl || `https://localhost:${httpsPort}`));
 
   useEffect(() => {
     if (isOpen && currentMobileUrl) {
@@ -125,9 +135,9 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="font-bold text-slate-700 uppercase tracking-wider text-[10px]">
-                Mobile HTTPS Address
+                {isCloudHost ? 'Public Cloud HTTPS URL' : 'Mobile HTTPS Address'}
               </span>
-              {systemStatus?.networkIps && systemStatus.networkIps.length > 1 && (
+              {!isCloudHost && systemStatus?.networkIps && systemStatus.networkIps.length > 1 && (
                 <select
                   value={selectedIp}
                   onChange={(e) => setSelectedIp(e.target.value)}
@@ -157,17 +167,25 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
             </div>
           </div>
 
-          {/* 3-Step Setup */}
+          {/* Setup Instructions */}
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs text-slate-600">
             <h4 className="font-bold text-slate-800 flex items-center space-x-1.5">
               <Wifi className="w-3.5 h-3.5 text-brand-700" />
               <span>How to Connect:</span>
             </h4>
-            <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-500 pl-1 font-medium">
-              <li>Connect your phone to the <b>same Wi-Fi</b> or warehouse network as this PC.</li>
-              <li>Scan the QR code above to open the camera viewfinder.</li>
-              <li>Tap <b>Advanced &rarr; Proceed / Continue</b> if prompted with local certificate warning.</li>
-            </ol>
+            {isCloudHost ? (
+              <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-500 pl-1 font-medium">
+                <li>Scan the QR code above using your smartphone camera or QR reader.</li>
+                <li>Tap the link to open the wireless verification viewfinder instantly.</li>
+                <li>Point and capture shots directly without installing any apps!</li>
+              </ol>
+            ) : (
+              <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-500 pl-1 font-medium">
+                <li>Connect your phone to the <b>same Wi-Fi</b> or warehouse network as this PC.</li>
+                <li>Scan the QR code above to open the camera viewfinder.</li>
+                <li>Tap <b>Advanced &rarr; Proceed / Continue</b> if prompted with local certificate warning.</li>
+              </ol>
+            )}
           </div>
 
         </div>

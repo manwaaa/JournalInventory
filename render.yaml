@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: journal-inventory-backend
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AWS_REGION
+        value: ap-southeast-1
+      - key: AWS_S3_BUCKET
+        value: innoscanmussgp1-s3
+      - key: AWS_PREFIX
+        value: innoscanmussgp1/JournalVerificationImages/
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+

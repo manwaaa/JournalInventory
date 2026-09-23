@@ -1,0 +1,17 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://journal-inventory-backend.onrender.com/api/:path*"
+    },
+    {
+      "source": "/proofs/:path*",
+      "destination": "https://journal-inventory-backend.onrender.com/proofs/:path*"
+    },
+    {
+      "source": "/((?!api/|proofs/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
+

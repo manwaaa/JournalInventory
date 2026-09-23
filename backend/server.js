@@ -53,9 +53,9 @@ try {
 }
 
 // Storage path configuration
-const DEFAULT_STORAGE_PATH = process.platform === 'win32' 
+const DEFAULT_STORAGE_PATH = process.env.STORAGE_PATH || (process.platform === 'win32' 
   ? 'C:\\Journal_Proofs' 
-  : path.resolve(__dirname, 'storage/journal_proofs');
+  : path.resolve(__dirname, 'storage/journal_proofs'));
 
 const CONFIG_FILE = path.resolve(__dirname, 'config.json');
 const MANIFEST_FILE = path.resolve(__dirname, 'manifest.json');
@@ -605,6 +605,16 @@ app.delete('/api/manifest', (req, res) => {
 // -------------------------------------------------------------
 // System Endpoints
 // -------------------------------------------------------------
+// Health check endpoint for cloud monitoring, Render, and keep-alive services
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
 app.get('/api/system/status', (req, res) => {
   let proofCount = 0;
   try {
@@ -2530,10 +2540,13 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`====================================================`);
 });
 
-// Start HTTPS server for Mobile Devices
-if (sslOptions) {
+// Start HTTPS server for Mobile Devices (LAN local environments)
+if (sslOptions && !process.env.RENDER) {
   try {
     const httpsServer = https.createServer(sslOptions, app);
+    httpsServer.on('error', (err) => {
+      console.warn('[HTTPS Server] LAN HTTPS listener warning (cloud/restricted port mode):', err.message);
+    });
     httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => {
       const ips = getNetworkIps();
       console.log(`  HTTPS (Mobile):   https://localhost:${HTTPS_PORT}`);
@@ -2541,7 +2554,7 @@ if (sslOptions) {
       console.log(`====================================================`);
     });
   } catch (e) {
-    console.error('Failed to start HTTPS server:', e);
+    console.warn('Could not start local HTTPS server:', e.message);
   }
 }
 
