@@ -2015,7 +2015,6 @@ app.post('/api/capture/save-shot', async (req, res) => {
       }
     }
 
-    // Automatic S3 Upload upon completion (7/7 shots OR all 5 book shots completed)
     // Automatic S3 Upload upon completion:
     // - All 7 shots completed (Full station), OR
     // - Shots 3-7 completed (Book-level station), OR
@@ -2032,7 +2031,6 @@ app.post('/api/capture/save-shot', async (req, res) => {
       metadata.shots[6] && 
       metadata.shots[7]
     );
-    const isReadyForS3 = (totalShots >= 7) || isBookComplete;
     const isReadyForS3 = (totalShots >= 7) || isBookComplete || isBoxSpineComplete;
 
     if (isReadyForS3 && config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
@@ -2496,7 +2494,6 @@ app.post('/api/sync/receive-shot', async (req, res) => {
         metadata.shots[6] && 
         metadata.shots[7]
       );
-      const isReadyForS3 = (totalShots >= 7) || isBookComplete;
       const isReadyForS3 = (totalShots >= 7) || isBookComplete || isBoxSpineComplete;
 
       if (isReadyForS3 && config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
