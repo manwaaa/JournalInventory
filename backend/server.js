@@ -2016,6 +2016,15 @@ app.post('/api/capture/save-shot', async (req, res) => {
     }
 
     // Automatic S3 Upload upon completion (7/7 shots OR all 5 book shots completed)
+    // Automatic S3 Upload upon completion:
+    // - All 7 shots completed (Full station), OR
+    // - Shots 3-7 completed (Book-level station), OR
+    // - Shots 1, 2, and 4 completed (Box + Spine station)
+    const isBoxSpineComplete = Boolean(
+      metadata.shots[1] && 
+      metadata.shots[2] && 
+      metadata.shots[4]
+    );
     const isBookComplete = Boolean(
       metadata.shots[3] && 
       metadata.shots[4] && 
@@ -2024,6 +2033,7 @@ app.post('/api/capture/save-shot', async (req, res) => {
       metadata.shots[7]
     );
     const isReadyForS3 = (totalShots >= 7) || isBookComplete;
+    const isReadyForS3 = (totalShots >= 7) || isBookComplete || isBoxSpineComplete;
 
     if (isReadyForS3 && config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
       console.log(`[S3 Auto-Upload] Verification capture complete for ${cleanIsbn} (${totalShots} shots saved). Enqueuing background upload...`);
@@ -2474,6 +2484,11 @@ app.post('/api/sync/receive-shot', async (req, res) => {
         currentStep: nextStep
       });
 
+      const isBoxSpineComplete = Boolean(
+        metadata.shots[1] && 
+        metadata.shots[2] && 
+        metadata.shots[4]
+      );
       const isBookComplete = Boolean(
         metadata.shots[3] && 
         metadata.shots[4] && 
@@ -2482,6 +2497,7 @@ app.post('/api/sync/receive-shot', async (req, res) => {
         metadata.shots[7]
       );
       const isReadyForS3 = (totalShots >= 7) || isBookComplete;
+      const isReadyForS3 = (totalShots >= 7) || isBookComplete || isBoxSpineComplete;
 
       if (isReadyForS3 && config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
         enqueueS3Upload(cleanIsbn);
