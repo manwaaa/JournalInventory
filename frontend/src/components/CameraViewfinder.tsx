@@ -22,6 +22,7 @@ interface CameraViewfinderProps {
   stationRole?: StationRole;
   isBoxLevelDone?: boolean;
   hasBoxShots?: boolean;
+  shots?: Record<number, any>;
   onNextJournal?: () => void;
   hasTorch?: boolean;
   isTorchOn?: boolean;
@@ -55,6 +56,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   stationRole = 'book_level',
   isBoxLevelDone = false,
   hasBoxShots = false,
+  shots,
   onNextJournal,
   hasTorch = false,
   isTorchOn = false,
@@ -96,6 +98,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   const isStepCaptureActive = currentStep.startsWith('CAPTURE_SHOT_');
   const shotNum = isStepCaptureActive ? parseInt(currentStep.replace('CAPTURE_SHOT_', ''), 10) : 1;
   const currentDef = SHOT_DEFINITIONS.find(d => d.shotNumber === shotNum) || SHOT_DEFINITIONS[0];
+  const isRetaking = isStepCaptureActive && Boolean(shots?.[shotNum]);
 
   const isBoxStationFinished = stationRole === 'box_level' && isBoxLevelDone;
 
@@ -112,7 +115,9 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   };
 
   return (
-    <div className="relative w-full rounded-2xl overflow-hidden white-card shadow-lg bg-slate-950">
+    <div className={`relative w-full rounded-2xl overflow-hidden white-card shadow-lg bg-slate-950 transition-all duration-300 ${
+      isRetaking ? 'border-2 border-amber-500 ring-4 ring-amber-400/60 shadow-2xl shadow-amber-500/25' : ''
+    }`}>
       
       {/* Top Floating Controls Bar */}
       <div className="absolute top-3 left-3 right-3 z-20 flex flex-wrap items-center justify-between gap-2 pointer-events-auto">
@@ -220,6 +225,13 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             </button>
           )}
 
+          {isRetaking && (
+            <span className="bg-amber-500 text-slate-950 text-[11px] font-black px-2.5 py-1 rounded-lg shadow-md border border-amber-300 animate-pulse flex items-center space-x-1">
+              <RotateCcw className="w-3 h-3 animate-spin" />
+              <span>RETAKING</span>
+            </span>
+          )}
+
           {stationRole === 'box_level' && (
             <span className="bg-blue-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg shadow-sm border border-blue-400/40">
               📦 PC 1 (Box Only 1-2)
@@ -233,6 +245,11 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           {stationRole === 'all_in_one' && (
             <span className="bg-emerald-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg shadow-sm border border-emerald-400/40">
               ⚡ Full Station (1-7)
+            </span>
+          )}
+          {stationRole === 'box_spine' && (
+            <span className="bg-violet-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-lg shadow-sm border border-violet-400/40">
+              📦🔖 Box+Spine (1,2,4)
             </span>
           )}
 
@@ -398,17 +415,25 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
 
       {/* Bottom Shutter Capture Bar */}
       {isStepCaptureActive && !isBoxStationFinished && !(stationRole === 'book_level' && !hasBoxShots && (currentStep === 'CAPTURE_SHOT_1' || currentStep === 'CAPTURE_SHOT_2')) && (
-        <div className="p-3.5 bg-slate-900 border-t border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+        <div className={`p-3.5 border-t flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 transition-colors ${
+          isRetaking ? 'bg-amber-950/80 border-amber-500/60' : 'bg-slate-900 border-slate-800'
+        }`}>
           <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3 pl-1">
             <div className="text-xs text-slate-200">
-              <span>Capturing <b className="text-brand-400 font-bold">Shot {shotNum} of 7</b>: {currentDef.label}</span>
-              <span className={`ml-2 text-[10px] font-bold px-2 py-0.5 rounded border ${
-                currentDef.scope === 'box_level'
-                  ? 'bg-blue-900/60 text-blue-300 border-blue-800'
-                  : 'bg-indigo-900/60 text-indigo-300 border-indigo-800'
-              }`}>
-                {currentDef.scope === 'box_level' ? '📦 Box Level' : '📖 Book Level'}
-              </span>
+              <span>{isRetaking ? 'Retaking ' : 'Capturing '} <b className={isRetaking ? 'text-amber-400 font-extrabold' : 'text-brand-400 font-bold'}>Shot {shotNum} of 7</b>: {currentDef.label}</span>
+              {isRetaking ? (
+                <span className="ml-2 text-[10px] font-black px-2 py-0.5 rounded bg-amber-500 text-slate-950 border border-amber-300 shadow-sm animate-bounce">
+                  ⚠️ RETAKE
+                </span>
+              ) : (
+                <span className={`ml-2 text-[10px] font-bold px-2 py-0.5 rounded border ${
+                  currentDef.scope === 'box_level'
+                    ? 'bg-blue-900/60 text-blue-300 border-blue-800'
+                    : 'bg-indigo-900/60 text-indigo-300 border-indigo-800'
+                }`}>
+                  {currentDef.scope === 'box_level' ? '📦 Box Level' : '📖 Book Level'}
+                </span>
+              )}
               {stationRole !== 'box_level' && hasBoxShots && shotNum === 3 && (
                 <span className="ml-2 text-[10px] font-bold text-emerald-400">
                   ✓ Box Shots 1 & 2 Loaded
@@ -420,10 +445,14 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           <button
             onClick={handleCaptureClick}
             disabled={!isStreaming || isCapturing}
-            className="flex items-center justify-center space-x-2 px-7 py-2.5 rounded-xl font-bold text-sm text-white transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed btn-primary-gradient shrink-0 cursor-pointer"
+            className={`flex items-center justify-center space-x-2 px-7 py-2.5 rounded-xl font-bold text-sm transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 cursor-pointer ${
+              isRetaking
+                ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black border border-amber-300 ring-2 ring-amber-400 shadow-lg shadow-amber-500/40'
+                : 'btn-primary-gradient text-white'
+            }`}
           >
             <Camera className="w-4 h-4" />
-            <span>{isCapturing ? 'Saving to PC...' : `Take Shot ${shotNum}`}</span>
+            <span>{isCapturing ? 'Saving to PC...' : isRetaking ? `Retake Shot ${shotNum} (Replace)` : `Take Shot ${shotNum}`}</span>
           </button>
         </div>
       )}

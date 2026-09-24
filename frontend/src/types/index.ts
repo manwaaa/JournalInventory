@@ -11,7 +11,10 @@ export type CaptureStep =
 
 export type ViewMode = 'CAPTURE' | 'SEARCH_VIEW';
 
-export type StationRole = 'box_level' | 'book_level' | 'all_in_one';
+export type StationRole = 'box_level' | 'book_level' | 'all_in_one' | 'box_spine';
+
+/** Shot numbers captured by the 'box_spine' station role */
+export const BOX_SPINE_SHOTS = [1, 2, 4] as const;
 
 export interface BookDetails {
   title?: string;

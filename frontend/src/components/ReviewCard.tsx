@@ -20,7 +20,7 @@ import {
   Lock,
   CloudUpload
 } from 'lucide-react';
-import { JournalMetadata, ShotInfo, SHOT_DEFINITIONS, StationRole, BoxSummary } from '../types';
+import { JournalMetadata, ShotInfo, SHOT_DEFINITIONS, StationRole, BoxSummary, CaptureStep } from '../types';
 
 interface ReviewCardProps {
   isbn: string;
@@ -30,6 +30,7 @@ interface ReviewCardProps {
   metadata: JournalMetadata | null;
   stationRole?: StationRole;
   boxSummary?: BoxSummary | null;
+  currentStep?: CaptureStep;
   onRetakeShot: (shotNumber: number) => void;
   onOpenExplorer: (isbn: string) => void;
   onDownloadZip: (isbn: string) => void;
@@ -46,6 +47,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
   metadata,
   stationRole = 'book_level',
   boxSummary,
+  currentStep,
   onRetakeShot,
   onOpenExplorer,
   onDownloadZip,
@@ -282,51 +284,82 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
           const shotInfo = shots[def.shotNumber];
           const Icon = getShotIcon(def.shotNumber);
           const hasImage = Boolean(shotInfo?.previewDataUrl || shotInfo?.filename);
+          const isCurrentlyRetaking = currentStep === def.id && hasImage;
+          const isCurrentPending = currentStep === def.id && !hasImage;
 
           return (
             <div 
               key={def.shotNumber} 
-              className={`rounded-xl p-2.5 flex flex-col justify-between sub-card ${
-                hasImage 
-                  ? 'border-blue-300/80' 
-                  : def.scope === 'box_level'
-                    ? 'border-blue-200/60'
-                    : 'opacity-90'
+              className={`rounded-xl p-2.5 flex flex-col justify-between sub-card transition-all duration-300 ${
+                isCurrentlyRetaking
+                  ? 'border-2 border-amber-500 ring-4 ring-amber-400/50 bg-gradient-to-b from-amber-50/90 to-orange-50/50 shadow-xl shadow-amber-500/25 animate-pulse scale-[1.02]'
+                  : hasImage 
+                    ? 'border-blue-300/80' 
+                    : isCurrentPending
+                      ? 'border-2 border-brand-500 ring-2 ring-brand-500/20'
+                      : def.scope === 'box_level'
+                        ? 'border-blue-200/60'
+                        : 'opacity-90'
               }`}
             >
               <div className="flex items-center justify-between mb-1.5">
                 <div className="flex items-center space-x-1.5 min-w-0">
-                  <Icon className="w-3.5 h-3.5 text-brand-700 shrink-0" />
-                  <span className="text-[11px] font-bold text-slate-800 truncate">
+                  <Icon className={`w-3.5 h-3.5 shrink-0 ${isCurrentlyRetaking ? 'text-amber-600 animate-spin' : 'text-brand-700'}`} />
+                  <span className={`text-[11px] font-bold truncate ${isCurrentlyRetaking ? 'text-amber-950 font-black' : 'text-slate-800'}`}>
                     {def.label}
                   </span>
                 </div>
-                <span className={`text-[9px] font-semibold px-1.5 py-0.2 rounded-md border shadow-xs shrink-0 ${
-                  def.scope === 'box_level'
-                    ? 'bg-blue-50 text-blue-700 border-blue-200'
-                    : 'bg-slate-50 text-slate-600 border-slate-200'
-                }`}>
-                  {def.scope === 'box_level' ? '📦 PC 1 Box' : '📖 PC 2 Book'}
-                </span>
+                <div className="flex items-center space-x-1 shrink-0">
+                  {isCurrentlyRetaking && (
+                    <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-amber-500 text-slate-950 border border-amber-300 shadow-sm animate-bounce">
+                      RETAKING
+                    </span>
+                  )}
+                  <span className={`text-[9px] font-semibold px-1.5 py-0.2 rounded-md border shadow-xs ${
+                    isCurrentlyRetaking
+                      ? 'bg-amber-100 text-amber-800 border-amber-300'
+                      : def.scope === 'box_level'
+                        ? 'bg-blue-50 text-blue-700 border-blue-200'
+                        : 'bg-slate-50 text-slate-600 border-slate-200'
+                  }`}>
+                    {def.scope === 'box_level' ? '📦 PC 1 Box' : '📖 PC 2 Book'}
+                  </span>
+                </div>
               </div>
 
               {/* Thumbnail Frame */}
-              <div className="relative aspect-[4/3] w-full rounded-lg overflow-hidden bg-slate-950 flex items-center justify-center border border-slate-200/90 shadow-inner">
+              <div className={`relative aspect-[4/3] w-full rounded-lg overflow-hidden bg-slate-950 flex items-center justify-center border shadow-inner transition-all ${
+                isCurrentlyRetaking 
+                  ? 'border-2 border-amber-400 ring-2 ring-amber-400/60' 
+                  : 'border-slate-200/90'
+              }`}>
                 {hasImage ? (
                   <>
                     <img
                       src={shotInfo?.previewDataUrl?.startsWith('/proofs') ? shotInfo.previewDataUrl : (shotInfo?.previewDataUrl || `/proofs/${encodeURIComponent(isbn)}/${encodeURIComponent(shotInfo?.filename || '')}?t=${Date.now()}`)}
                       alt={def.label}
-                      className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                      className={`w-full h-full object-cover cursor-pointer transition-all ${isCurrentlyRetaking ? 'opacity-75 contrast-125' : 'hover:opacity-90'}`}
                       onClick={() => setSelectedPreview(shotInfo?.previewDataUrl || `/proofs/${encodeURIComponent(isbn)}/${encodeURIComponent(shotInfo?.filename || '')}`)}
                     />
+                    {isCurrentlyRetaking && (
+                      <div className="absolute inset-0 bg-amber-950/20 backdrop-blur-[1px] pointer-events-none flex items-center justify-center">
+                        <div className="bg-amber-500/95 text-slate-950 text-[10px] font-black px-2 py-1 rounded-md shadow-lg border border-amber-300 flex items-center space-x-1">
+                          <RotateCcw className="w-3 h-3 animate-spin" />
+                          <span>RETAKE IN PROGRESS</span>
+                        </div>
+                      </div>
+                    )}
                     <button
                       onClick={() => onRetakeShot(def.shotNumber)}
-                      className="absolute bottom-1.5 right-1.5 px-2.5 py-0.5 rounded-lg bg-black/75 hover:bg-black text-white text-[10px] font-semibold backdrop-blur-md border border-white/20 flex items-center space-x-1 shadow transition-all hover:scale-105 cursor-pointer"
-                      title="Retake this shot"
+                      className={`absolute bottom-1.5 right-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-semibold backdrop-blur-md border flex items-center space-x-1 shadow transition-all hover:scale-105 cursor-pointer ${
+                        isCurrentlyRetaking
+                          ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-300 ring-2 ring-amber-400 font-bold'
+                          : 'bg-black/75 hover:bg-black text-white border-white/20'
+                      }`}
+                      title={isCurrentlyRetaking ? "Currently retaking this shot" : "Retake this shot"}
                     >
                       <RotateCcw className="w-2.5 h-2.5" />
-                      <span>Retake</span>
+                      <span>{isCurrentlyRetaking ? 'Retaking...' : 'Retake'}</span>
                     </button>
                   </>
                 ) : (

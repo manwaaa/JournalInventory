@@ -319,6 +319,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   Performs full 1–7 sequence on this PC. Run PC 1 & PC 2 in parallel for 2x speed!
                 </p>
               </button>
+
+              {/* Option 4: Box + Spine (Shots 1, 2, 4) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedRole('box_spine');
+                }}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  selectedRole === 'box_spine'
+                    ? 'bg-gradient-to-br from-violet-50 to-white border-violet-500 ring-2 ring-violet-500/20 shadow-md'
+                    : 'bg-white/70 border-slate-200 hover:bg-white'
+                }`}
+              >
+                <div className="flex items-center space-x-2 mb-1.5">
+                  <div className={`p-1.5 rounded-lg ${selectedRole === 'box_spine' ? 'bg-violet-600 text-white' : 'bg-violet-50 text-violet-600'}`}>
+                    <Package className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-extrabold text-violet-900 block">Box + Spine</span>
+                    <span className="text-[10px] font-semibold text-violet-600">Shots 1, 2 &amp; 4 only</span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-snug">
+                  Captures only <b>Box A</b> (1), <b>Box B</b> (2), and <b>Spine</b> (4). Skips front cover, title page, edition notice &amp; back cover.
+                </p>
+              </button>
             </div>
           </div>
 

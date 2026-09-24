@@ -44,7 +44,8 @@ import {
   ViewMode,
   StationRole,
   BoxSummary,
-  SHOT_DEFINITIONS
+  SHOT_DEFINITIONS,
+  BOX_SPINE_SHOTS
 } from './types';
 
 export function App() {
@@ -92,11 +93,20 @@ export function App() {
   const [boxesList, setBoxesList] = useState<BoxSummary[]>([]);
   const [activeBoxSummary, setActiveBoxSummary] = useState<BoxSummary | null>(null);
 
-  // Red Toast Alert Banner
+  // Toast Alert Notification (Bottom Right)
   const [toastAlert, setToastAlert] = useState<{
     message: string;
-    type?: 'error' | 'warning' | 'info';
+    type?: 'error' | 'warning' | 'info' | 'success';
   } | null>(null);
+
+  // Auto-dismiss toast alert after a short delay
+  useEffect(() => {
+    if (!toastAlert) return;
+    const timer = setTimeout(() => {
+      setToastAlert(null);
+    }, toastAlert.type === 'error' ? 8000 : 4500);
+    return () => clearTimeout(timer);
+  }, [toastAlert]);
 
   // Modals & Dialogs
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
@@ -257,44 +267,37 @@ export function App() {
         }
       } else if (event.type === 'BOX_SHOT_SAVED') {
         fetchBoxesList();
-        // When PC 1 captures Box A/Box B shot, immediately show it on PC 2
-        if (event.boxNumber) {
-          const isMatchingBox = !boxNumber || String(event.boxNumber).toLowerCase() === String(boxNumber).toLowerCase();
-          if (stationRole === 'book_level' && isMatchingBox) {
-            setLotNumber(event.lotNumber || lotNumber || '');
-            setBoxNumber(event.boxNumber);
-            if (event.boxShots) {
-              setShots(prev => ({
-                ...prev,
-                1: event.boxShots.hasBoxShot ? {
-                  filename: 'shot_1_box_a.jpg',
-                  savedAt: new Date().toISOString(),
-                  type: 'Box A',
-                  scope: 'box_level',
-                  previewDataUrl: event.boxShots.boxShotUrl,
-                  inheritedFromBox: true
-                } : prev[1],
-                2: event.boxShots.hasUnboxShot ? {
-                  filename: 'shot_2_box_b.jpg',
-                  savedAt: new Date().toISOString(),
-                  type: 'Box B',
-                  scope: 'box_level',
-                  previewDataUrl: event.boxShots.unboxShotUrl,
-                  inheritedFromBox: true
-                } : prev[2]
-              }));
+        if (event.boxShots) {
+          const bShots = event.boxShots;
+          setShots(prev => ({
+            ...prev,
+            1: bShots.hasBoxShot && bShots.boxShotUrl ? {
+              filename: 'shot_1_box_a.jpg',
+              savedAt: new Date().toISOString(),
+              type: 'Box A',
+              scope: 'box_level',
+              previewDataUrl: bShots.boxShotUrl,
+              inheritedFromBox: true
+            } : prev[1],
+            2: bShots.hasUnboxShot && bShots.unboxShotUrl ? {
+              filename: 'shot_2_box_b.jpg',
+              savedAt: new Date().toISOString(),
+              type: 'Box B',
+              scope: 'box_level',
+              previewDataUrl: bShots.unboxShotUrl,
+              inheritedFromBox: true
+            } : prev[2]
+          }));
 
-              if (event.boxShots.hasBoxShot && event.boxShots.hasUnboxShot) {
-                if (currentStep === 'CAPTURE_SHOT_1' || currentStep === 'CAPTURE_SHOT_2') {
-                  setCurrentStep('CAPTURE_SHOT_3');
-                }
-                playAudioCue('success');
-                setToastAlert({
-                  message: `✓ Box A & Box B photos received from PC 1 for Box ${event.boxNumber}! Ready for Book shots (Shots 3–7).`,
-                  type: 'info'
-                });
-              }
+          if (bShots.hasBoxShot && bShots.hasUnboxShot) {
+            if (stationRole === 'book_level' && (currentStep === 'CAPTURE_SHOT_1' || currentStep === 'CAPTURE_SHOT_2')) {
+              setCurrentStep('CAPTURE_SHOT_3');
             }
+            playAudioCue('success');
+            setToastAlert({
+              message: `✓ Box A & Box B photos received from PC 1 for Box ${event.boxNumber || ''}! Ready for Book shots (Shots 3–7).`,
+              type: 'info'
+            });
           }
         }
       } else if (event.type === 'SHOT_SAVED') {
@@ -303,34 +306,59 @@ export function App() {
           if (!activeIsbn && event.isbn) {
             setActiveIsbn(event.isbn);
             setIsbnInput(event.isbn);
-            setLotNumber(event.session.lotNumber || '');
-            setBoxNumber(event.session.boxNumber || '');
+            if (event.session?.lotNumber) setLotNumber(event.session.lotNumber);
+            if (event.session?.boxNumber) setBoxNumber(event.session.boxNumber);
           }
-          if (event.session.shots) setShots(event.session.shots);
-          if (event.session.metadata) setMetadata(event.session.metadata);
-          if (event.session.bookDetails) setBookDetails(event.session.bookDetails);
+          if (event.session?.shots) setShots(event.session.shots);
+          if (event.session?.metadata) setMetadata(event.session.metadata);
+          if (event.session?.bookDetails) setBookDetails(event.session.bookDetails);
+
+          // If it was Shot 1 or 2 saved on PC 1, also inherit onto PC 2
+          if ((event.shotNumber === 1 || event.shotNumber === 2) && event.boxShots) {
+            const bShots = event.boxShots;
+            setShots(prev => ({
+              ...prev,
+              1: bShots.hasBoxShot && bShots.boxShotUrl ? {
+                filename: 'shot_1_box_a.jpg',
+                savedAt: new Date().toISOString(),
+                type: 'Box A',
+                scope: 'box_level',
+                previewDataUrl: bShots.boxShotUrl,
+                inheritedFromBox: true
+              } : (event.shotNumber === 1 && event.shotInfo ? event.shotInfo : prev[1]),
+              2: bShots.hasUnboxShot && bShots.unboxShotUrl ? {
+                filename: 'shot_2_box_b.jpg',
+                savedAt: new Date().toISOString(),
+                type: 'Box B',
+                scope: 'box_level',
+                previewDataUrl: bShots.unboxShotUrl,
+                inheritedFromBox: true
+              } : (event.shotNumber === 2 && event.shotInfo ? event.shotInfo : prev[2])
+            }));
+          }
 
           if (stationRole === 'book_level') {
             let nextBookShot = 3;
+            const curShots = event.session?.shots || shots;
             for (let s = 3; s <= 7; s++) {
-              if (!event.session.shots?.[s]) {
+              if (!curShots?.[s]) {
                 nextBookShot = s;
                 break;
               }
             }
-            if (event.session.shots?.[3] && event.session.shots?.[4] && event.session.shots?.[5] && event.session.shots?.[6] && event.session.shots?.[7]) {
+            if (curShots?.[3] && curShots?.[4] && curShots?.[5] && curShots?.[6] && curShots?.[7]) {
               setCurrentStep('COMPLETE');
             } else {
               setCurrentStep(`CAPTURE_SHOT_${nextBookShot}` as CaptureStep);
             }
-            if (event.shotNumber === 2 && event.session.shots?.[1] && event.session.shots?.[2]) {
+            if (event.shotNumber === 2) {
               playAudioCue('success');
               setToastAlert({
                 message: `✓ Box A & Box B photos completed on PC 1! You can now capture Shots 3 to 7 on PC 2.`,
                 type: 'info'
               });
             }
-          } else {
+          } else if (event.session?.currentStep) {
             setCurrentStep(event.session.currentStep);
           }
 
@@ -371,7 +399,6 @@ export function App() {
   useEffect(() => {
     fetchStatus();
     fetchBoxesList();
-    setTimeout(() => isbnInputRef.current?.focus(), 300);
   }, [fetchStatus, fetchBoxesList]);
 
   // Global Ctrl+K shortcut for Quick Search
@@ -510,16 +537,47 @@ export function App() {
       const newShots: Record<number, ShotInfo | null> = { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null };
       for (let s = 1; s <= 7; s++) {
         if (data.existingShots && data.existingShots[s]) {
+          const fn = data.existingShots[s];
+          const isBoxShotFallback = fn.startsWith('shot_') && !data.exists;
+          const previewUrl = isBoxShotFallback && s === 1 && data.boxShots?.boxShotUrl ? data.boxShots.boxShotUrl :
+                             isBoxShotFallback && s === 2 && data.boxShots?.unboxShotUrl ? data.boxShots.unboxShotUrl :
+                             `/proofs/${encodeURIComponent(data.isbn)}/${encodeURIComponent(fn)}?t=${Date.now()}`;
           newShots[s] = {
-            filename: data.existingShots[s],
+            filename: fn,
             savedAt: data.metadata?.shots?.[s]?.savedAt || new Date().toISOString(),
             type: SHOT_DEFINITIONS[s - 1]?.label || `Shot ${s}`,
             scope: SHOT_DEFINITIONS[s - 1]?.scope,
-            previewDataUrl: `/proofs/${encodeURIComponent(data.isbn)}/${encodeURIComponent(data.existingShots[s])}?t=${Date.now()}`,
-            blurScore: data.metadata?.shots?.[s]?.blurScore
+            previewDataUrl: previewUrl,
+            blurScore: data.metadata?.shots?.[s]?.blurScore,
+            inheritedFromBox: data.metadata?.shots?.[s]?.inheritedFromBox || s <= 2
           };
         }
       }
+
+      // Explicit fallback for box shots 1 and 2
+      if (data.boxShots) {
+        if (!newShots[1] && data.boxShots.hasBoxShot && data.boxShots.boxShotUrl) {
+          newShots[1] = {
+            filename: 'shot_1_box_a.jpg',
+            savedAt: new Date().toISOString(),
+            type: 'Box A',
+            scope: 'box_level',
+            previewDataUrl: data.boxShots.boxShotUrl,
+            inheritedFromBox: true
+          };
+        }
+        if (!newShots[2] && data.boxShots.hasUnboxShot && data.boxShots.unboxShotUrl) {
+          newShots[2] = {
+            filename: 'shot_2_box_b.jpg',
+            savedAt: new Date().toISOString(),
+            type: 'Box B',
+            scope: 'box_level',
+            previewDataUrl: data.boxShots.unboxShotUrl,
+            inheritedFromBox: true
+          };
+        }
+      }
+
       setShots(newShots);
 
       if (data.metadata) {
@@ -693,6 +751,19 @@ export function App() {
       if (data.isComplete) {
         setCurrentStep('COMPLETE');
         playAudioCue('success');
+      } else if (stationRole === 'box_spine') {
+        // Box + Spine station: only shots 1 (Box A), 2 (Box B), 4 (Spine)
+        const remaining = (BOX_SPINE_SHOTS as readonly number[]).filter(s => !updatedShots[s]);
+        if (remaining.length === 0) {
+          setCurrentStep('COMPLETE');
+          playAudioCue('success');
+          setToastAlert({
+            message: `📦🔖 Box Spine station done for ${activeIsbn}! Shots 1, 2 & 4 saved.`,
+            type: 'info'
+          });
+        } else {
+          setCurrentStep(`CAPTURE_SHOT_${remaining[0]}` as CaptureStep);
+        }
       } else if (stationRole === 'box_level' && shotNumber === 2) {
         // Shot 2 is complete on PC 1
         playAudioCue('success');
@@ -834,7 +905,6 @@ export function App() {
     setBlurWarning(null);
     setCurrentStep('SCAN_ISBN');
     fetchStatus();
-    setTimeout(() => isbnInputRef.current?.focus(), 150);
   };
 
   // Reset to next journal (1-click immediate reset)
@@ -854,6 +924,16 @@ export function App() {
         if (!currentShots[1] || !currentShots[2]) {
           setToastAlert({
             message: `Please capture both Shot 1 (Box A) and Shot 2 (Box B) before proceeding on PC 1.`,
+            type: 'error'
+          });
+          playAudioCue('error');
+          return;
+        }
+      } else if (role === 'box_spine') {
+        const missing = (BOX_SPINE_SHOTS as readonly number[]).filter(s => !currentShots[s]);
+        if (missing.length > 0) {
+          setToastAlert({
+            message: `Please capture all required shots (1. Box A, 2. Box B, 4. Spine) before proceeding. Missing: Shot(s) ${missing.join(', ')}.`,
             type: 'error'
           });
           playAudioCue('error');
@@ -894,6 +974,10 @@ export function App() {
     setIsbnInput('');
     if (isbnInputRef.current) {
       isbnInputRef.current.value = '';
+      isbnInputRef.current.blur();
+    }
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
     }
     if (role === 'box_level') {
       setLotNumber('');
@@ -909,12 +993,6 @@ export function App() {
     setIsCapturing(false);
     setCurrentStep('SCAN_ISBN');
     fetchStatus();
-
-    // Instantly focus and select the input for the next ISBN
-    setTimeout(() => {
-      isbnInputRef.current?.focus();
-      isbnInputRef.current?.select();
-    }, 50);
   };
 
   // Open Explorer
@@ -959,7 +1037,8 @@ export function App() {
       const step = currentStepRef.current;
       const currentShots = shotsRef.current;
       const role = stationRoleRef.current;
-      const inputVal = isbnInputRefValue.current;
+      const curActiveIsbn = activeIsbnRef.current;
+      const inputVal = (isbnInputRefValue.current || '').trim();
 
       // 1. Shutter Trigger: Spacebar or Enter during active photo capture (Shots 1 to 7)
       if ((e.code === 'Space' || e.key === 'Enter') && step.startsWith('CAPTURE_SHOT_') && !isInput) {
@@ -971,16 +1050,23 @@ export function App() {
 
       // 2. Enter key: 1-click proceed to next journal when complete
       if (e.key === 'Enter') {
-        // If user is inside an input with text, let the input's onKeyDown/onSubmit handle it directly
-        if (isInput && inputVal.trim()) {
-          return;
-        }
-
         const isComplete = step === 'COMPLETE' ||
           (role === 'box_level' && (step === 'CAPTURE_SHOT_3' || Boolean(currentShots[1] && currentShots[2]))) ||
           Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7] && !step.startsWith('CAPTURE_SHOT_'));
 
         if (isComplete) {
+          // If user manually typed a DIFFERENT new ISBN into the input, start that new ISBN
+          if (isInput && inputVal && inputVal !== curActiveIsbn) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (document.activeElement instanceof HTMLElement) {
+              document.activeElement.blur();
+            }
+            handleProcessIsbn(inputVal);
+            return;
+          }
+
+          // Otherwise (no text, same ISBN, or outside input), hitting Enter proceeds cleanly to the next journal
           e.preventDefault();
           e.stopPropagation();
           handleNextJournal();
@@ -1019,19 +1105,28 @@ export function App() {
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col gap-6 relative">
         
-        {/* Floating Red Toast Notification */}
+        {/* Floating Toast Notification (Bottom Right) */}
         {toastAlert && (
-          <div className="fixed top-20 right-4 sm:right-8 z-50 max-w-md w-full animate-slide-down">
-            <div className="bg-[#e11d48] text-white p-4 rounded-2xl shadow-2xl flex items-start space-x-3 border border-red-400/30">
-              <div className="p-1 rounded-lg bg-white/20 shrink-0 mt-0.5">
-                <AlertTriangle className="w-5 h-5 text-white" />
+          <div className="fixed bottom-6 right-6 z-[99999] max-w-md w-full animate-slide-up pointer-events-auto">
+            <div className={`p-4 rounded-2xl shadow-2xl flex items-start space-x-3 border transition-all duration-300 ${
+              toastAlert.type === 'error'
+                ? 'bg-rose-600 text-white border-rose-400/60 shadow-rose-950/40 ring-1 ring-rose-400/40'
+                : 'bg-emerald-600 text-white border-emerald-400/60 shadow-emerald-950/40 ring-1 ring-emerald-400/40'
+            }`}>
+              <div className="p-1.5 rounded-xl bg-white/20 shrink-0 mt-0.5 shadow-inner">
+                {toastAlert.type === 'error' ? (
+                  <AlertTriangle className="w-5 h-5 text-white" />
+                ) : (
+                  <CheckCircle2 className="w-5 h-5 text-white" />
+                )}
               </div>
-              <div className="flex-1 text-xs font-semibold leading-relaxed">
+              <div className="flex-1 text-xs font-bold leading-relaxed">
                 {toastAlert.message}
               </div>
               <button
                 onClick={() => setToastAlert(null)}
-                className="p-1 text-white/80 hover:text-white rounded-lg hover:bg-white/20 transition-colors shrink-0"
+                className="p-1 text-white/80 hover:text-white rounded-lg hover:bg-white/20 transition-colors shrink-0 cursor-pointer"
+                title="Dismiss"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1152,13 +1247,29 @@ export function App() {
                 onSubmit={(e) => {
                   e.preventDefault();
                   const val = isbnInput.trim();
-                  if (val) {
+                  const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
+                  const hasBoxShots = Boolean(shots[1] && shots[2]);
+                  const isSessionComplete = currentStep === 'COMPLETE' ||
+                    (stationRole === 'box_level' && (currentStep === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
+                    (hasAllBookShots && !currentStep.startsWith('CAPTURE_SHOT_'));
+
+                  if (isSessionComplete && (!val || val === activeIsbn)) {
+                    handleNextJournal();
+                    return;
+                  }
+
+                  if (val && val !== activeIsbn) {
                     isbnInputRef.current?.blur();
                     if (document.activeElement instanceof HTMLElement) {
                       document.activeElement.blur();
                     }
                     handleProcessIsbn(val);
-                  } else if (currentStep === 'COMPLETE') {
+                  } else if (val) {
+                    isbnInputRef.current?.blur();
+                    if (document.activeElement instanceof HTMLElement) {
+                      document.activeElement.blur();
+                    }
+                  } else if (isSessionComplete) {
                     handleNextJournal();
                   }
                 }}
@@ -1233,22 +1344,30 @@ export function App() {
                         if (e.key === 'Enter') {
                           e.preventDefault();
                           const val = isbnInput.trim();
-                          if (val) {
+                          const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
+                          const hasBoxShots = Boolean(shots[1] && shots[2]);
+                          const isReadyForNext = currentStep === 'COMPLETE' ||
+                            (stationRole === 'box_level' && (currentStep === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
+                            (hasAllBookShots && !currentStep.startsWith('CAPTURE_SHOT_'));
+
+                          if (isReadyForNext && (!val || val === activeIsbn)) {
+                            handleNextJournal();
+                            return;
+                          }
+
+                          if (val && val !== activeIsbn) {
                             isbnInputRef.current?.blur();
                             if (document.activeElement instanceof HTMLElement) {
                               document.activeElement.blur();
                             }
                             handleProcessIsbn(val);
-                          } else {
-                            const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
-                            const hasBoxShots = Boolean(shots[1] && shots[2]);
-                            const isReadyForNext = currentStep === 'COMPLETE' ||
-                              (stationRole === 'box_level' && (currentStep === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
-                              (hasAllBookShots && !currentStep.startsWith('CAPTURE_SHOT_'));
-
-                            if (activeIsbn && isReadyForNext) {
-                              handleNextJournal();
+                          } else if (val) {
+                            isbnInputRef.current?.blur();
+                            if (document.activeElement instanceof HTMLElement) {
+                              document.activeElement.blur();
                             }
+                          } else if (activeIsbn && isReadyForNext) {
+                            handleNextJournal();
                           }
                         }
                       }}
@@ -1352,6 +1471,7 @@ export function App() {
               shotsCount={totalCapturedShots}
               stationRole={stationRole}
               boxShotsInherited={Boolean(shots[1] && shots[2] && (stationRole === 'book_level' || metadata?.shots?.[1]?.inheritedFromBox))}
+              shots={shots}
             />
 
             {/* Viewfinder & Review Card Grid */}
@@ -1379,6 +1499,7 @@ export function App() {
                   stationRole={stationRole}
                   isBoxLevelDone={Boolean(shots[1] && shots[2])}
                   hasBoxShots={Boolean(shots[1] && shots[2])}
+                  shots={shots}
                   onNextJournal={handleNextJournal}
                   hasTorch={hasTorch}
                   isTorchOn={isTorchOn}
@@ -1404,6 +1525,7 @@ export function App() {
                     metadata={metadata}
                     stationRole={stationRole}
                     boxSummary={activeBoxSummary}
+                    currentStep={currentStep}
                     onRetakeShot={handleRetakeShot}
                     onOpenExplorer={handleOpenExplorer}
                     onDownloadZip={handleDownloadZip}

@@ -1581,15 +1581,27 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
   const sourcePath1 = sourceFile1 ? path.join(boxDir, sourceFile1) : null;
   const sourcePath2 = sourceFile2 ? path.join(boxDir, sourceFile2) : null;
 
-  if (sourcePath1 && isValidImageFile(sourcePath1) && !isValidImageFile(targetPath1)) {
-    fs.ensureDirSync(folderPath);
-    await fs.copy(sourcePath1, targetPath1);
+  if (sourcePath1 && isValidImageFile(sourcePath1) && (!isValidImageFile(targetPath1) || fs.statSync(targetPath1).size < 1024)) {
+    try {
+      fs.ensureDirSync(folderPath);
+      fs.copySync(sourcePath1, targetPath1);
+      inherited1 = true;
+    } catch (e) {
+      console.warn('[applyBoxShotsToIsbn] Error copying Shot 1:', e.message);
+    }
+  } else if (isValidImageFile(targetPath1)) {
     inherited1 = true;
   }
 
-  if (sourcePath2 && isValidImageFile(sourcePath2) && !isValidImageFile(targetPath2)) {
-    fs.ensureDirSync(folderPath);
-    await fs.copy(sourcePath2, targetPath2);
+  if (sourcePath2 && isValidImageFile(sourcePath2) && (!isValidImageFile(targetPath2) || fs.statSync(targetPath2).size < 1024)) {
+    try {
+      fs.ensureDirSync(folderPath);
+      fs.copySync(sourcePath2, targetPath2);
+      inherited2 = true;
+    } catch (e) {
+      console.warn('[applyBoxShotsToIsbn] Error copying Shot 2:', e.message);
+    }
+  } else if (isValidImageFile(targetPath2)) {
     inherited2 = true;
   }
 
@@ -1727,6 +1739,26 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       }
     }
 
+    const resolvedLot = (lotNumber && lotNumber !== 'Unassigned' && lotNumber !== 'Unassigned Lot' && lotNumber !== 'Lot-1')
+      ? lotNumber
+      : (manifestMatch?.lotNumber || metadata?.lotNumber || currentSession.lotNumber || lotNumber || 'Unassigned Lot');
+
+    const resolvedBox = (boxNumber && boxNumber !== 'Unassigned' && boxNumber !== 'Unassigned Box')
+      ? boxNumber
+      : (manifestMatch?.boxNumber || metadata?.boxNumber || currentSession.boxNumber || boxNumber || '');
+
+    const boxShots = getBoxShots(resolvedLot, resolvedBox);
+
+    // Fallback: If Shot 1 or Shot 2 were not yet in book folder, but box has them in _boxes/
+    if (!existingShots[1] && boxShots.hasBoxShot) {
+      existingShots[1] = 'shot_1_box_a.jpg';
+      shotsFoundCount++;
+    }
+    if (!existingShots[2] && boxShots.hasUnboxShot) {
+      existingShots[2] = 'shot_2_box_b.jpg';
+      shotsFoundCount++;
+    }
+
     let metadata = alreadyExists ? readIsbnMetadata(activeIdentifier) : null;
 
     // Determine initial capture step (first missing shot)
@@ -1744,26 +1776,21 @@ app.post('/api/capture/init-isbn', async (req, res) => {
     const shotsState = {};
     for (let s = 1; s <= 7; s++) {
       if (existingShots[s]) {
+        const isBoxFallback = existingShots[s].startsWith('shot_') && !alreadyExists;
         shotsState[s] = {
           filename: existingShots[s],
           savedAt: metadata?.shots?.[s]?.savedAt || new Date().toISOString(),
           type: SHOT_DEFINITIONS[s].type,
           scope: SHOT_DEFINITIONS[s].scope,
-          previewDataUrl: `/proofs/${encodeURIComponent(activeIdentifier)}/${encodeURIComponent(existingShots[s])}`,
+          previewDataUrl: isBoxFallback && s === 1 && boxShots.boxShotUrl ? boxShots.boxShotUrl :
+                          isBoxFallback && s === 2 && boxShots.unboxShotUrl ? boxShots.unboxShotUrl :
+                          `/proofs/${encodeURIComponent(activeIdentifier)}/${encodeURIComponent(existingShots[s])}`,
           blurScore: metadata?.shots?.[s]?.blurScore
         };
       } else {
         shotsState[s] = null;
       }
     }
-
-    const resolvedLot = (lotNumber && lotNumber !== 'Unassigned' && lotNumber !== 'Unassigned Lot' && lotNumber !== 'Lot-1')
-      ? lotNumber
-      : (manifestMatch?.lotNumber || metadata?.lotNumber || currentSession.lotNumber || lotNumber || 'Unassigned Lot');
-
-    const resolvedBox = (boxNumber && boxNumber !== 'Unassigned' && boxNumber !== 'Unassigned Box')
-      ? boxNumber
-      : (manifestMatch?.boxNumber || metadata?.boxNumber || currentSession.boxNumber || boxNumber || '');
 
     currentSession = {
       activeIsbn: activeIdentifier,
@@ -1796,7 +1823,8 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       copyNumber,
       isProcessable,
       nonProcessableReason,
-      manifestMatch
+      manifestMatch,
+      boxShots
     });
 
     res.json({
@@ -1811,6 +1839,7 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       exists: alreadyExists,
       shotsCount: shotsFoundCount,
       existingShots,
+      boxShots,
       metadata,
       bookDetails: currentSession.bookDetails,
       isProcessable,
@@ -1930,13 +1959,29 @@ app.post('/api/capture/save-shot', async (req, res) => {
     }
     currentSession.currentStep = nextStep;
 
+    const boxShotsData = (resolvedBox) ? getBoxShots(resolvedLot, resolvedBox) : null;
+
     broadcastSession('SHOT_SAVED', {
       isbn: cleanIsbn,
       shotNumber: sNum,
       shotInfo: newShotInfo,
       isComplete: totalShots >= 7,
-      currentStep: nextStep
+      currentStep: nextStep,
+      session: currentSession,
+      lotNumber: resolvedLot,
+      boxNumber: resolvedBox,
+      boxShots: boxShotsData
     });
+
+    if (sNum === 1 || sNum === 2) {
+      broadcastSession('BOX_SHOT_SAVED', {
+        lotNumber: resolvedLot,
+        boxNumber: resolvedBox,
+        shotNumber: sNum,
+        boxShots: boxShotsData,
+        session: currentSession
+      });
+    }
 
     if (config.autoOpenExplorer && totalShots >= 7) {
       if (process.platform === 'win32') {

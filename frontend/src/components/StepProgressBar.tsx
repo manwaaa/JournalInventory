@@ -17,13 +17,15 @@ interface StepProgressBarProps {
   shotsCount: number;
   stationRole?: StationRole;
   boxShotsInherited?: boolean;
+  shots?: Record<number, any>;
 }
 
 export const StepProgressBar: React.FC<StepProgressBarProps> = ({ 
   currentStep, 
   shotsCount,
   stationRole = 'book_level',
-  boxShotsInherited = false
+  boxShotsInherited = false,
+  shots
 }) => {
   const steps = [
     {
@@ -113,11 +115,15 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({
         {steps.map((step) => {
           const status = getStepStatus(step.shotNumber, step.id);
           const Icon = step.icon;
+          const isRetaking = status === 'current' && Boolean(shots?.[step.shotNumber]);
 
           let badgeClasses = 'bg-slate-100 text-slate-400 border border-slate-200';
           let cardClasses = 'bg-gradient-to-b from-white to-slate-50/70 border-slate-200/80 text-slate-500';
 
-          if (status === 'completed') {
+          if (isRetaking) {
+            badgeClasses = 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/40 ring-2 ring-amber-300';
+            cardClasses = 'bg-gradient-to-b from-amber-50 to-orange-50/80 border-2 border-amber-500 ring-4 ring-amber-400/50 text-amber-950 shadow-md animate-pulse';
+          } else if (status === 'completed') {
             badgeClasses = 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-sm shadow-emerald-500/20';
             cardClasses = 'bg-gradient-to-b from-emerald-50/70 to-teal-50/30 border-emerald-200 text-emerald-900 shadow-sm';
           } else if (status === 'current') {
@@ -131,22 +137,31 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({
               className={`flex items-center p-2.5 rounded-xl border transition-all duration-200 ${cardClasses}`}
             >
               <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mr-2.5 transition-all ${badgeClasses}`}>
-                {status === 'completed' ? (
+                {status === 'completed' && !isRetaking ? (
                   <CheckCircle2 className="w-4 h-4 text-white" />
                 ) : (
                   <Icon className="w-3.5 h-3.5" />
                 )}
               </div>
               <div className="min-w-0 flex-1">
-                <h5 className="text-[11px] font-bold truncate leading-tight">
-                  {step.label}
-                </h5>
+                <div className="flex items-center space-x-1">
+                  <h5 className="text-[11px] font-bold truncate leading-tight">
+                    {step.label}
+                  </h5>
+                  {isRetaking && (
+                    <span className="text-[8px] font-black px-1 py-0.2 bg-amber-500 text-slate-950 rounded shadow-xs">
+                      RETAKE
+                    </span>
+                  )}
+                </div>
                 <p className="text-[9px] text-slate-400 truncate mt-0.5">
-                  {step.shotNumber <= 2 && boxShotsInherited && status === 'completed'
-                    ? '✓ Inherited (PC 1)'
-                    : stationRole === 'all_in_one'
-                      ? step.shotNumber <= 2 ? '📦 Box Level' : '📖 Book Level'
-                      : step.sublabel}
+                  {isRetaking 
+                    ? '🔄 Retaking Photo' 
+                    : step.shotNumber <= 2 && boxShotsInherited && status === 'completed'
+                      ? '✓ Inherited (PC 1)'
+                      : stationRole === 'all_in_one'
+                        ? step.shotNumber <= 2 ? '📦 Box Level' : '📖 Book Level'
+                        : step.sublabel}
                 </p>
               </div>
             </div>
