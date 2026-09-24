@@ -79,10 +79,22 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({
     }
   ];
 
+  const isBoxSpine = stationRole === 'box_spine';
+  const visibleSteps = isBoxSpine 
+    ? steps.filter(s => s.shotNumber === 1 || s.shotNumber === 2 || s.shotNumber === 4)
+    : steps;
+
+  const boxSpineCompletedCount = isBoxSpine 
+    ? [1, 2, 4].filter(s => Boolean(shots?.[s])).length 
+    : 0;
+
   const getStepStatus = (shotNumber: number, stepId: string) => {
+    if (shots?.[shotNumber]) return 'completed';
     if (currentStep === 'COMPLETE') return 'completed';
     if (currentStep === stepId) return 'current';
     
+    if (isBoxSpine) return 'pending';
+
     // Check if shot has already been passed
     const currentStepNum = currentStep.startsWith('CAPTURE_SHOT_') 
       ? parseInt(currentStep.replace('CAPTURE_SHOT_', ''), 10) 
@@ -96,23 +108,29 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({
     <div className="w-full white-card rounded-2xl p-4 space-y-3">
       <div className="flex items-center justify-between px-1">
         <div className="flex items-center space-x-2">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 badge-soft-blue px-2.5 py-0.5 rounded-lg shadow-sm">
-            Verification Sequence
+          <span className={`text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-lg shadow-sm ${
+            isBoxSpine ? 'bg-violet-100 text-violet-800 border border-violet-200' : 'text-brand-700 badge-soft-blue'
+          }`}>
+            {isBoxSpine ? 'Box + Spine Sequence' : 'Verification Sequence'}
           </span>
           <span className="text-xs font-semibold text-slate-600">
-            7 Required Shots (2 Box Level &bull; 5 Book Level)
+            {isBoxSpine ? '3 Required Shots (1. Box A • 2. Box B • 4. Spine)' : '7 Required Shots (2 Box Level • 5 Book Level)'}
           </span>
         </div>
         
         <div className="text-xs font-bold font-mono">
-          <span className={shotsCount >= 7 ? 'text-emerald-600 font-bold' : 'text-brand-700 font-bold'}>
-            {shotsCount} of 7 Completed
+          <span className={
+            (isBoxSpine ? boxSpineCompletedCount >= 3 : shotsCount >= 7) 
+              ? 'text-emerald-600 font-bold' 
+              : isBoxSpine ? 'text-violet-700 font-bold' : 'text-brand-700 font-bold'
+          }>
+            {isBoxSpine ? `${boxSpineCompletedCount} of 3 Completed` : `${shotsCount} of 7 Completed`}
           </span>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-        {steps.map((step) => {
+      <div className={isBoxSpine ? "grid grid-cols-1 sm:grid-cols-3 gap-3" : "grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2"}>
+        {visibleSteps.map((step) => {
           const status = getStepStatus(step.shotNumber, step.id);
           const Icon = step.icon;
           const isRetaking = status === 'current' && Boolean(shots?.[step.shotNumber]);
@@ -159,9 +177,11 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({
                     ? '🔄 Retaking Photo' 
                     : step.shotNumber <= 2 && boxShotsInherited && status === 'completed'
                       ? '✓ Inherited (PC 1)'
-                      : stationRole === 'all_in_one'
-                        ? step.shotNumber <= 2 ? '📦 Box Level' : '📖 Book Level'
-                        : step.sublabel}
+                      : stationRole === 'box_spine'
+                        ? step.shotNumber <= 2 ? '📦 Box Level' : '🔖 Book Spine'
+                        : stationRole === 'all_in_one'
+                          ? step.shotNumber <= 2 ? '📦 Box Level' : '📖 Book Level'
+                          : step.sublabel}
                 </p>
               </div>
             </div>

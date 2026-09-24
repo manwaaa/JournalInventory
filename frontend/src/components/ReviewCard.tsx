@@ -69,9 +69,12 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
   const isComplete = shotsCount >= 7;
   const isBoxLevelDone = Boolean(shots[1] && shots[2]);
   const isBookLevelDone = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
+  const isBoxSpineDone = Boolean(shots[1] && shots[2] && shots[4]);
   const canProceed = stationRole === 'box_level' 
     ? isBoxLevelDone 
-    : (stationRole === 'book_level' ? isBookLevelDone : (isComplete || isBookLevelDone));
+    : stationRole === 'box_spine'
+      ? isBoxSpineDone
+      : (stationRole === 'book_level' ? isBookLevelDone : (isComplete || isBookLevelDone));
   const [isUploadingS3, setIsUploadingS3] = useState(false);
 
   const handleCopyPath = () => {
@@ -318,11 +321,21 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
                   <span className={`text-[9px] font-semibold px-1.5 py-0.2 rounded-md border shadow-xs ${
                     isCurrentlyRetaking
                       ? 'bg-amber-100 text-amber-800 border-amber-300'
-                      : def.scope === 'box_level'
-                        ? 'bg-blue-50 text-blue-700 border-blue-200'
-                        : 'bg-slate-50 text-slate-600 border-slate-200'
+                      : stationRole === 'box_spine'
+                        ? (def.shotNumber === 1 || def.shotNumber === 2 || def.shotNumber === 4)
+                          ? 'bg-violet-50 text-violet-800 border-violet-200'
+                          : 'bg-slate-50 text-slate-400 border-slate-200'
+                        : def.scope === 'box_level'
+                          ? 'bg-blue-50 text-blue-700 border-blue-200'
+                          : 'bg-slate-50 text-slate-600 border-slate-200'
                   }`}>
-                    {def.scope === 'box_level' ? '📦 PC 1 Box' : '📖 PC 2 Book'}
+                    {stationRole === 'box_spine'
+                      ? (def.shotNumber === 1 || def.shotNumber === 2)
+                        ? '📦 Box Level'
+                        : def.shotNumber === 4
+                          ? '🔖 Required Spine'
+                          : '⚪ Skipped'
+                      : def.scope === 'box_level' ? '📦 PC 1 Box' : '📖 PC 2 Book'}
                   </span>
                 </div>
               </div>

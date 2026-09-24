@@ -420,7 +420,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
         }`}>
           <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3 pl-1">
             <div className="text-xs text-slate-200">
-              <span>{isRetaking ? 'Retaking ' : 'Capturing '} <b className={isRetaking ? 'text-amber-400 font-extrabold' : 'text-brand-400 font-bold'}>Shot {shotNum} of 7</b>: {currentDef.label}</span>
+              <span>{isRetaking ? 'Retaking ' : 'Capturing '} <b className={isRetaking ? 'text-amber-400 font-extrabold' : 'text-brand-400 font-bold'}>{stationRole === 'box_spine' ? `Shot ${shotNum} (Box+Spine 1, 2, 4)` : `Shot ${shotNum} of 7`}</b>: {currentDef.label}</span>
               {isRetaking ? (
                 <span className="ml-2 text-[10px] font-black px-2 py-0.5 rounded bg-amber-500 text-slate-950 border border-amber-300 shadow-sm animate-bounce">
                   ⚠️ RETAKE

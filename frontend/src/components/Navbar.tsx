@@ -99,6 +99,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <Layers className={`w-3.5 h-3.5 ${stationRole === 'all_in_one' ? 'text-white animate-pulse' : 'text-emerald-600'}`} />
                 <span>Full (1-7)</span>
               </button>
+
+              <button
+                onClick={() => setStationRole('box_spine')}
+                className={`flex items-center space-x-1 px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+                  stationRole === 'box_spine'
+                    ? 'bg-gradient-to-r from-violet-600 to-violet-700 text-white shadow-md shadow-violet-500/25 scale-[1.02]'
+                    : 'text-slate-600 hover:text-violet-700 hover:bg-white/60'
+                }`}
+                title="Box + Spine: Captures only Shot 1 (Box A), Shot 2 (Box B), and Shot 4 (Spine)"
+              >
+                <Package className={`w-3.5 h-3.5 ${stationRole === 'box_spine' ? 'text-white animate-pulse' : 'text-violet-600'}`} />
+                <span>Box+Spine (1,2,4)</span>
+              </button>
             </div>
           )}
 

@@ -51,10 +51,10 @@ import {
 export function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('CAPTURE');
 
-  // Station Role: 'box_level' (PC 1: Shots 1-2) | 'book_level' (PC 2: Shots 3-7) | 'all_in_one' (Full: Shots 1-7)
+  // Station Role: 'box_level' (PC 1: Shots 1-2) | 'book_level' (PC 2: Shots 3-7) | 'all_in_one' (Full: Shots 1-7) | 'box_spine' (1, 2, 4)
   const [stationRole, setStationRoleState] = useState<StationRole>(() => {
     const saved = localStorage.getItem('verification_station_role') as StationRole;
-    if (saved === 'box_level' || saved === 'book_level' || saved === 'all_in_one') return saved;
+    if (saved === 'box_level' || saved === 'book_level' || saved === 'all_in_one' || saved === 'box_spine') return saved;
     return 'box_level';
   });
 
@@ -590,6 +590,15 @@ export function App() {
       if (data.shotsCount >= 7) {
         setCurrentStep('COMPLETE');
         playAudioCue('success');
+      } else if (stationRole === 'box_spine') {
+        // Box + Spine station: only shots 1, 2, and 4
+        const remaining = (BOX_SPINE_SHOTS as readonly number[]).filter(s => !newShots[s]);
+        if (remaining.length === 0) {
+          setCurrentStep('COMPLETE');
+          playAudioCue('success');
+        } else {
+          setCurrentStep(`CAPTURE_SHOT_${remaining[0]}` as CaptureStep);
+        }
       } else if (stationRole === 'box_level') {
         // PC 1 (Box Level: Shots 1 & 2)
         if (newShots[1] && newShots[2]) {
@@ -1052,6 +1061,7 @@ export function App() {
       if (e.key === 'Enter') {
         const isComplete = step === 'COMPLETE' ||
           (role === 'box_level' && (step === 'CAPTURE_SHOT_3' || Boolean(currentShots[1] && currentShots[2]))) ||
+          (role === 'box_spine' && Boolean(currentShots[1] && currentShots[2] && currentShots[4])) ||
           Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7] && !step.startsWith('CAPTURE_SHOT_'));
 
         if (isComplete) {
@@ -1159,9 +1169,11 @@ export function App() {
                       ? 'bg-gradient-to-br from-blue-600 to-blue-700 shadow-blue-500/25' 
                       : stationRole === 'book_level'
                         ? 'bg-gradient-to-br from-indigo-600 to-indigo-700 shadow-indigo-500/25'
-                        : 'bg-gradient-to-br from-emerald-600 to-teal-700 shadow-emerald-500/25'
+                        : stationRole === 'box_spine'
+                          ? 'bg-gradient-to-br from-violet-600 to-purple-700 shadow-violet-500/25'
+                          : 'bg-gradient-to-br from-emerald-600 to-teal-700 shadow-emerald-500/25'
                   }`}>
-                    {stationRole === 'box_level' ? <Package className="w-5 h-5 animate-pulse" /> : stationRole === 'book_level' ? <Scan className="w-5 h-5 animate-pulse" /> : <Layers className="w-5 h-5 animate-pulse" />}
+                    {stationRole === 'box_level' ? <Package className="w-5 h-5 animate-pulse" /> : stationRole === 'book_level' ? <Scan className="w-5 h-5 animate-pulse" /> : stationRole === 'box_spine' ? <Package className="w-5 h-5 animate-pulse" /> : <Layers className="w-5 h-5 animate-pulse" />}
                   </div>
                   <div className="space-y-0.5">
                     <div className="flex items-center space-x-2">
@@ -1173,9 +1185,11 @@ export function App() {
                           ? 'bg-blue-50 text-blue-800 border-blue-300 ring-2 ring-blue-500/10'
                           : stationRole === 'book_level'
                             ? 'bg-indigo-50 text-indigo-800 border-indigo-300 ring-2 ring-indigo-500/10'
-                            : 'bg-emerald-50 text-emerald-800 border-emerald-300 ring-2 ring-emerald-500/10'
+                            : stationRole === 'box_spine'
+                              ? 'bg-violet-50 text-violet-800 border-violet-300 ring-2 ring-violet-500/10'
+                              : 'bg-emerald-50 text-emerald-800 border-emerald-300 ring-2 ring-emerald-500/10'
                       }`}>
-                        {stationRole === 'box_level' ? '📦 PC 1: Station 1 (Box Level)' : stationRole === 'book_level' ? '📖 PC 2: Station 2 (Book Level)' : '⚡ Full Station (Box + Books)'}
+                        {stationRole === 'box_level' ? '📦 PC 1: Station 1 (Box Level)' : stationRole === 'book_level' ? '📖 PC 2: Station 2 (Book Level)' : stationRole === 'box_spine' ? '📦🔖 Station: Box + Spine (1, 2, 4)' : '⚡ Full Station (Box + Books)'}
                       </span>
                     </div>
                     <h3 className="text-base font-extrabold text-slate-900 transition-all duration-300">
@@ -1183,14 +1197,18 @@ export function App() {
                         ? 'PC 1: Select or Scan Box to Photograph (Shot 1: Box A & Shot 2: Box B)' 
                         : stationRole === 'book_level'
                           ? 'PC 2: Scan Individual Journal (Shots 3 to 7)'
-                          : 'Full Station: Complete Verification (Shots 1 to 7)'}
+                          : stationRole === 'box_spine'
+                            ? 'Box + Spine Capture: Photograph Box A, Box B, and Spine only'
+                            : 'Full Station: Complete Verification (Shots 1 to 7)'}
                     </h3>
                     <p className="text-xs text-slate-500 transition-all duration-300">
                       {stationRole === 'box_level'
                         ? 'Photograph Box A and Box B once. All journals in this box will automatically inherit these photos on PC 2.'
                         : stationRole === 'book_level'
                           ? 'Box A & Box B photos from PC 1 are automatically attached. Proceed directly with Shots 3 to 7 for each journal.'
-                          : 'Performs complete Box + Book verification (Shots 1 to 7). Running PC 1 and PC 2 simultaneously in this mode doubles total throughput!'}
+                          : stationRole === 'box_spine'
+                            ? 'Quick verification sequence: Captures Shot 1 (Box A), Shot 2 (Box B), and Shot 4 (Spine). Shots 3, 5, 6, and 7 are skipped.'
+                            : 'Performs complete Box + Book verification (Shots 1 to 7). Running PC 1 and PC 2 simultaneously in this mode doubles total throughput!'}
                     </p>
                   </div>
                 </div>

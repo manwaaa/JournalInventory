@@ -522,9 +522,35 @@ app.use(cors());
 app.use(express.json({ limit: '60mb' }));
 app.use(express.urlencoded({ limit: '60mb', extended: true }));
 
-// Serve saved shots statically
+// Serve saved shots statically with peer proxy/caching fallback
 app.use('/proofs', (req, res, next) => {
-  express.static(config.storagePath)(req, res, next);
+  express.static(config.storagePath)(req, res, async () => {
+    // If not found locally, attempt to fetch from peer PC (e.g. PC 1) over LAN
+    if (config.peerIp) {
+      try {
+        const peerUrl = `http://${config.peerIp}:${config.peerPort || 3001}/proofs${req.url}`;
+        const peerRes = await fetch(peerUrl, { signal: AbortSignal.timeout(3000) }).catch(() => null);
+        if (peerRes && peerRes.ok) {
+          const buffer = Buffer.from(await peerRes.arrayBuffer());
+          if (buffer.length > 100) {
+            // Save to local disk so future requests are instant
+            try {
+              const cleanPath = decodeURIComponent(req.path.split('?')[0]);
+              const localFilePath = path.join(config.storagePath, cleanPath);
+              fs.ensureDirSync(path.dirname(localFilePath));
+              fs.writeFileSync(localFilePath, buffer);
+            } catch (e) {}
+
+            res.set('Content-Type', peerRes.headers.get('content-type') || 'image/jpeg');
+            return res.send(buffer);
+          }
+        }
+      } catch (err) {
+        // Fall through to 404
+      }
+    }
+    res.status(404).send('Proof image not found');
+  });
 });
 
 // Cache for metadata lookups
@@ -1524,8 +1550,8 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
     }
   }
 
-  // Fallback 2: If still missing shots and peer sync is enabled, try pulling from peer PC over LAN
-  if ((!boxDir || !dirHasBoxShots(boxDir)) && config.peerSyncEnabled && config.peerIp) {
+  // Fallback 2: If still missing shots, try pulling from peer PC over LAN (always attempt if peerIp is set)
+  if ((!boxDir || !dirHasBoxShots(boxDir)) && config.peerIp) {
     try {
       const peerBoxKey = getBoxKey(lotNumber, boxNumber);
       if (peerBoxKey) {
