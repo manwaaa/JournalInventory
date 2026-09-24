@@ -81,8 +81,8 @@ function getCopyNumber(identifier) {
 
 // 7 Shot definitions & filenames (isbn_<type>.jpg)
 const SHOT_DEFINITIONS = {
-  1: { suffix: '_box.jpg', legacyNames: ['1_books_in_box.jpg', '1_front_spine.jpg', '1_box.jpg', 'box.jpg'], type: 'Box', scope: 'box_level' },
-  2: { suffix: '_unbox.jpg', legacyNames: ['2_unbox_books.jpg', '2_author_title.jpg', '2_unbox.jpg', 'unbox.jpg'], type: 'Unbox', scope: 'box_level' },
+  1: { suffix: '_box a.jpg', legacyNames: ['_box_a.jpg', 'shot_1_box_a.jpg', '_box.jpg', '1_books_in_box.jpg', '1_front_spine.jpg', '1_box.jpg', 'box.jpg', '1_box_a.jpg', 'shot_1_box.jpg'], type: 'Box A', scope: 'box_level' },
+  2: { suffix: '_box b.jpg', legacyNames: ['_box_b.jpg', 'shot_2_box_b.jpg', '_unbox.jpg', '2_unbox_books.jpg', '2_author_title.jpg', '2_unbox.jpg', 'unbox.jpg', '2_box_b.jpg', 'shot_2_unbox.jpg'], type: 'Box B', scope: 'box_level' },
   3: { suffix: '_front cover.jpg', legacyNames: ['3_front_cover.jpg', '3_front cover.jpg', 'front_cover.jpg', 'front cover.jpg'], type: 'Front Cover', scope: 'book_level' },
   4: { suffix: '_spine.jpg', legacyNames: ['4_spine.jpg', 'spine.jpg'], type: 'Spine', scope: 'book_level' },
   5: { suffix: '_title page.jpg', legacyNames: ['5_title_page.jpg', '5_title page.jpg', 'title_page.jpg', 'title page.jpg'], type: 'Title Page', scope: 'book_level' },
@@ -112,21 +112,32 @@ function findShotFileInFolder(folderPath, shotNumber, identifier) {
   const def = SHOT_DEFINITIONS[shotNumber];
   if (!def || !fs.existsSync(folderPath)) return null;
 
-  // 1. Direct match with identifier prefix (e.g. 9780198826545_box.jpg)
+  // 1. Direct match with identifier prefix (e.g. 9780198826545_box a.jpg)
   const targetName = getShotFilename(shotNumber, identifier);
   const targetPath = path.join(folderPath, targetName);
   if (isValidImageFile(targetPath)) {
     return targetName;
   }
 
+  // 1b. Check underscore variant (e.g. 9780198826545_box_a.jpg)
+  if (targetName.includes(' ')) {
+    const underscoreName = targetName.replace(/ /g, '_');
+    const underscorePath = path.join(folderPath, underscoreName);
+    if (isValidImageFile(underscorePath)) {
+      return underscoreName;
+    }
+  }
+
   // 2. Scan directory for matching suffix or legacy names
   try {
     const files = fs.readdirSync(folderPath);
     const suffix = def.suffix.toLowerCase();
+    const underscoreSuffix = suffix.replace(/ /g, '_');
 
-    // Check files ending with this shot's suffix (e.g. any *_box.jpg, *_front cover.jpg)
+    // Check files ending with this shot's suffix (e.g. any *_box a.jpg or *_box_a.jpg)
     for (const f of files) {
-      if (f.toLowerCase().endsWith(suffix)) {
+      const lower = f.toLowerCase();
+      if (lower.endsWith(suffix) || (underscoreSuffix !== suffix && lower.endsWith(underscoreSuffix))) {
         const fullP = path.join(folderPath, f);
         if (isValidImageFile(fullP)) return f;
       }
@@ -1319,7 +1330,9 @@ function getBoxKey(lotNumber, boxNumber) {
 
 function dirHasBoxShots(dirPath) {
   if (!dirPath || !fs.existsSync(dirPath)) return false;
-  return isValidImageFile(path.join(dirPath, 'shot_1_box.jpg')) ||
+  return isValidImageFile(path.join(dirPath, 'shot_1_box_a.jpg')) ||
+         isValidImageFile(path.join(dirPath, 'shot_1_box.jpg')) ||
+         isValidImageFile(path.join(dirPath, 'shot_2_box_b.jpg')) ||
          isValidImageFile(path.join(dirPath, 'shot_2_unbox.jpg')) ||
          Boolean(findShotFileInFolder(dirPath, 1, 'shot_1')) ||
          Boolean(findShotFileInFolder(dirPath, 2, 'shot_2'));
@@ -1387,11 +1400,15 @@ function getBoxStorageDir(lotNumber, boxNumber) {
 function getBoxShots(lotNumber, boxNumber) {
   const boxDir = findBoxStorageDir(lotNumber, boxNumber);
   if (!boxDir || !fs.existsSync(boxDir)) {
-    return { hasBoxShot: false, hasUnboxShot: false, boxShotUrl: null, unboxShotUrl: null, boxMeta: null };
+    return { hasBoxShot: false, hasUnboxShot: false, hasBoxAShot: false, hasBoxBShot: false, boxShotUrl: null, unboxShotUrl: null, boxMeta: null };
   }
 
-  const shot1File = isValidImageFile(path.join(boxDir, 'shot_1_box.jpg')) ? 'shot_1_box.jpg' : findShotFileInFolder(boxDir, 1, 'shot_1');
-  const shot2File = isValidImageFile(path.join(boxDir, 'shot_2_unbox.jpg')) ? 'shot_2_unbox.jpg' : findShotFileInFolder(boxDir, 2, 'shot_2');
+  const shot1File = isValidImageFile(path.join(boxDir, 'shot_1_box_a.jpg')) ? 'shot_1_box_a.jpg' :
+                    isValidImageFile(path.join(boxDir, 'shot_1_box.jpg')) ? 'shot_1_box.jpg' :
+                    findShotFileInFolder(boxDir, 1, 'shot_1');
+  const shot2File = isValidImageFile(path.join(boxDir, 'shot_2_box_b.jpg')) ? 'shot_2_box_b.jpg' :
+                    isValidImageFile(path.join(boxDir, 'shot_2_unbox.jpg')) ? 'shot_2_unbox.jpg' :
+                    findShotFileInFolder(boxDir, 2, 'shot_2');
 
   const hasBoxShot = Boolean(shot1File);
   const hasUnboxShot = Boolean(shot2File);
@@ -1405,7 +1422,9 @@ function getBoxShots(lotNumber, boxNumber) {
   const key = path.basename(boxDir);
   return {
     hasBoxShot,
+    hasBoxAShot: hasBoxShot,
     hasUnboxShot,
+    hasBoxBShot: hasUnboxShot,
     boxShotUrl: hasBoxShot ? `/proofs/_boxes/${encodeURIComponent(key)}/${encodeURIComponent(shot1File)}` : null,
     unboxShotUrl: hasUnboxShot ? `/proofs/_boxes/${encodeURIComponent(key)}/${encodeURIComponent(shot2File)}` : null,
     boxMeta
@@ -1419,7 +1438,7 @@ async function saveBoxShotToFile(lotNumber, boxNumber, shotNumber, buffer, blurS
   const boxDir = path.join(config.storagePath, '_boxes', key);
   fs.ensureDirSync(boxDir);
 
-  const filename = shotNumber === 1 ? 'shot_1_box.jpg' : 'shot_2_unbox.jpg';
+  const filename = shotNumber === 1 ? 'shot_1_box_a.jpg' : 'shot_2_box_b.jpg';
   const filePath = path.join(boxDir, filename);
   await fs.writeFile(filePath, buffer);
 
@@ -1438,7 +1457,7 @@ async function saveBoxShotToFile(lotNumber, boxNumber, shotNumber, buffer, blurS
   meta.shots[shotNumber] = {
     filename,
     savedAt: new Date().toISOString(),
-    type: SHOT_DEFINITIONS[shotNumber]?.type || (shotNumber === 1 ? 'Box' : 'Unbox'),
+    type: SHOT_DEFINITIONS[shotNumber]?.type || (shotNumber === 1 ? 'Box A' : 'Box B'),
     blurScore: blurScore || null
   };
   await fs.writeJson(metaPath, meta, { spaces: 2 });
@@ -1486,11 +1505,11 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
             if (shot1File || shot2File) {
               const fallbackBoxDir = path.join(config.storagePath, '_boxes', getBoxKey(m?.lotNumber || lotNumber, boxNumber));
               fs.ensureDirSync(fallbackBoxDir);
-              if (shot1File && isValidImageFile(path.join(candidateFolder, shot1File)) && !isValidImageFile(path.join(fallbackBoxDir, 'shot_1_box.jpg'))) {
-                fs.copySync(path.join(candidateFolder, shot1File), path.join(fallbackBoxDir, 'shot_1_box.jpg'));
+              if (shot1File && isValidImageFile(path.join(candidateFolder, shot1File)) && !isValidImageFile(path.join(fallbackBoxDir, 'shot_1_box_a.jpg')) && !isValidImageFile(path.join(fallbackBoxDir, 'shot_1_box.jpg'))) {
+                fs.copySync(path.join(candidateFolder, shot1File), path.join(fallbackBoxDir, 'shot_1_box_a.jpg'));
               }
-              if (shot2File && isValidImageFile(path.join(candidateFolder, shot2File)) && !isValidImageFile(path.join(fallbackBoxDir, 'shot_2_unbox.jpg'))) {
-                fs.copySync(path.join(candidateFolder, shot2File), path.join(fallbackBoxDir, 'shot_2_unbox.jpg'));
+              if (shot2File && isValidImageFile(path.join(candidateFolder, shot2File)) && !isValidImageFile(path.join(fallbackBoxDir, 'shot_2_box_b.jpg')) && !isValidImageFile(path.join(fallbackBoxDir, 'shot_2_unbox.jpg'))) {
+                fs.copySync(path.join(candidateFolder, shot2File), path.join(fallbackBoxDir, 'shot_2_box_b.jpg'));
               }
               if (dirHasBoxShots(fallbackBoxDir)) {
                 boxDir = fallbackBoxDir;
@@ -1511,21 +1530,30 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
       const peerBoxKey = getBoxKey(lotNumber, boxNumber);
       if (peerBoxKey) {
         const destBoxDir = boxDir || path.join(config.storagePath, '_boxes', peerBoxKey);
-        const p1Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_1_box.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
+        // Try shot_1_box_a.jpg then shot_1_box.jpg
+        let p1Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_1_box_a.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
+        if (!p1Res || !p1Res.ok) {
+          p1Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_1_box.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
+        }
         if (p1Res && p1Res.ok) {
           const buf1 = Buffer.from(await p1Res.arrayBuffer());
           if (buf1.length > 1024) {
             fs.ensureDirSync(destBoxDir);
-            await fs.writeFile(path.join(destBoxDir, 'shot_1_box.jpg'), buf1);
+            await fs.writeFile(path.join(destBoxDir, 'shot_1_box_a.jpg'), buf1);
             boxDir = destBoxDir;
           }
         }
-        const p2Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_2_unbox.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
+
+        // Try shot_2_box_b.jpg then shot_2_unbox.jpg
+        let p2Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_2_box_b.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
+        if (!p2Res || !p2Res.ok) {
+          p2Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_2_unbox.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
+        }
         if (p2Res && p2Res.ok) {
           const buf2 = Buffer.from(await p2Res.arrayBuffer());
           if (buf2.length > 1024) {
             fs.ensureDirSync(destBoxDir);
-            await fs.writeFile(path.join(destBoxDir, 'shot_2_unbox.jpg'), buf2);
+            await fs.writeFile(path.join(destBoxDir, 'shot_2_box_b.jpg'), buf2);
             boxDir = destBoxDir;
           }
         }
@@ -1543,8 +1571,12 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
   const targetPath1 = path.join(folderPath, targetShot1);
   const targetPath2 = path.join(folderPath, targetShot2);
 
-  const sourceFile1 = isValidImageFile(path.join(boxDir, 'shot_1_box.jpg')) ? 'shot_1_box.jpg' : findShotFileInFolder(boxDir, 1, 'shot_1');
-  const sourceFile2 = isValidImageFile(path.join(boxDir, 'shot_2_unbox.jpg')) ? 'shot_2_unbox.jpg' : findShotFileInFolder(boxDir, 2, 'shot_2');
+  const sourceFile1 = isValidImageFile(path.join(boxDir, 'shot_1_box_a.jpg')) ? 'shot_1_box_a.jpg' :
+                      isValidImageFile(path.join(boxDir, 'shot_1_box.jpg')) ? 'shot_1_box.jpg' :
+                      findShotFileInFolder(boxDir, 1, 'shot_1');
+  const sourceFile2 = isValidImageFile(path.join(boxDir, 'shot_2_box_b.jpg')) ? 'shot_2_box_b.jpg' :
+                      isValidImageFile(path.join(boxDir, 'shot_2_unbox.jpg')) ? 'shot_2_unbox.jpg' :
+                      findShotFileInFolder(boxDir, 2, 'shot_2');
 
   const sourcePath1 = sourceFile1 ? path.join(boxDir, sourceFile1) : null;
   const sourcePath2 = sourceFile2 ? path.join(boxDir, sourceFile2) : null;
@@ -2056,14 +2088,14 @@ app.post('/api/capture/init-box', async (req, res) => {
 
     const shotsState = {
       1: boxShots.hasBoxShot ? {
-        filename: 'shot_1_box.jpg',
+        filename: 'shot_1_box_a.jpg',
         savedAt: boxShots.boxMeta?.shots?.[1]?.savedAt || new Date().toISOString(),
         type: SHOT_DEFINITIONS[1].type,
         scope: SHOT_DEFINITIONS[1].scope,
         previewDataUrl: boxShots.boxShotUrl
       } : null,
       2: boxShots.hasUnboxShot ? {
-        filename: 'shot_2_unbox.jpg',
+        filename: 'shot_2_box_b.jpg',
         savedAt: boxShots.boxMeta?.shots?.[2]?.savedAt || new Date().toISOString(),
         type: SHOT_DEFINITIONS[2].type,
         scope: SHOT_DEFINITIONS[2].scope,
@@ -2451,8 +2483,8 @@ app.get('/api/gallery/export-csv', async (req, res) => {
       'Publisher',
       'Publication Year',
       'Processable Status',
-      'Shot 1 (Box)',
-      'Shot 2 (Unbox)',
+      'Shot 1 (Box A)',
+      'Shot 2 (Box B)',
       'Shot 3 (Front Cover)',
       'Shot 4 (Spine)',
       'Shot 5 (Title Page)',

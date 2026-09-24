@@ -13,15 +13,14 @@ if not exist "backend\node_modules\" (
   cd backend && call npm install && cd ..
 )
 
-REM Check if frontend dist exists, if not build it
-if not exist "frontend\dist\" (
-  if not exist "frontend\node_modules\" (
-    echo [2/3] Installing frontend dependencies...
-    cd frontend && call npm install && cd ..
-  )
-  echo [2/3] Building frontend production bundle...
-  cd frontend && call npm run build && cd ..
+REM Check if frontend node_modules exist
+if not exist "frontend\node_modules\" (
+  echo [2/3] Installing frontend dependencies...
+  cd frontend && call npm install && cd ..
 )
+
+echo [2/3] Building frontend production bundle...
+cd frontend && call npm run build && cd ..
 
 echo [3/3] Launching local server on port 3001...
 start "" "http://localhost:3001"

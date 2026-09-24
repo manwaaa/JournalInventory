@@ -253,20 +253,20 @@ export const SHOT_DEFINITIONS: ShotConfig[] = [
   {
     shotNumber: 1,
     id: 'CAPTURE_SHOT_1',
-    label: 'Box',
+    label: 'Box A',
     scope: 'box_level',
-    filename: 'isbn_box.jpg',
-    description: 'Box level view with books packed inside',
-    instructions: 'Photograph the whole box showing all packed books inside'
+    filename: 'isbn_box a.jpg',
+    description: 'Box A level view with books packed inside',
+    instructions: 'Photograph Box A showing packed books inside'
   },
   {
     shotNumber: 2,
     id: 'CAPTURE_SHOT_2',
-    label: 'Unbox',
+    label: 'Box B',
     scope: 'box_level',
-    filename: 'isbn_unbox.jpg',
-    description: 'Box level view of books unpacked',
-    instructions: 'Photograph unboxed books neatly arrayed for processing'
+    filename: 'isbn_box b.jpg',
+    description: 'Box B level view of books unpacked/arrayed',
+    instructions: 'Photograph Box B showing unboxed books neatly arrayed'
   },
   {
     shotNumber: 3,

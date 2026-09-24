@@ -257,7 +257,7 @@ export function App() {
         }
       } else if (event.type === 'BOX_SHOT_SAVED') {
         fetchBoxesList();
-        // When PC 1 captures Box/Unbox shot, immediately show it on PC 2
+        // When PC 1 captures Box A/Box B shot, immediately show it on PC 2
         if (event.boxNumber) {
           const isMatchingBox = !boxNumber || String(event.boxNumber).toLowerCase() === String(boxNumber).toLowerCase();
           if (stationRole === 'book_level' && isMatchingBox) {
@@ -267,17 +267,17 @@ export function App() {
               setShots(prev => ({
                 ...prev,
                 1: event.boxShots.hasBoxShot ? {
-                  filename: 'shot_1_box.jpg',
+                  filename: 'shot_1_box_a.jpg',
                   savedAt: new Date().toISOString(),
-                  type: 'Box',
+                  type: 'Box A',
                   scope: 'box_level',
                   previewDataUrl: event.boxShots.boxShotUrl,
                   inheritedFromBox: true
                 } : prev[1],
                 2: event.boxShots.hasUnboxShot ? {
-                  filename: 'shot_2_unbox.jpg',
+                  filename: 'shot_2_box_b.jpg',
                   savedAt: new Date().toISOString(),
-                  type: 'Unbox',
+                  type: 'Box B',
                   scope: 'box_level',
                   previewDataUrl: event.boxShots.unboxShotUrl,
                   inheritedFromBox: true
@@ -290,7 +290,7 @@ export function App() {
                 }
                 playAudioCue('success');
                 setToastAlert({
-                  message: `✓ Box & Unbox photos received from PC 1 for Box ${event.boxNumber}! Ready for Book shots (Shots 3–7).`,
+                  message: `✓ Box A & Box B photos received from PC 1 for Box ${event.boxNumber}! Ready for Book shots (Shots 3–7).`,
                   type: 'info'
                 });
               }
@@ -326,7 +326,7 @@ export function App() {
             if (event.shotNumber === 2 && event.session.shots?.[1] && event.session.shots?.[2]) {
               playAudioCue('success');
               setToastAlert({
-                message: `✓ Box & Unbox photos completed on PC 1! You can now capture Shots 3 to 7 on PC 2.`,
+                message: `✓ Box A & Box B photos completed on PC 1! You can now capture Shots 3 to 7 on PC 2.`,
                 type: 'info'
               });
             }
@@ -403,10 +403,14 @@ export function App() {
     }
   };
 
+  const isProcessingIsbnRef = useRef(false);
+
   // Process ISBN & validate processable status
   const handleProcessIsbn = async (code: string, forceNewCopy: boolean = false, targetIdentifier?: string) => {
     const clean = code.trim();
     if (!clean) return;
+    if (isProcessingIsbnRef.current) return;
+    isProcessingIsbnRef.current = true;
 
     // Immediately blur input so cursor stops blinking and keyboard capture shortcuts work hands-free
     isbnInputRef.current?.blur();
@@ -437,6 +441,7 @@ export function App() {
             type: 'error'
           });
           playAudioCue('error');
+          isProcessingIsbnRef.current = false;
           return;
         }
       }
@@ -576,6 +581,8 @@ export function App() {
         type: 'error'
       });
       playAudioCue('error');
+    } finally {
+      isProcessingIsbnRef.current = false;
     }
   };
 
@@ -610,12 +617,12 @@ export function App() {
 
       if (data.currentStep === 'CAPTURE_SHOT_3') {
         setToastAlert({
-          message: `📦 Box ${targetBox} already has Shot 1 & 2 saved! (${data.boxSummary?.totalBooks || 0} journals in manifest).`,
+          message: `📦 Box ${targetBox} already has Shot 1 (Box A) & 2 (Box B) saved! (${data.boxSummary?.totalBooks || 0} journals in manifest).`,
           type: 'info'
         });
       } else {
         setToastAlert({
-          message: `📦 Selected Box ${targetBox} (${data.boxSummary?.totalBooks || 0} journals). Take Shot 1 (Box) & Shot 2 (Unbox).`,
+          message: `📦 Selected Box ${targetBox} (${data.boxSummary?.totalBooks || 0} journals). Take Shot 1 (Box A) & Shot 2 (Box B).`,
           type: 'info'
         });
       }
@@ -830,66 +837,65 @@ export function App() {
     setTimeout(() => isbnInputRef.current?.focus(), 150);
   };
 
-  // Reset to next journal (Validation 4.1 enforced)
+  // Reset to next journal (1-click immediate reset)
   const handleNextJournal = () => {
-    if (isCapturing) {
-      pendingNextRef.current = true;
-      return;
+    const isSessionComplete = currentStep === 'COMPLETE' || currentStepRef.current === 'COMPLETE';
+    const role = stationRoleRef.current || stationRole;
+    const currentShots = shotsRef.current || shots;
+
+    // Only enforce incomplete warning if session is not yet completed
+    if (!isSessionComplete) {
+      let captured = 0;
+      for (let s = 1; s <= 7; s++) {
+        if (currentShots[s]) captured++;
+      }
+
+      if (role === 'box_level') {
+        if (!currentShots[1] || !currentShots[2]) {
+          setToastAlert({
+            message: `Please capture both Shot 1 (Box A) and Shot 2 (Box B) before proceeding on PC 1.`,
+            type: 'error'
+          });
+          playAudioCue('error');
+          return;
+        }
+      } else if (role === 'book_level') {
+        if (!currentShots[3] || !currentShots[4] || !currentShots[5] || !currentShots[6] || !currentShots[7]) {
+          handleIncompleteWarning();
+          return;
+        }
+      } else {
+        const hasAllBookShots = Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
+        if (captured < 7 && !hasAllBookShots) {
+          handleIncompleteWarning();
+          return;
+        }
+      }
     }
 
-    let captured = 0;
-    for (let s = 1; s <= 7; s++) {
-      if (shots[s]) captured++;
-    }
-
-    if (stationRole === 'box_level') {
-      // PC 1 requires Shot 1 & Shot 2
-      if (!shots[1] || !shots[2]) {
-        setToastAlert({
-          message: `Please capture both Shot 1 (Box) and Shot 2 (Unbox) before proceeding on PC 1.`,
-          type: 'error'
-        });
-        playAudioCue('error');
-        return;
-      }
-    } else if (stationRole === 'book_level') {
-      // PC 2 requires Shots 3 to 7
-      if (!shots[3] || !shots[4] || !shots[5] || !shots[6] || !shots[7]) {
-        handleIncompleteWarning();
-        return;
-      }
-    } else {
-      const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
-      if (captured < 7 && !hasAllBookShots) {
-        handleIncompleteWarning();
-        return;
-      }
-    }
-
-    // Automatically ensure S3 upload is triggered when clicking Next Journal
-    if (activeIsbn && captured > 0) {
+    // Automatically ensure S3 upload is triggered in background
+    const curIsbn = activeIsbnRef.current || activeIsbn;
+    if (curIsbn) {
       fetch('/api/s3/upload-isbn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isbn: activeIsbn })
+        body: JSON.stringify({ isbn: curIsbn })
       }).catch(err => console.error('[S3 Upload on Next] Error:', err));
     }
 
     playAudioCue('click');
     resetRemoteSession({
-      clearBoxContext: stationRole === 'box_level',
+      clearBoxContext: role === 'box_level',
       lotNumber,
       boxNumber
     });
+
     setActiveIsbn('');
     setIsbnInput('');
     if (isbnInputRef.current) {
       isbnInputRef.current.value = '';
     }
-    // For PC 1 (box_level), Next means proceeding to the next box.
-    // For PC 2 (book_level) and Standalone, keep active lotNumber & boxNumber so the box context
-    // and inherited Box / Unbox shots stay active for the remaining journals in this box!
-    if (stationRole === 'box_level') {
+    if (role === 'box_level') {
       setLotNumber('');
       setBoxNumber('');
       setActiveBoxSummary(null);
@@ -900,11 +906,15 @@ export function App() {
     setToastAlert(null);
     setDuplicateModal(null);
     setBlurWarning(null);
+    setIsCapturing(false);
     setCurrentStep('SCAN_ISBN');
     fetchStatus();
+
+    // Instantly focus and select the input for the next ISBN
     setTimeout(() => {
       isbnInputRef.current?.focus();
-    }, 100);
+      isbnInputRef.current?.select();
+    }, 50);
   };
 
   // Open Explorer
@@ -948,7 +958,6 @@ export function App() {
 
       const step = currentStepRef.current;
       const currentShots = shotsRef.current;
-      const curIsbn = activeIsbnRef.current;
       const role = stationRoleRef.current;
       const inputVal = isbnInputRefValue.current;
 
@@ -960,21 +969,18 @@ export function App() {
         return;
       }
 
-      // 2. Enter key: 1-click proceed to next journal when complete, or start if input has text
+      // 2. Enter key: 1-click proceed to next journal when complete
       if (e.key === 'Enter') {
         // If user is inside an input with text, let the input's onKeyDown/onSubmit handle it directly
         if (isInput && inputVal.trim()) {
           return;
         }
 
-        const hasAllBookShots = Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
-        const hasBoxShots = Boolean(currentShots[1] && currentShots[2]);
-        const isReadyForNext = step === 'COMPLETE' ||
-          (role === 'box_level' && (step === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
-          (hasAllBookShots && !step.startsWith('CAPTURE_SHOT_')) ||
-          (isCapturingRef.current && (step === 'CAPTURE_SHOT_7' || (role === 'box_level' && step === 'CAPTURE_SHOT_2')));
+        const isComplete = step === 'COMPLETE' ||
+          (role === 'box_level' && (step === 'CAPTURE_SHOT_3' || Boolean(currentShots[1] && currentShots[2]))) ||
+          Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7] && !step.startsWith('CAPTURE_SHOT_'));
 
-        if (curIsbn && isReadyForNext) {
+        if (isComplete) {
           e.preventDefault();
           e.stopPropagation();
           handleNextJournal();
@@ -1079,16 +1085,16 @@ export function App() {
                     </div>
                     <h3 className="text-base font-extrabold text-slate-900 transition-all duration-300">
                       {stationRole === 'box_level' 
-                        ? 'PC 1: Select or Scan Box to Photograph (Shots 1 & 2)' 
+                        ? 'PC 1: Select or Scan Box to Photograph (Shot 1: Box A & Shot 2: Box B)' 
                         : stationRole === 'book_level'
                           ? 'PC 2: Scan Individual Journal (Shots 3 to 7)'
                           : 'Full Station: Complete Verification (Shots 1 to 7)'}
                     </h3>
                     <p className="text-xs text-slate-500 transition-all duration-300">
                       {stationRole === 'box_level'
-                        ? 'Photograph the box and unboxed books once. All journals in this box will automatically inherit these photos on PC 2.'
+                        ? 'Photograph Box A and Box B once. All journals in this box will automatically inherit these photos on PC 2.'
                         : stationRole === 'book_level'
-                          ? 'Box & Unbox photos from PC 1 are automatically attached. Proceed directly with Shots 3 to 7 for each journal.'
+                          ? 'Box A & Box B photos from PC 1 are automatically attached. Proceed directly with Shots 3 to 7 for each journal.'
                           : 'Performs complete Box + Book verification (Shots 1 to 7). Running PC 1 and PC 2 simultaneously in this mode doubles total throughput!'}
                     </p>
                   </div>
@@ -1418,8 +1424,8 @@ export function App() {
                     </p>
                     <div className="space-y-1.5 text-left text-[11px] bg-gradient-to-b from-blue-50/60 to-indigo-50/40 p-3.5 rounded-xl border border-blue-100 font-medium text-slate-700 w-full max-w-sm shadow-sm">
                       <div className="font-bold text-brand-700 mb-1">7 Required Verification Shots:</div>
-                      <div>1. 📦 Books in a Box (Box Level)</div>
-                      <div>2. 📦 Unbox Books (Box Level)</div>
+                      <div>1. 📦 Box A (Box Level)</div>
+                      <div>2. 📦 Box B (Box Level)</div>
                       <div>3. 📖 Front Cover (Book Level)</div>
                       <div>4. 📖 Spine & Volume (Book Level)</div>
                       <div>5. 📖 Title Page & Authors (Book Level)</div>

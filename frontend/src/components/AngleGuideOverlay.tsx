@@ -29,16 +29,16 @@ export const AngleGuideOverlay: React.FC<AngleGuideOverlayProps> = ({ currentSte
     icon: any;
   }> = {
     1: {
-      title: 'Shot 1: Box',
+      title: 'Shot 1: Box A',
       scope: 'Box Level',
-      description: 'Align camera directly above or angled into the box showing all packed books',
+      description: 'Align camera directly above or angled into Box A showing packed items',
       color: 'text-blue-400',
       icon: Package
     },
     2: {
-      title: 'Shot 2: Unbox',
+      title: 'Shot 2: Box B',
       scope: 'Box Level',
-      description: 'Show unboxed books arranged neatly on table/counter before processing',
+      description: 'Show Box B view with books arranged neatly on table/counter before processing',
       color: 'text-indigo-400',
       icon: Layers
     },
@@ -97,7 +97,7 @@ export const AngleGuideOverlay: React.FC<AngleGuideOverlayProps> = ({ currentSte
       {/* Center Framing Wireframe */}
       <div className="relative w-full max-w-md h-56 sm:h-64 flex items-center justify-center">
         {shotNum === 1 && (
-          /* Shot 1: Box wireframe */
+          /* Shot 1: Box A wireframe */
           <svg className="w-full h-full text-blue-400/80" viewBox="0 0 400 300" fill="none">
             {/* Box Outer */}
             <polygon points="100,80 300,80 340,140 140,140" fill="rgba(59, 130, 246, 0.12)" stroke="currentColor" strokeWidth="2.5" />
@@ -108,17 +108,17 @@ export const AngleGuideOverlay: React.FC<AngleGuideOverlayProps> = ({ currentSte
             <line x1="210" y1="140" x2="210" y2="260" stroke="#93c5fd" strokeWidth="2" strokeDasharray="4 2" />
             <line x1="250" y1="140" x2="250" y2="260" stroke="#93c5fd" strokeWidth="2" strokeDasharray="4 2" />
             <line x1="290" y1="140" x2="290" y2="260" stroke="#93c5fd" strokeWidth="2" strokeDasharray="4 2" />
-            <text x="180" y="115" fill="#ffffff" fontSize="12" fontWeight="bold">BOX LEVEL (PACKED)</text>
+            <text x="180" y="115" fill="#ffffff" fontSize="12" fontWeight="bold">BOX A VIEW</text>
           </svg>
         )}
 
         {shotNum === 2 && (
-          /* Shot 2: Unboxed stacks */
+          /* Shot 2: Box B stacks */
           <svg className="w-full h-full text-indigo-400/80" viewBox="0 0 400 300" fill="none">
             <rect x="70" y="100" width="110" height="150" rx="4" fill="rgba(99, 102, 241, 0.15)" stroke="currentColor" strokeWidth="2.5" />
             <rect x="150" y="90" width="110" height="150" rx="4" fill="rgba(99, 102, 241, 0.2)" stroke="currentColor" strokeWidth="2.5" />
             <rect x="230" y="80" width="110" height="150" rx="4" fill="rgba(99, 102, 241, 0.25)" stroke="currentColor" strokeWidth="2.5" />
-            <text x="130" y="60" fill="#ffffff" fontSize="12" fontWeight="bold">UNBOXED BATCH VIEW</text>
+            <text x="130" y="60" fill="#ffffff" fontSize="12" fontWeight="bold">BOX B VIEW</text>
           </svg>
         )}
 

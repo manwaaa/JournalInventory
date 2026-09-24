@@ -69,7 +69,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
 }) => {
   const [triggerFlash, setTriggerFlash] = useState<boolean>(false);
 
-  // Keyboard shortcut listener for 'C' (swap cameras), 'R' (rotate 90°), and 'F' (flip mirror)
+  // Keyboard shortcut listener for 'C' (swap cameras)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -79,18 +79,12 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
       if ((e.key === 'c' || e.key === 'C') && devices.length > 1 && onQuickSwitchCamera) {
         e.preventDefault();
         onQuickSwitchCamera();
-      } else if ((e.key === 'r' || e.key === 'R') && onRotate) {
-        e.preventDefault();
-        onRotate();
-      } else if ((e.key === 'f' || e.key === 'F') && onToggleFlipH) {
-        e.preventDefault();
-        onToggleFlipH();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [devices.length, onQuickSwitchCamera, onRotate, onToggleFlipH]);
+  }, [devices.length, onQuickSwitchCamera]);
 
   const handleCaptureClick = () => {
     if (isCapturing || !isStreaming) return;
@@ -185,7 +179,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             <button
               type="button"
               onClick={onRotate}
-              title={`Rotate Camera 90° (Hotkey: 'R' key) - Current: ${rotation}°`}
+              title={`Rotate Camera 90° - Current: ${rotation}°`}
               className={`px-2.5 py-1.5 rounded-xl border backdrop-blur-md text-[11px] font-bold flex items-center space-x-1 transition-all active:scale-95 cursor-pointer ${
                 rotation > 0
                   ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-300 shadow-md shadow-amber-500/20'
@@ -193,7 +187,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               }`}
             >
               <RotateCw className="w-3.5 h-3.5" />
-              <span>{rotation > 0 ? `${rotation}°` : 'Rotate (R)'}</span>
+              <span>{rotation > 0 ? `${rotation}°` : 'Rotate'}</span>
             </button>
           )}
 
@@ -202,7 +196,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             <button
               type="button"
               onClick={onToggleFlipH}
-              title={`Flip Camera Horizontally / Mirror (Hotkey: 'F' key) - Current: ${flipHorizontal ? 'ON' : 'OFF'}`}
+              title={`Flip Camera Horizontally / Mirror - Current: ${flipHorizontal ? 'ON' : 'OFF'}`}
               className={`px-2.5 py-1.5 rounded-xl border backdrop-blur-md text-[11px] font-bold flex items-center space-x-1 transition-all active:scale-95 cursor-pointer ${
                 flipHorizontal
                   ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-300 shadow-md shadow-amber-500/20'
@@ -210,7 +204,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               }`}
             >
               <FlipHorizontal className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Flip (F)</span>
+              <span className="hidden sm:inline">Flip</span>
             </button>
           )}
 
@@ -300,7 +294,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               Box Level Shots Completed! (2/2)
             </h3>
             <p className="text-xs text-blue-200 max-w-sm mb-4 leading-relaxed">
-              Shot 1 (Box) and Shot 2 (Unbox) are safely saved. PC 2 can now continue with Shots 3 to 7 (Book Level).
+              Shot 1 (Box A) and Shot 2 (Box B) are safely saved. PC 2 can now continue with Shots 3 to 7 (Book Level).
             </p>
             <div className="flex flex-wrap items-center justify-center gap-2 mt-1">
               {onRetakeShot && (
@@ -310,14 +304,14 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
                     className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl font-semibold text-xs text-white bg-white/10 hover:bg-white/20 border border-white/20 transition-all active:scale-95 cursor-pointer"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Retake 1. Box</span>
+                    <span>Retake 1. Box A</span>
                   </button>
                   <button
                     onClick={() => onRetakeShot(2)}
                     className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl font-semibold text-xs text-white bg-white/10 hover:bg-white/20 border border-white/20 transition-all active:scale-95 cursor-pointer"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Retake 2. Unbox</span>
+                    <span>Retake 2. Box B</span>
                   </button>
                 </>
               )}
@@ -358,7 +352,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           </div>
         )}
 
-        {/* Overlay for PC 2 while waiting for PC 1 to capture Box & Unbox */}
+        {/* Overlay for PC 2 while waiting for PC 1 to capture Box A & Box B */}
         {stationRole === 'book_level' && !hasBoxShots && (currentStep === 'CAPTURE_SHOT_1' || currentStep === 'CAPTURE_SHOT_2') && (
           <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-xs z-25 flex flex-col items-center justify-center p-6 text-center animate-fade-in">
             <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-blue-500 text-white flex items-center justify-center shadow-xl shadow-indigo-500/30 mb-3 animate-pulse">
@@ -368,7 +362,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               Waiting for PC 1 (Box Level)
             </h3>
             <p className="text-xs text-indigo-200 max-w-sm mb-4 leading-relaxed">
-              PC 1 is capturing <b>Shot 1 (Box)</b> & <b>Shot 2 (Unbox)</b>. As soon as PC 1 snaps them, this screen will automatically activate for <b>Shot 3 (Front Cover)</b>!
+              PC 1 is capturing <b>Shot 1 (Box A)</b> & <b>Shot 2 (Box B)</b>. As soon as PC 1 snaps them, this screen will automatically activate for <b>Shot 3 (Front Cover)</b>!
             </p>
             <div className="flex items-center space-x-2 px-3.5 py-1.5 rounded-full bg-indigo-950/80 border border-indigo-700 text-indigo-300 text-[11px] font-semibold shadow-inner">
               <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" />

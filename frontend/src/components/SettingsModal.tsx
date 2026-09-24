@@ -264,7 +264,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-snug">
-                  Takes <b>Shot 1 (Box)</b> and <b>Shot 2 (Unbox)</b>, then moves to next box.
+                  Takes <b>Shot 1 (Box A)</b> and <b>Shot 2 (Box B)</b>, then moves to next box.
                 </p>
               </button>
 
@@ -344,7 +344,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
 
             <p className="text-[11px] text-slate-600">
-              When enabled, <b>Shot 1 (Box)</b> and <b>Shot 2 (Unbox)</b> captured on PC 1 are automatically synced to PC 2 across your local network so PC 2 will not picture them!
+              When enabled, <b>Shot 1 (Box A)</b> and <b>Shot 2 (Box B)</b> captured on PC 1 are automatically synced to PC 2 across your local network so PC 2 will not picture them!
             </p>
 
             {config.peerSyncEnabled && (
@@ -403,7 +403,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {/* Primary Camera (Box Shots 1 & 2) */}
               <div>
                 <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                  📦 Camera 1 (Box & Unbox: Shots 1–2)
+                  📦 Camera 1 (Box Shots: 1. Box A & 2. Box B)
                 </label>
                 <select
                   value={selectedBoxCam}

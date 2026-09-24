@@ -60,7 +60,13 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
   const [expandedLots, setExpandedLots] = useState<Record<string, boolean>>({ 'Unassigned Lot': true });
   const [expandedBoxes, setExpandedBoxes] = useState<Record<string, boolean>>({});
   const [uploadingS3Isbn, setUploadingS3Isbn] = useState<string | null>(null);
-  const [activeActionMenu, setActiveActionMenu] = useState<string | null>(null);
+  const [activeActionMenu, setActiveActionMenu] = useState<{
+    isbn: string;
+    item: ProofItem;
+    x: number;
+    y: number;
+    openUpwards: boolean;
+  } | null>(null);
   const [copiedS3Id, setCopiedS3Id] = useState<string | null>(null);
   const [selectedPhotoModal, setSelectedPhotoModal] = useState<{
     isbn: string;
@@ -200,11 +206,14 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setActiveActionMenu(null);
     };
+    const handleScroll = () => setActiveActionMenu(null);
     window.addEventListener('click', handleGlobalClick);
     window.addEventListener('keydown', handleEsc);
+    window.addEventListener('scroll', handleScroll, true);
     return () => {
       window.removeEventListener('click', handleGlobalClick);
       window.removeEventListener('keydown', handleEsc);
+      window.removeEventListener('scroll', handleScroll, true);
     };
   }, []);
 
@@ -614,132 +623,36 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                           </div>
                                         </td>
 
-                                        <td className={`py-3 px-3 text-right shrink-0 relative ${activeActionMenu === item.isbn ? 'z-40' : ''}`}>
+                                        <td className="py-3 px-3 text-right shrink-0 relative">
                                           <div className="flex items-center justify-end">
                                             <button
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                setActiveActionMenu(activeActionMenu === item.isbn ? null : item.isbn);
+                                                if (activeActionMenu?.isbn === item.isbn) {
+                                                  setActiveActionMenu(null);
+                                                } else {
+                                                  const rect = e.currentTarget.getBoundingClientRect();
+                                                  const menuHeight = item.metadata?.s3Upload ? 320 : 280;
+                                                  const spaceBelow = window.innerHeight - rect.bottom;
+                                                  const openUpwards = spaceBelow < menuHeight && rect.top > menuHeight;
+                                                  setActiveActionMenu({
+                                                    isbn: item.isbn,
+                                                    item,
+                                                    x: rect.right,
+                                                    y: openUpwards ? rect.top : rect.bottom,
+                                                    openUpwards
+                                                  });
+                                                }
                                               }}
                                               title="Actions"
                                               className={`p-1.5 rounded-xl border transition-all cursor-pointer ${
-                                                activeActionMenu === item.isbn
+                                                activeActionMenu?.isbn === item.isbn
                                                   ? 'bg-blue-50 text-brand-700 border-brand-300 shadow-sm'
                                                   : 'text-slate-500 hover:text-brand-700 hover:bg-blue-50/80 border-slate-200/80 shadow-xs'
                                               }`}
                                             >
                                               <MoreVertical className="w-4 h-4" />
                                             </button>
-
-                                            {activeActionMenu === item.isbn && (() => {
-                                              const isNearBottom = itemIdx >= boxItems.length - 2 && boxItems.length >= 2;
-                                              return (
-                                                <div 
-                                                  className={`absolute right-3 z-50 w-56 bg-white/98 backdrop-blur-md rounded-2xl shadow-2xl border border-blue-200/90 py-1.5 animate-fade-in text-left divide-y divide-slate-100 ring-1 ring-slate-900/10 ${
-                                                    isNearBottom ? 'bottom-full mb-2' : 'top-full mt-2'
-                                                  }`}
-                                                  onClick={(e) => e.stopPropagation()}
-                                                >
-                                                  <div className="py-1">
-                                                    <button
-                                                      onClick={() => {
-                                                        setActiveActionMenu(null);
-                                                        onSelectIsbnForCapture(item.isbn);
-                                                      }}
-                                                      className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                                    >
-                                                      <Camera className="w-4 h-4 text-brand-600 shrink-0" />
-                                                      <span>Inspect / Retake</span>
-                                                    </button>
-
-                                                    <button
-                                                      onClick={() => {
-                                                        setActiveActionMenu(null);
-                                                        setSelectedPhotoModal({ isbn: item.isbn, shots: item.shots, item });
-                                                      }}
-                                                      className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                                    >
-                                                      <Eye className="w-4 h-4 text-brand-600 shrink-0" />
-                                                      <span>View 7 Photos</span>
-                                                    </button>
-                                                  </div>
-
-                                                  {/* Manual AWS S3 Upload Option */}
-                                                  <div className="py-1">
-                                                    <button
-                                                      onClick={() => {
-                                                        setActiveActionMenu(null);
-                                                        handleManualS3Upload(item.isbn);
-                                                      }}
-                                                      disabled={uploadingS3Isbn === item.isbn}
-                                                      className="w-full px-3.5 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50 flex items-center space-x-2.5 transition-colors cursor-pointer disabled:opacity-50"
-                                                    >
-                                                      <CloudUpload className={`w-4 h-4 text-blue-600 shrink-0 ${uploadingS3Isbn === item.isbn ? 'animate-bounce' : ''}`} />
-                                                      <span>
-                                                        {uploadingS3Isbn === item.isbn 
-                                                          ? 'Uploading to S3...' 
-                                                          : item.metadata?.s3Upload 
-                                                            ? 'Re-upload to AWS S3' 
-                                                            : 'Upload to AWS S3'}
-                                                      </span>
-                                                    </button>
-                                                  </div>
-
-                                                  {item.metadata?.s3Upload && (
-                                                    <div className="py-1">
-                                                      <button
-                                                        onClick={() => {
-                                                          setActiveActionMenu(null);
-                                                          const link = item.metadata?.s3Upload?.shareableLink || item.metadata?.s3Upload?.s3FolderUri;
-                                                          if (link) handleCopyS3Link(item.isbn, link);
-                                                        }}
-                                                        className="w-full px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-50 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                                      >
-                                                        <CloudUpload className="w-4 h-4 text-emerald-600 shrink-0" />
-                                                        <span>{copiedS3Id === item.isbn ? '✓ Link Copied!' : 'Copy S3 Cloud Link'}</span>
-                                                      </button>
-                                                    </div>
-                                                  )}
-
-                                                  <div className="py-1">
-                                                    <button
-                                                      onClick={() => {
-                                                        setActiveActionMenu(null);
-                                                        onOpenExplorer(item.isbn);
-                                                      }}
-                                                      className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-amber-50 hover:text-amber-800 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                                    >
-                                                      <FolderOpen className="w-4 h-4 text-amber-500 shrink-0" />
-                                                      <span>Open Folder</span>
-                                                    </button>
-
-                                                    <button
-                                                      onClick={() => {
-                                                        setActiveActionMenu(null);
-                                                        onDownloadZip(item.isbn);
-                                                      }}
-                                                      className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                                    >
-                                                      <Download className="w-4 h-4 text-brand-600 shrink-0" />
-                                                      <span>Download ZIP</span>
-                                                    </button>
-                                                  </div>
-
-                                                  <div className="py-1">
-                                                    <button
-                                                      onClick={(e) => {
-                                                        setActiveActionMenu(null);
-                                                        handleDeleteItem(item.isbn, e);
-                                                      }}
-                                                      className="w-full px-3.5 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 hover:text-rose-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
-                                                    >
-                                                      <Trash2 className="w-4 h-4 shrink-0" />
-                                                      <span>Delete Record</span>
-                                                    </button>
-                                                  </div>
-                                                </div>
-                                              );
-                                            })()}
                                           </div>
                                         </td>
 
@@ -1192,6 +1105,128 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
           document.body
         );
       })()}
+
+
+      {/* Floating Action Menu Dropdown Portal */}
+      {activeActionMenu && createPortal(
+        <div 
+          className="fixed z-[9999] w-56 bg-white/98 backdrop-blur-md rounded-2xl shadow-2xl border border-blue-200/90 py-1.5 animate-fade-in text-left divide-y divide-slate-100 ring-1 ring-slate-900/10"
+          style={{
+            position: 'fixed',
+            right: Math.max(12, window.innerWidth - activeActionMenu.x),
+            ...(activeActionMenu.openUpwards 
+              ? { bottom: window.innerHeight - activeActionMenu.y + 6 } 
+              : { top: activeActionMenu.y + 6 })
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="py-1">
+            <button
+              onClick={() => {
+                const isbn = activeActionMenu.isbn;
+                setActiveActionMenu(null);
+                onSelectIsbnForCapture(isbn);
+              }}
+              className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
+            >
+              <Camera className="w-4 h-4 text-brand-600 shrink-0" />
+              <span>Inspect / Retake</span>
+            </button>
+
+            <button
+              onClick={() => {
+                const { isbn, item } = activeActionMenu;
+                setActiveActionMenu(null);
+                setSelectedPhotoModal({ isbn, shots: item.shots, item });
+              }}
+              className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
+            >
+              <Eye className="w-4 h-4 text-brand-600 shrink-0" />
+              <span>View 7 Photos</span>
+            </button>
+          </div>
+
+          {/* Manual AWS S3 Upload Option */}
+          <div className="py-1">
+            <button
+              onClick={() => {
+                const isbn = activeActionMenu.isbn;
+                setActiveActionMenu(null);
+                handleManualS3Upload(isbn);
+              }}
+              disabled={uploadingS3Isbn === activeActionMenu.isbn}
+              className="w-full px-3.5 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50 flex items-center space-x-2.5 transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <CloudUpload className={`w-4 h-4 text-blue-600 shrink-0 ${uploadingS3Isbn === activeActionMenu.isbn ? 'animate-bounce' : ''}`} />
+              <span>
+                {uploadingS3Isbn === activeActionMenu.isbn 
+                  ? 'Uploading to S3...' 
+                  : activeActionMenu.item.metadata?.s3Upload 
+                    ? 'Re-upload to AWS S3' 
+                    : 'Upload to AWS S3'}
+              </span>
+            </button>
+          </div>
+
+          {activeActionMenu.item.metadata?.s3Upload && (
+            <div className="py-1">
+              <button
+                onClick={() => {
+                  const { isbn, item } = activeActionMenu;
+                  setActiveActionMenu(null);
+                  const link = item.metadata?.s3Upload?.shareableLink || item.metadata?.s3Upload?.s3FolderUri;
+                  if (link) handleCopyS3Link(isbn, link);
+                }}
+                className="w-full px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-50 flex items-center space-x-2.5 transition-colors cursor-pointer"
+              >
+                <CloudUpload className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{copiedS3Id === activeActionMenu.isbn ? '✓ Link Copied!' : 'Copy S3 Cloud Link'}</span>
+              </button>
+            </div>
+          )}
+
+          <div className="py-1">
+            <button
+              onClick={() => {
+                const isbn = activeActionMenu.isbn;
+                setActiveActionMenu(null);
+                onOpenExplorer(isbn);
+              }}
+              className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-amber-50 hover:text-amber-800 flex items-center space-x-2.5 transition-colors cursor-pointer"
+            >
+              <FolderOpen className="w-4 h-4 text-amber-500 shrink-0" />
+              <span>Open Folder</span>
+            </button>
+
+            <button
+              onClick={() => {
+                const isbn = activeActionMenu.isbn;
+                setActiveActionMenu(null);
+                onDownloadZip(isbn);
+              }}
+              className="w-full px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-brand-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
+            >
+              <Download className="w-4 h-4 text-brand-600 shrink-0" />
+              <span>Download ZIP</span>
+            </button>
+          </div>
+
+          <div className="py-1">
+            <button
+              onClick={(e) => {
+                const isbn = activeActionMenu.isbn;
+                setActiveActionMenu(null);
+                handleDeleteItem(isbn, e);
+              }}
+              className="w-full px-3.5 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 hover:text-rose-700 flex items-center space-x-2.5 transition-colors cursor-pointer"
+            >
+              <Trash2 className="w-4 h-4 shrink-0" />
+              <span>Delete Record</span>
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
 
     </div>
   );
