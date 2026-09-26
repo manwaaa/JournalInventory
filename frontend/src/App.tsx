@@ -15,7 +15,8 @@ import {
   Scan,
   Lock,
   Package,
-  CheckCircle2
+  CheckCircle2,
+  FileSpreadsheet
 } from 'lucide-react';
 
 import { Navbar } from './components/Navbar';
@@ -1037,7 +1038,7 @@ export function App() {
   const isbnInputRefValue = useRef(isbnInput);
   isbnInputRefValue.current = isbnInput;
 
-  // Global Keyboard shortcuts: Enter / Space to capture photo; Enter to start/proceed in 1 press
+  // Global Keyboard shortcuts: Enter / Space to capture photo; Enter to proceed in 1 press
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -1049,26 +1050,23 @@ export function App() {
       const curActiveIsbn = activeIsbnRef.current;
       const inputVal = (isbnInputRefValue.current || '').trim();
 
-      // 1. Shutter Trigger: Spacebar or Enter during active photo capture (Shots 1 to 7)
-      if ((e.code === 'Space' || e.key === 'Enter') && step.startsWith('CAPTURE_SHOT_') && !isInput) {
-        e.preventDefault();
-        e.stopPropagation();
-        handleCapturePhoto();
-        return;
-      }
-
-      // 2. Enter key: 1-click proceed to next journal when complete
       if (e.key === 'Enter') {
-        const isComplete = step === 'COMPLETE' ||
-          (role === 'box_level' && (step === 'CAPTURE_SHOT_3' || Boolean(currentShots[1] && currentShots[2]))) ||
-          (role === 'box_spine' && Boolean(currentShots[1] && currentShots[2] && currentShots[4])) ||
-          Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7] && !step.startsWith('CAPTURE_SHOT_'));
+        // Check if the current station role has completed all required shots:
+        const isBoxDone = role === 'box_level' && Boolean(currentShots[1] && currentShots[2]);
+        const isBoxSpineDone = role === 'box_spine' && Boolean(currentShots[1] && currentShots[2] && currentShots[4]);
+        const isBookDone = role === 'book_level' && Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
+        const isFullDone = Boolean(currentShots[1] && currentShots[2] && currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
+        const hasAllBookShots = Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
 
-        if (isComplete) {
-          // If user manually typed a DIFFERENT new ISBN into the input, start that new ISBN
+        const isSessionFinished = step === 'COMPLETE' || isBoxDone || isBoxSpineDone || isBookDone || (role === 'all_in_one' && (isFullDone || hasAllBookShots));
+
+        // 1. If session is complete for this workstation: 1-press Enter proceeds immediately
+        if (isSessionFinished) {
+          e.preventDefault();
+          e.stopPropagation();
+
+          // If a new/different ISBN was typed into the input, start that new ISBN
           if (isInput && inputVal && inputVal !== curActiveIsbn) {
-            e.preventDefault();
-            e.stopPropagation();
             if (document.activeElement instanceof HTMLElement) {
               document.activeElement.blur();
             }
@@ -1076,12 +1074,49 @@ export function App() {
             return;
           }
 
-          // Otherwise (no text, same ISBN, or outside input), hitting Enter proceeds cleanly to the next journal
-          e.preventDefault();
-          e.stopPropagation();
+          // If a photo save is currently in-flight, queue the transition so it runs immediately when the save finishes
+          if (isCapturingRef.current) {
+            pendingNextRef.current = true;
+            return;
+          }
+
+          // Blur active elements to reset focus
+          if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+
           handleNextJournal();
           return;
         }
+
+        // 2. If photo capture is active: Enter takes the photo
+        if (step.startsWith('CAPTURE_SHOT_')) {
+          e.preventDefault();
+          e.stopPropagation();
+
+          // If a shot is already saving, ignore repeated rapid taps
+          if (isCapturingRef.current) {
+            return;
+          }
+
+          // Automatically blur any active input field
+          if (isInput && document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+
+          handleCapturePhoto();
+          return;
+        }
+      }
+
+      // Spacebar for camera shutter trigger during active capture
+      if (e.code === 'Space' && step.startsWith('CAPTURE_SHOT_') && !isInput) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!isCapturingRef.current) {
+          handleCapturePhoto();
+        }
+        return;
       }
     };
     window.addEventListener('keydown', handleKeyDown, true);
@@ -1158,11 +1193,13 @@ export function App() {
           </div>
         ) : (
           /* Capture Workflow with smooth page transition and role transition */
-          <div key={`capture-panel-${stationRole}`} className="w-full space-y-6 animate-page-transition">
+          <div className="w-full space-y-6 animate-page-transition">
             
             {/* Card 1: Receiving & Verification Setup */}
             <div className="white-card rounded-2xl p-6 space-y-4 transition-all duration-300">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                
+                {/* Left: Icon, Title & Details */}
                 <div className="flex items-start space-x-3.5">
                   <div className={`w-10 h-10 rounded-xl text-white flex items-center justify-center shadow-md shrink-0 mt-0.5 transition-all duration-300 ${
                     stationRole === 'box_level' 
@@ -1213,7 +1250,7 @@ export function App() {
                   </div>
                 </div>
 
-                {/* Manifest Status Indicator & Box Stats */}
+                {/* Right: Manifest Status Indicator & Box Stats */}
                 <div className="flex flex-wrap items-center gap-2">
                   {boxesList.length > 0 && (
                     <span className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-800 border border-blue-200 shadow-xs">
@@ -1228,10 +1265,12 @@ export function App() {
                       title="View Active Manifest"
                     >
                       <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
                       <span>Manifest Active ({manifestCount} items)</span>
                     </button>
                   )}
                 </div>
+
               </div>
 
               {/* PC 1 Dedicated Box Selector Bar */}
@@ -1364,11 +1403,19 @@ export function App() {
                           const val = isbnInput.trim();
                           const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
                           const hasBoxShots = Boolean(shots[1] && shots[2]);
+                          const hasBoxSpineShots = Boolean(shots[1] && shots[2] && shots[4]);
+
                           const isReadyForNext = currentStep === 'COMPLETE' ||
-                            (stationRole === 'box_level' && (currentStep === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
-                            (hasAllBookShots && !currentStep.startsWith('CAPTURE_SHOT_'));
+                            (stationRole === 'box_level' && hasBoxShots) ||
+                            (stationRole === 'box_spine' && hasBoxSpineShots) ||
+                            (stationRole === 'book_level' && hasAllBookShots) ||
+                            hasAllBookShots;
 
                           if (isReadyForNext && (!val || val === activeIsbn)) {
+                            if (isCapturingRef.current) {
+                              pendingNextRef.current = true;
+                              return;
+                            }
                             handleNextJournal();
                             return;
                           }
@@ -1758,7 +1805,6 @@ export function App() {
         isOpen={settingsModalOpen}
         onClose={() => setSettingsModalOpen(false)}
         config={systemConfig}
-        currentStationRole={stationRole}
         devices={devices}
         boxCameraDeviceId={boxCameraDeviceId}
         bookCameraDeviceId={bookCameraDeviceId}
@@ -1769,7 +1815,6 @@ export function App() {
         onRotationChange={setRotation}
         onFlipHorizontalChange={setFlipHorizontal}
         onFlipVerticalChange={setFlipVertical}
-        onStationRoleChange={setStationRole}
         onBoxCameraChange={setBoxCameraDeviceId}
         onBookCameraChange={setBookCameraDeviceId}
         onAutoSwitchCameraChange={setAutoSwitchCamera}

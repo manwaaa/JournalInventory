@@ -293,7 +293,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             transformOrigin: 'center center'
           }}
           className={`w-full h-full object-contain transition-transform duration-300 ease-out ${
-            isStreaming ? 'opacity-100' : 'opacity-0'
+            cameraError ? 'opacity-0' : 'opacity-100'
           }`}
         />
 
@@ -388,27 +388,20 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           </div>
         )}
 
-        {!isStreaming && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-20">
-            {cameraError ? (
-              <div className="max-w-md bg-red-950/90 border border-red-500/50 rounded-2xl p-5 text-red-200 shadow-2xl">
-                <AlertCircle className="w-8 h-8 text-red-400 mx-auto mb-2" />
-                <h4 className="font-bold text-sm text-white mb-1">Camera Unavailable</h4>
-                <p className="text-xs text-red-300 mb-3">{cameraError}</p>
-                <button
-                  onClick={() => onSwitchCamera(selectedDeviceId)}
-                  className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-semibold"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Retry Camera</span>
-                </button>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center text-slate-400">
-                <RefreshCw className="w-8 h-8 animate-spin mb-2 text-brand-400" />
-                <p className="text-xs font-medium">Initializing camera stream...</p>
-              </div>
-            )}
+        {cameraError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-20 bg-slate-950/90 backdrop-blur-sm">
+            <div className="max-w-md bg-red-950/90 border border-red-500/50 rounded-2xl p-5 text-red-200 shadow-2xl">
+              <AlertCircle className="w-8 h-8 text-red-400 mx-auto mb-2" />
+              <h4 className="font-bold text-sm text-white mb-1">Camera Unavailable</h4>
+              <p className="text-xs text-red-300 mb-3">{cameraError}</p>
+              <button
+                onClick={() => onSwitchCamera(selectedDeviceId)}
+                className="inline-flex items-center space-x-1.5 px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-semibold text-xs rounded-xl transition-colors cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Retry Camera Stream</span>
+              </button>
+            </div>
           </div>
         )}
       </div>

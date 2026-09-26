@@ -200,6 +200,7 @@ if (fs.existsSync(CONFIG_FILE)) {
 // Load or initialize Manifest database
 let manifestData = {
   items: [],
+  manifests: [],
   totalCount: 0,
   processableCount: 0,
   nonProcessableCount: 0,
@@ -207,9 +208,77 @@ let manifestData = {
   filename: null
 };
 
+function rebuildManifestHistory(data) {
+  if (!data || !Array.isArray(data.items) || data.items.length === 0) {
+    if (data) data.manifests = [];
+    return data;
+  }
+
+  const groups = new Map();
+  for (let idx = 0; idx < data.items.length; idx++) {
+    const item = data.items[idx];
+    const filename = item.manifestFilename || data.filename || 'Imported Manifest';
+    const sheet = item.sheetName ? String(item.sheetName).trim() : '';
+    const lot = item.lotNumber ? String(item.lotNumber).trim() : '';
+    // Group by filename + sheet + lot so each distinct lot/sheet is separated in dropdown
+    const key = `${filename}||${sheet}||${lot}`;
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        filename,
+        sheetName: sheet || undefined,
+        lotNumber: lot || undefined,
+        lotNumbers: lot ? [lot] : [],
+        importedAt: item.importedAt || data.lastUpdated || new Date().toISOString(),
+        items: []
+      });
+    }
+    groups.get(key).items.push(item);
+  }
+
+  const manifests = [];
+  let gIdx = 0;
+  for (const [key, grp] of groups.entries()) {
+    gIdx++;
+    const safeLot = (grp.lotNumber || grp.sheetName || `lot_${gIdx}`).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const id = `m_${safeLot}_${gIdx}`;
+    const processableCount = grp.items.filter(i => i.isProcessable).length;
+    const nonProcessableCount = grp.items.length - processableCount;
+
+    for (const item of grp.items) {
+      item.manifestId = id;
+      item.manifestFilename = grp.filename;
+    }
+
+    manifests.push({
+      id,
+      filename: grp.filename,
+      sheetName: grp.sheetName,
+      lotNumber: grp.lotNumber,
+      lotNumbers: grp.lotNumbers,
+      importedAt: grp.importedAt,
+      itemCount: grp.items.length,
+      processableCount,
+      nonProcessableCount
+    });
+  }
+
+  data.manifests = manifests;
+  data.totalCount = data.items.length;
+  data.processableCount = data.items.filter(i => i.isProcessable).length;
+  data.nonProcessableCount = data.totalCount - data.processableCount;
+  return data;
+}
+
 if (fs.existsSync(MANIFEST_FILE)) {
   try {
     manifestData = fs.readJsonSync(MANIFEST_FILE);
+    if (!Array.isArray(manifestData.items)) manifestData.items = [];
+    const hasCombinedLots = Array.isArray(manifestData.manifests) && manifestData.manifests.some(m => m.lotNumbers && m.lotNumbers.length > 1);
+    if (!Array.isArray(manifestData.manifests) || manifestData.manifests.length === 0 || hasCombinedLots) {
+      rebuildManifestHistory(manifestData);
+      try { fs.writeJsonSync(MANIFEST_FILE, manifestData, { spaces: 2 }); } catch (e) {}
+    }
   } catch (err) {
     console.error('Failed to parse manifest.json:', err);
   }
@@ -655,40 +724,109 @@ app.get('/api/manifest', (req, res) => {
 
 app.post('/api/manifest/import', async (req, res) => {
   try {
-    const { items, filename } = req.body;
+    const { items, filename, replaceAll } = req.body;
     if (!Array.isArray(items)) {
       return res.status(400).json({ error: 'Items array is required' });
     }
 
-    const cleanItems = items.map(item => ({
-      sNo: item.sNo ? String(item.sNo).trim() : '',
-      isbn: String(item.isbn || '').trim(),
-      lotNumber: item.lotNumber ? String(item.lotNumber).trim() : '',
-      boxNumber: item.boxNumber ? String(item.boxNumber).trim() : '',
-      title: item.title ? String(item.title).trim() : '',
-      author: item.author ? String(item.author).trim() : '',
-      publisher: item.publisher ? String(item.publisher).trim() : '',
-      printIssn: item.printIssn ? String(item.printIssn).trim() : '',
-      publicationYear: item.publicationYear ? String(item.publicationYear).trim() : '',
-      volume: item.volume ? String(item.volume).trim() : '',
-      issues: item.issues ? String(item.issues).trim() : '',
-      isProcessable: item.isProcessable !== false && String(item.isProcessable).toLowerCase() !== 'false' && String(item.isProcessable).toLowerCase() !== 'no',
-      reason: item.reason ? String(item.reason).trim() : '',
-      notes: item.notes ? String(item.notes).trim() : '',
-      importedAt: new Date().toISOString()
-    })).filter(i => i.isbn.length > 0);
+    const importTimestamp = new Date().toISOString();
+    const safeFilename = filename || `manifest_${new Date().toISOString().slice(0, 10)}.csv`;
 
-    const processableCount = cleanItems.filter(i => i.isProcessable).length;
-    const nonProcessableCount = cleanItems.length - processableCount;
+    // Group incoming items by (sheetName, lotNumber) so each sheet and lot is a separate selectable manifest
+    const groupsMap = new Map();
+    for (let idx = 0; idx < items.length; idx++) {
+      const rawItem = items[idx];
+      const rawIsbn = String(rawItem.isbn || '').trim();
+      if (!rawIsbn) continue;
 
-    manifestData = {
-      items: cleanItems,
-      totalCount: cleanItems.length,
-      processableCount,
-      nonProcessableCount,
-      lastUpdated: new Date().toISOString(),
-      filename: filename || 'manifest_import.csv'
-    };
+      const rawSheet = rawItem.sheetName ? String(rawItem.sheetName).trim() : '';
+      const rawLot = rawItem.lotNumber ? String(rawItem.lotNumber).trim() : '';
+      const groupKey = `${rawSheet}||${rawLot}`;
+
+      if (!groupsMap.has(groupKey)) {
+        groupsMap.set(groupKey, {
+          sheetName: rawSheet || undefined,
+          lotNumber: rawLot || undefined,
+          rawItems: []
+        });
+      }
+      groupsMap.get(groupKey).rawItems.push({ item: rawItem, originalIdx: idx });
+    }
+
+    if (groupsMap.size === 0) {
+      return res.status(400).json({ error: 'No valid journal items found.' });
+    }
+
+    const newManifestEntries = [];
+    const allCleanNewItems = [];
+
+    let groupCounter = 0;
+    for (const [groupKey, grp] of groupsMap.entries()) {
+      groupCounter++;
+      const safeTag = (grp.lotNumber || grp.sheetName || `batch_${groupCounter}`).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const manifestId = `m_${Date.now()}_${groupCounter}_${safeTag}`;
+
+      const cleanGroupItems = grp.rawItems.map(({ item, originalIdx }) => ({
+        sNo: item.sNo ? String(item.sNo).trim() : String(originalIdx + 1),
+        isbn: String(item.isbn || '').trim(),
+        lotNumber: item.lotNumber ? String(item.lotNumber).trim() : '',
+        boxNumber: item.boxNumber ? String(item.boxNumber).trim() : '',
+        title: item.title ? String(item.title).trim() : '',
+        author: item.author ? String(item.author).trim() : '',
+        publisher: item.publisher ? String(item.publisher).trim() : '',
+        printIssn: item.printIssn ? String(item.printIssn).trim() : '',
+        publicationYear: item.publicationYear ? String(item.publicationYear).trim() : '',
+        volume: item.volume ? String(item.volume).trim() : '',
+        issues: item.issues ? String(item.issues).trim() : '',
+        isProcessable: item.isProcessable !== false && String(item.isProcessable).toLowerCase() !== 'false' && String(item.isProcessable).toLowerCase() !== 'no',
+        reason: item.reason ? String(item.reason).trim() : '',
+        notes: item.notes ? String(item.notes).trim() : '',
+        importedAt: importTimestamp,
+        manifestId: manifestId,
+        manifestFilename: safeFilename,
+        sheetName: grp.sheetName
+      }));
+
+      const processableCount = cleanGroupItems.filter(i => i.isProcessable).length;
+      const nonProcessableCount = cleanGroupItems.length - processableCount;
+      const lotNumbers = grp.lotNumber ? [grp.lotNumber] : [];
+
+      newManifestEntries.push({
+        id: manifestId,
+        filename: safeFilename,
+        sheetName: grp.sheetName,
+        lotNumber: grp.lotNumber,
+        lotNumbers,
+        importedAt: importTimestamp,
+        itemCount: cleanGroupItems.length,
+        processableCount,
+        nonProcessableCount
+      });
+
+      allCleanNewItems.push(...cleanGroupItems);
+    }
+
+    if (replaceAll) {
+      manifestData.items = allCleanNewItems;
+      manifestData.manifests = newManifestEntries;
+    } else {
+      if (!Array.isArray(manifestData.items)) manifestData.items = [];
+      if (!Array.isArray(manifestData.manifests)) manifestData.manifests = [];
+
+      // Replace matching ISBNs with the latest details while keeping remaining previous items
+      const newIsbnSet = new Set(allCleanNewItems.map(i => sanitizeIsbn(i.isbn)));
+      const retainedOldItems = manifestData.items.filter(i => !newIsbnSet.has(sanitizeIsbn(i.isbn)));
+      manifestData.items = [...retainedOldItems, ...allCleanNewItems];
+
+      // Append new sheet / lot manifest entries
+      manifestData.manifests = [...manifestData.manifests, ...newManifestEntries];
+    }
+
+    manifestData.totalCount = manifestData.items.length;
+    manifestData.processableCount = manifestData.items.filter(i => i.isProcessable).length;
+    manifestData.nonProcessableCount = manifestData.totalCount - manifestData.processableCount;
+    manifestData.lastUpdated = importTimestamp;
+    manifestData.filename = safeFilename;
 
     saveManifest();
     broadcastSession('MANIFEST_UPDATED', { manifestData });
@@ -698,7 +836,9 @@ app.post('/api/manifest/import', async (req, res) => {
 
     res.json({
       success: true,
-      manifestData
+      manifestData,
+      importedCount: allCleanNewItems.length,
+      sheetsCount: newManifestEntries.length
     });
   } catch (err) {
     console.error('Manifest import error:', err);
@@ -737,9 +877,32 @@ app.get('/api/manifest/check/:isbn', (req, res) => {
   });
 });
 
-app.delete('/api/manifest', (req, res) => {
+app.delete('/api/manifest/:id?', (req, res) => {
+  const targetId = req.params.id || req.query.id;
+
+  if (targetId) {
+    if (Array.isArray(manifestData.items)) {
+      manifestData.items = manifestData.items.filter(i => i.manifestId !== targetId);
+    }
+    if (Array.isArray(manifestData.manifests)) {
+      manifestData.manifests = manifestData.manifests.filter(m => m.id !== targetId);
+    }
+    manifestData.totalCount = manifestData.items ? manifestData.items.length : 0;
+    manifestData.processableCount = manifestData.items ? manifestData.items.filter(i => i.isProcessable).length : 0;
+    manifestData.nonProcessableCount = manifestData.totalCount - manifestData.processableCount;
+    manifestData.lastUpdated = new Date().toISOString();
+    manifestData.filename = manifestData.manifests && manifestData.manifests.length > 0 
+      ? manifestData.manifests[manifestData.manifests.length - 1]?.filename 
+      : null;
+
+    saveManifest();
+    broadcastSession('MANIFEST_UPDATED', { manifestData });
+    return res.json({ success: true, message: `Manifest '${targetId}' removed`, manifestData });
+  }
+
   manifestData = {
     items: [],
+    manifests: [],
     totalCount: 0,
     processableCount: 0,
     nonProcessableCount: 0,
@@ -748,7 +911,7 @@ app.delete('/api/manifest', (req, res) => {
   };
   saveManifest();
   broadcastSession('MANIFEST_UPDATED', { manifestData });
-  res.json({ success: true, message: 'Manifest cleared' });
+  res.json({ success: true, message: 'All manifests cleared', manifestData });
 });
 
 // -------------------------------------------------------------

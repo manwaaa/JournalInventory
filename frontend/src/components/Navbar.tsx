@@ -41,26 +41,22 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   return (
     <header className="sticky top-0 z-30 w-full glass-panel border-b border-blue-100/90 transition-colors shadow-[0_4px_16px_rgba(24,62,142,0.03)]">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+      <div className="w-full px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4 relative">
         
-        {/* Left: Brand Title */}
-        <div className="flex items-center space-x-3.5">
-          <div className="flex items-center space-x-2.5">
+        {/* Far Left: Brand Title */}
+        <div className="flex items-center space-x-3 sm:space-x-4 shrink-0 z-10">
+          <div className="flex items-center space-x-2.5 shrink-0">
             <div className="w-9 h-9 rounded-xl btn-primary-gradient text-white flex items-center justify-center shadow-md shadow-brand-500/25">
               <Camera className="w-5 h-5" />
             </div>
-            <span className="font-extrabold text-base sm:text-lg tracking-tight text-slate-900">
+            <span className="font-extrabold text-base sm:text-lg tracking-tight text-slate-900 whitespace-nowrap">
               Verification <span className="text-brand-700 bg-gradient-to-r from-brand-700 to-indigo-600 bg-clip-text text-transparent">Images</span>
             </span>
           </div>
-        </div>
 
-        {/* Right: View Toggle, Manifest, Live Sync & Tools */}
-        <div className="flex items-center space-x-2 sm:space-x-3">
-          
-          {/* Station Role Toggle: PC 1 (Box Only 1-2), PC 2 (Book Only 3-7), Full (Box + Books 1-7) */}
+          {/* Inline Role Selector for smaller screens */}
           {viewMode === 'CAPTURE' && (
-            <div className="flex items-center bg-gradient-to-r from-slate-100 to-blue-50/70 p-1 rounded-xl border border-slate-200/80 shadow-xs relative" title="Select Workstation Role">
+            <div className="flex xl:hidden items-center bg-gradient-to-r from-slate-100 to-blue-50/70 p-1 rounded-xl border border-slate-200/80 shadow-xs relative shrink-0" title="Select Workstation Role">
               <button
                 onClick={() => setStationRole('box_level')}
                 className={`flex items-center space-x-1 px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
@@ -114,6 +110,69 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             </div>
           )}
+        </div>
+
+        {/* Aligned with max-w-7xl Card Container (RECEIVING & VERIFICATION) on desktop */}
+        {viewMode === 'CAPTURE' && (
+          <div className="hidden xl:flex absolute inset-0 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pointer-events-none items-center justify-start">
+            <div className="pointer-events-auto flex items-center bg-gradient-to-r from-slate-100 to-blue-50/70 p-1 rounded-xl border border-slate-200/80 shadow-xs relative shrink-0" title="Select Workstation Role">
+              <button
+                onClick={() => setStationRole('box_level')}
+                className={`flex items-center space-x-1 px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+                  stationRole === 'box_level'
+                    ? 'bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-md shadow-blue-500/25 scale-[1.02]'
+                    : 'text-slate-600 hover:text-blue-700 hover:bg-white/60'
+                }`}
+                title="PC 1: Box Level (Takes Shot 1 & 2 only, then proceeds immediately to next box)"
+              >
+                <Package className={`w-3.5 h-3.5 ${stationRole === 'box_level' ? 'text-white animate-pulse' : 'text-blue-600'}`} />
+                <span>PC 1 (Box 1-2)</span>
+              </button>
+
+              <button
+                onClick={() => setStationRole('book_level')}
+                className={`flex items-center space-x-1 px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+                  stationRole === 'book_level'
+                    ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-500/25 scale-[1.02]'
+                    : 'text-slate-600 hover:text-indigo-700 hover:bg-white/60'
+                }`}
+                title="PC 2: Book Level (Loads Shots 1 & 2 from PC 1, captures Shots 3 to 7)"
+              >
+                <BookOpen className={`w-3.5 h-3.5 ${stationRole === 'book_level' ? 'text-white animate-pulse' : 'text-indigo-600'}`} />
+                <span>PC 2 (Book 3-7)</span>
+              </button>
+
+              <button
+                onClick={() => setStationRole('all_in_one')}
+                className={`flex items-center space-x-1 px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+                  stationRole === 'all_in_one'
+                    ? 'bg-gradient-to-r from-emerald-600 to-teal-700 text-white shadow-md shadow-emerald-500/25 scale-[1.02]'
+                    : 'text-slate-600 hover:text-emerald-700 hover:bg-white/60'
+                }`}
+                title="Full Station: Complete Verification (Captures both Box 1-2 and Book 3-7 on this PC)"
+              >
+                <Layers className={`w-3.5 h-3.5 ${stationRole === 'all_in_one' ? 'text-white animate-pulse' : 'text-emerald-600'}`} />
+                <span>Full (1-7)</span>
+              </button>
+
+              <button
+                onClick={() => setStationRole('box_spine')}
+                className={`flex items-center space-x-1 px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+                  stationRole === 'box_spine'
+                    ? 'bg-gradient-to-r from-violet-600 to-violet-700 text-white shadow-md shadow-violet-500/25 scale-[1.02]'
+                    : 'text-slate-600 hover:text-violet-700 hover:bg-white/60'
+                }`}
+                title="Box + Spine: Captures only Shot 1 (Box A), Shot 2 (Box B), and Shot 4 (Spine)"
+              >
+                <Package className={`w-3.5 h-3.5 ${stationRole === 'box_spine' ? 'text-white animate-pulse' : 'text-violet-600'}`} />
+                <span>Box+Spine (1,2,4)</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Far Right: View Toggle, Manifest, Live Sync & Tools */}
+        <div className="flex items-center space-x-2 sm:space-x-3 shrink-0 z-10">
 
           {/* View Mode Toggle: Capture vs Search & View */}
           <div className="flex items-center bg-gradient-to-r from-blue-50/80 to-indigo-50/60 p-1 rounded-xl border border-blue-100 shadow-xs">

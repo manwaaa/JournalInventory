@@ -155,16 +155,49 @@ export function useCamera() {
     }
   }, [boxCameraDeviceId, bookCameraDeviceId, selectedDeviceId, setBoxCameraDeviceId, setBookCameraDeviceId]);
 
+  // Attach media stream to video element safely and reliably
+  const attachStreamToVideo = useCallback((stream: MediaStream) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+    }
+
+    const checkReady = () => {
+      setIsStreaming(true);
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setResolution({ width: video.videoWidth, height: video.videoHeight });
+      }
+    };
+
+    video.onloadedmetadata = checkReady;
+    video.onloadeddata = checkReady;
+    video.oncanplay = checkReady;
+    video.onplaying = checkReady;
+
+    video.play().then(() => {
+      checkReady();
+    }).catch((playErr: any) => {
+      if (playErr.name !== 'AbortError') {
+        console.warn('Video play warning:', playErr);
+      }
+    });
+
+    setIsStreaming(true);
+  }, []);
+
   // Start camera stream
   const startCamera = useCallback(async (deviceId?: string) => {
     const requestId = ++activeRequestId.current;
-    setIsStreaming(false);
     setCameraError(null);
     setIsTorchOn(false);
 
     // Stop existing stream
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
+      try {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      } catch (e) {}
       streamRef.current = null;
     }
 
@@ -179,7 +212,24 @@ export function useCamera() {
         }
       };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (exactErr) {
+        // Fallback to any camera if exact deviceId failed
+        if (deviceId) {
+          console.warn(`Exact camera ${deviceId} failed, falling back to default camera...`);
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+              width: { ideal: 1920 },
+              height: { ideal: 1080 }
+            }
+          });
+        } else {
+          throw exactErr;
+        }
+      }
 
       // If a newer startCamera request was made while awaiting getUserMedia, discard this stream
       if (requestId !== activeRequestId.current) {
@@ -188,45 +238,20 @@ export function useCamera() {
       }
 
       streamRef.current = stream;
+      attachStreamToVideo(stream);
 
-      if (videoRef.current) {
-        const video = videoRef.current;
-        video.srcObject = stream;
+      const videoTrack = stream.getVideoTracks()[0];
+      const settings = videoTrack?.getSettings();
+      if (settings?.width && settings?.height) {
+        setResolution({ width: settings.width, height: settings.height });
+      }
 
-        try {
-          await video.play();
-          // Give video a brief moment to decode first live frame
-          if (video.videoWidth > 0) {
-            setIsStreaming(true);
-            setResolution({ width: video.videoWidth, height: video.videoHeight });
-          } else {
-            video.onloadedmetadata = () => {
-              if (requestId === activeRequestId.current) {
-                setIsStreaming(true);
-                setResolution({ width: video.videoWidth, height: video.videoHeight });
-              }
-            };
-          }
-        } catch (playErr: any) {
-          if (playErr.name === 'AbortError' || playErr.message?.includes('interrupted')) {
-            return;
-          }
-          console.warn('Video play warning:', playErr);
-        }
-
-        const videoTrack = stream.getVideoTracks()[0];
-        const settings = videoTrack?.getSettings();
-        if (settings?.width && settings?.height) {
-          setResolution({ width: settings.width, height: settings.height });
-        }
-
-        // Check torch / flashlight support
-        try {
-          const capabilities = (videoTrack as any)?.getCapabilities?.();
-          setHasTorch(Boolean(capabilities && 'torch' in capabilities));
-        } catch (e) {
-          setHasTorch(false);
-        }
+      // Check torch / flashlight support
+      try {
+        const capabilities = (videoTrack as any)?.getCapabilities?.();
+        setHasTorch(Boolean(capabilities && 'torch' in capabilities));
+      } catch (e) {
+        setHasTorch(false);
       }
 
       await updateDeviceList();
@@ -244,7 +269,7 @@ export function useCamera() {
         setCameraError(`Camera error: ${err.message || 'Unable to open video stream'}`);
       }
     }
-  }, [updateDeviceList]);
+  }, [attachStreamToVideo, updateDeviceList]);
 
   // Switch camera
   const switchCamera = useCallback((newDeviceId: string) => {

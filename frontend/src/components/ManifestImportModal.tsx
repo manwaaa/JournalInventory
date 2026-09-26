@@ -29,6 +29,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
   onClose,
   onManifestUpdated
 }) => {
+  const [selectedManifestId, setSelectedManifestId] = useState<string>('all');
   const [manifest, setManifest] = useState<ManifestData | null>(null);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -57,12 +58,15 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
     }
   }, [isOpen]);
 
-  // Robust SheetJS Workbook parser for Excel (.xlsx, .xls) and CSV
+  // Robust SheetJS Workbook parser for multi-sheet Excel (.xlsx, .xls) and CSV
   const parseWorkbook = (wb: XLSX.WorkBook): ManifestItem[] => {
     const allItems: ManifestItem[] = [];
 
-    for (const sheetName of wb.SheetNames) {
-      const sheet = wb.Sheets[sheetName];
+    for (const rawSheetName of wb.SheetNames) {
+      const sheetName = String(rawSheetName).trim();
+      const sheet = wb.Sheets[rawSheetName];
+      if (!sheet) continue;
+
       const rawRows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
       if (!rawRows || rawRows.length === 0) continue;
 
@@ -104,6 +108,12 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
       const statusIdx = getIdx(['status', 'processable', 'eligible', 'allowed']);
       const reasonIdx = getIdx(['reason', 'remarks', 'noidateamremarks', 'notes']);
 
+      // Infer lot from sheet name if sheet name contains lot info (e.g. "Lot 142", "Lot-142", "142")
+      let inferredSheetLot = '';
+      if (/lot\s*[-_]?\s*([0-9a-zA-Z]+)/i.test(sheetName)) {
+        inferredSheetLot = sheetName;
+      }
+
       for (let r = headerIdx + 1; r < rawRows.length; r++) {
         const row = rawRows[r];
         if (!row || row.length === 0) continue;
@@ -111,7 +121,8 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
         const isbn = isbnIdx !== -1 ? String(row[isbnIdx] || '').trim() : '';
         if (!isbn || isbn.toLowerCase() === 'isbn') continue;
 
-        const lotNumber = lotIdx !== -1 ? String(row[lotIdx] || '').trim() : '';
+        const rawLot = lotIdx !== -1 ? String(row[lotIdx] || '').trim() : '';
+        const lotNumber = rawLot || inferredSheetLot || (sheetName.toLowerCase().includes('lot') ? sheetName : '');
         const boxNumber = boxIdx !== -1 ? String(row[boxIdx] || '').trim() : '';
         const title = titleIdx !== -1 ? String(row[titleIdx] || '').trim() : '';
         const author = authorIdx !== -1 ? String(row[authorIdx] || '').trim() : '';
@@ -148,7 +159,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
         allItems.push({
           sNo: sNo || String(allItems.length + 1),
           isbn,
-          lotNumber: lotNumber || (sheetName.toLowerCase().includes('lot') ? sheetName : ''),
+          lotNumber,
           boxNumber,
           title,
           author,
@@ -160,6 +171,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
           isProcessable,
           reason,
           notes: reason,
+          sheetName: sheetName !== 'Sheet1' && sheetName !== 'Sheet 1' ? sheetName : undefined,
           importedAt: new Date().toISOString()
         });
       }
@@ -303,6 +315,13 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
       const data = await res.json();
       if (res.ok) {
         setManifest(data.manifestData);
+        // Switch to the newly imported manifest entry or all
+        const latestManifest = data.manifestData?.manifests?.[data.manifestData.manifests.length - 1];
+        if (latestManifest?.id) {
+          setSelectedManifestId(latestManifest.id);
+        } else {
+          setSelectedManifestId('all');
+        }
         onManifestUpdated();
         setShowPasteArea(false);
       } else {
@@ -335,6 +354,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
       const data = await res.json();
       if (res.ok) {
         setManifest(data.manifestData);
+        setSelectedManifestId('all');
         onManifestUpdated();
         setShowPasteArea(false);
         setPastedText('');
@@ -348,16 +368,38 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
     }
   };
 
-  const handleClearManifest = async () => {
-    if (!confirm('Are you sure you want to clear the active manifest database?')) return;
+  const handleDeleteManifest = async (manifestId: string) => {
+    const manifestToDelete = manifest?.manifests?.find(m => m.id === manifestId);
+    const label = manifestToDelete ? `"${manifestToDelete.filename}"` : 'this manifest';
+    if (!confirm(`Are you sure you want to remove manifest ${label}? Only books from this file will be removed.`)) return;
+
+    try {
+      const res = await fetch(`/api/manifest/${manifestId}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        setManifest(data.manifestData);
+        setSelectedManifestId('all');
+        onManifestUpdated();
+      } else {
+        alert(data.error || 'Failed to delete manifest');
+      }
+    } catch (err: any) {
+      console.error('Error deleting manifest:', err);
+      alert('Error deleting manifest: ' + err.message);
+    }
+  };
+
+  const handleClearAllManifests = async () => {
+    if (!confirm('Are you sure you want to clear ALL imported manifests and books from the database?')) return;
     try {
       const res = await fetch('/api/manifest', { method: 'DELETE' });
       if (res.ok) {
         setManifest(null);
+        setSelectedManifestId('all');
         onManifestUpdated();
       }
     } catch (err) {
-      console.error('Error clearing manifest:', err);
+      console.error('Error clearing manifests:', err);
     }
   };
 
@@ -379,8 +421,33 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
 
   if (!isOpen) return null;
 
-  const items = manifest?.items || [];
-  const filteredItems = items.filter(item => {
+  const manifestsList = manifest?.manifests || [];
+  const activeManifestEntry = manifestsList.find(m => m.id === selectedManifestId);
+
+  // Filter items by selected manifest
+  const currentManifestItems = (selectedManifestId === 'all' || !activeManifestEntry)
+    ? (manifest?.items || [])
+    : (manifest?.items || []).filter(i => {
+        if (i.manifestId && i.manifestId === selectedManifestId) return true;
+        if (activeManifestEntry.lotNumber && i.lotNumber === activeManifestEntry.lotNumber) return true;
+        if (activeManifestEntry.sheetName && i.sheetName === activeManifestEntry.sheetName) return true;
+        return false;
+      });
+
+  // Display stats based on selection
+  const displayTotal = (selectedManifestId === 'all' || !activeManifestEntry)
+    ? (manifest?.totalCount || 0)
+    : (activeManifestEntry.itemCount ?? currentManifestItems.length);
+
+  const displayProcessable = (selectedManifestId === 'all' || !activeManifestEntry)
+    ? (manifest?.processableCount || 0)
+    : (activeManifestEntry.processableCount ?? currentManifestItems.filter(i => i.isProcessable).length);
+
+  const displayNonProcessable = (selectedManifestId === 'all' || !activeManifestEntry)
+    ? (manifest?.nonProcessableCount || 0)
+    : (activeManifestEntry.nonProcessableCount ?? currentManifestItems.filter(i => !i.isProcessable).length);
+
+  const filteredItems = currentManifestItems.filter(item => {
     if (filterType === 'processable' && !item.isProcessable) return false;
     if (filterType === 'non_processable' && item.isProcessable) return false;
     if (searchQuery.trim()) {
@@ -391,7 +458,9 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
         (item.lotNumber && item.lotNumber.toLowerCase().includes(q)) ||
         (item.boxNumber && item.boxNumber.toLowerCase().includes(q)) ||
         (item.author && item.author.toLowerCase().includes(q)) ||
-        (item.printIssn && item.printIssn.toLowerCase().includes(q))
+        (item.printIssn && item.printIssn.toLowerCase().includes(q)) ||
+        (item.manifestFilename && item.manifestFilename.toLowerCase().includes(q)) ||
+        (item.sheetName && item.sheetName.toLowerCase().includes(q))
       );
     }
     return true;
@@ -416,7 +485,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
                 Import Processing Manifest (Excel &bull; CSV)
               </h3>
               <p className="text-xs text-slate-500">
-                Upload Excel (.xlsx, .xls) or CSV manifests with auto Lot & Box detection
+                Upload Excel (.xlsx, .xls) or CSV manifests with multi-lot history & auto Lot/Box detection
               </p>
             </div>
           </div>
@@ -443,8 +512,10 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
           
           <div className="p-3 rounded-xl bg-blue-50/60 border border-blue-100 flex items-center justify-between">
             <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">Total in Manifest</span>
-              <span className="text-xl font-extrabold text-brand-700 font-mono">{manifest?.totalCount || 0}</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                {selectedManifestId === 'all' ? 'Total Across All Manifests' : 'Total in Selected Manifest'}
+              </span>
+              <span className="text-xl font-extrabold text-brand-700 font-mono">{displayTotal}</span>
             </div>
             <FileSpreadsheet className="w-6 h-6 text-brand-400" />
           </div>
@@ -452,7 +523,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
           <div className="p-3 rounded-xl bg-emerald-50/60 border border-emerald-100 flex items-center justify-between">
             <div>
               <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 block">Processable (Allowed)</span>
-              <span className="text-xl font-extrabold text-emerald-700 font-mono">{manifest?.processableCount || 0}</span>
+              <span className="text-xl font-extrabold text-emerald-700 font-mono">{displayProcessable}</span>
             </div>
             <CheckCircle2 className="w-6 h-6 text-emerald-500" />
           </div>
@@ -460,19 +531,19 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
           <div className="p-3 rounded-xl bg-rose-50/60 border border-rose-100 flex items-center justify-between">
             <div>
               <span className="text-[10px] font-bold uppercase tracking-wider text-rose-700 block">Not Processable (Blocked)</span>
-              <span className="text-xl font-extrabold text-rose-700 font-mono">{manifest?.nonProcessableCount || 0}</span>
+              <span className="text-xl font-extrabold text-rose-700 font-mono">{displayNonProcessable}</span>
             </div>
             <AlertCircle className="w-6 h-6 text-rose-500" />
           </div>
 
         </div>
 
-        {/* Upload Action Strip */}
+        {/* Upload Action & Dropdown Strip */}
         <div className="p-4 border-b border-blue-100 bg-slate-50/60 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center space-x-2">
+          <div className="flex flex-wrap items-center gap-2">
             <label className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white btn-primary-gradient cursor-pointer shadow-md shadow-brand-500/20 active:scale-95 transition-all">
               <UploadCloud className="w-4 h-4" />
-              <span>{uploading ? 'Importing Excel/CSV...' : 'Upload Manifest (Excel .xlsx / CSV)'}</span>
+              <span>{uploading ? 'Importing Excel/CSV...' : 'Upload Manifest (Excel / CSV)'}</span>
               <input
                 type="file"
                 accept=".xlsx,.xls,.csv,.tsv,.json,.txt,.ods"
@@ -496,17 +567,66 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
               <Download className="w-3.5 h-3.5 text-slate-500" />
               <span>Sample Template</span>
             </button>
+
+            {/* Manifest Dropdown Selector beside Save/Sample Template */}
+            {manifestsList.length > 0 && (
+              <div className="flex items-center space-x-1.5 bg-white border border-slate-200 rounded-xl px-2.5 py-1 shadow-xs">
+                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">
+                  Manifest:
+                </span>
+                <select
+                  value={selectedManifestId}
+                  onChange={(e) => setSelectedManifestId(e.target.value)}
+                  className="px-2 py-1 text-xs font-bold text-brand-800 bg-transparent outline-none cursor-pointer max-w-[240px] sm:max-w-[340px] truncate"
+                >
+                  <option value="all">
+                    📑 All Manifests ({manifest?.totalCount || 0} books{manifestsList.length > 1 ? ` • ${manifestsList.length} lots/sheets` : ''})
+                  </option>
+                  {manifestsList.map((m) => {
+                    let label = '';
+                    if (m.lotNumber) {
+                      const sheetExtra = m.sheetName && m.sheetName !== m.lotNumber ? ` (${m.sheetName})` : '';
+                      label = `${m.lotNumber}${sheetExtra} • ${m.filename}`;
+                    } else if (m.sheetName) {
+                      label = `Sheet: ${m.sheetName} • ${m.filename}`;
+                    } else {
+                      label = m.filename;
+                    }
+                    return (
+                      <option key={m.id} value={m.id}>
+                        📄 {label} — {m.itemCount} books
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+            )}
           </div>
 
-          {manifest && manifest.totalCount > 0 && (
-            <button
-              onClick={handleClearManifest}
-              className="inline-flex items-center space-x-1 px-3 py-2 rounded-xl text-xs font-bold text-rose-700 bg-gradient-to-b from-rose-50 to-red-50/60 hover:from-rose-100 hover:to-rose-50 border border-rose-200/80 transition-colors shadow-xs cursor-pointer"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Clear Manifest</span>
-            </button>
-          )}
+          {/* Delete actions */}
+          <div className="flex items-center space-x-2">
+            {selectedManifestId !== 'all' && (
+              <button
+                onClick={() => handleDeleteManifest(selectedManifestId)}
+                className="inline-flex items-center space-x-1 px-3 py-2 rounded-xl text-xs font-bold text-amber-800 bg-gradient-to-b from-amber-50 to-amber-100/60 hover:from-amber-100 hover:to-amber-50 border border-amber-300 transition-colors shadow-xs cursor-pointer"
+                title="Remove only the selected manifest file from history"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Remove Selected</span>
+              </button>
+            )}
+
+            {manifest && manifest.totalCount > 0 && (
+              <button
+                onClick={handleClearAllManifests}
+                className="inline-flex items-center space-x-1 px-3 py-2 rounded-xl text-xs font-bold text-rose-700 bg-gradient-to-b from-rose-50 to-red-50/60 hover:from-rose-100 hover:to-rose-50 border border-rose-200/80 transition-colors shadow-xs cursor-pointer"
+                title="Clear all manifests database"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear All</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Paste Area (Collapsible) */}
@@ -522,7 +642,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
             <div className="flex justify-end space-x-2">
               <button
                 onClick={() => setShowPasteArea(false)}
-                className="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-200/70"
+                className="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-200/70 cursor-pointer"
               >
                 Cancel
               </button>
@@ -545,7 +665,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search manifest by ISBN, title, lot, box, or ISSN..."
+              placeholder="Search manifest by ISBN, title, lot, box, sheet, or file..."
               className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-brand-500"
             />
           </div>
@@ -557,7 +677,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
                 filterType === 'all' ? 'bg-brand-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              All ({items.length})
+              All ({currentManifestItems.length})
             </button>
             <button
               onClick={() => setFilterType('processable')}
@@ -565,7 +685,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
                 filterType === 'processable' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
               }`}
             >
-              Processable ({manifest?.processableCount || 0})
+              Processable ({displayProcessable})
             </button>
             <button
               onClick={() => setFilterType('non_processable')}
@@ -573,7 +693,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
                 filterType === 'non_processable' ? 'bg-rose-600 text-white' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
               }`}
             >
-              Blocked ({manifest?.nonProcessableCount || 0})
+              Blocked ({displayNonProcessable})
             </button>
           </div>
         </div>
@@ -597,12 +717,12 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
                 <colgroup>
                   <col style={{ width: '4%' }} />   {/* # */}
                   <col style={{ width: '13%' }} />  {/* ISBN / Barcode */}
-                  <col style={{ width: '8%' }} />   {/* Lot No. */}
+                  <col style={{ width: '9%' }} />   {/* Lot No. */}
                   <col style={{ width: '8%' }} />   {/* Box No. */}
-                  <col style={{ width: '26%' }} />  {/* Journal Title */}
+                  <col style={{ width: '25%' }} />  {/* Journal Title */}
                   <col style={{ width: '13%' }} />  {/* Vol • Issue • Year */}
                   <col style={{ width: '8%' }} />   {/* Print ISSN */}
-                  <col style={{ width: '11%' }} />  {/* Publisher / Remarks */}
+                  <col style={{ width: '11%' }} />  {/* Publisher / File */}
                   <col style={{ width: '9%' }} />   {/* Status */}
                 </colgroup>
                 <thead>
@@ -614,7 +734,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
                     <th className="py-2.5 px-3">Journal Title</th>
                     <th className="py-2.5 px-3">Vol &bull; Issue &bull; Year</th>
                     <th className="py-2.5 px-3">Print ISSN</th>
-                    <th className="py-2.5 px-3">Publisher / Remarks</th>
+                    <th className="py-2.5 px-3">Source / Remarks</th>
                     <th className="py-2.5 px-3 text-center">Status</th>
                   </tr>
                 </thead>
@@ -652,8 +772,12 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
                         {item.printIssn || '—'}
                       </td>
                       <td className="py-2 px-3 text-slate-500 text-[11px]">
-                        <div className="truncate" title={item.publisher || item.notes}>
-                          {item.publisher || item.notes || '—'}
+                        <div className="truncate" title={item.manifestFilename ? `${item.manifestFilename}${item.sheetName ? ` (${item.sheetName})` : ''} • ${item.publisher || item.notes || ''}` : (item.publisher || item.notes || '—')}>
+                          {item.sheetName ? (
+                            <span className="text-brand-600 font-semibold">{item.sheetName}</span>
+                          ) : (
+                            item.publisher || item.notes || item.manifestFilename || '—'
+                          )}
                         </div>
                       </td>
                       <td className="py-2 px-3 text-center shrink-0">

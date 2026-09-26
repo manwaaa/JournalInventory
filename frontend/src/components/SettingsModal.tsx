@@ -11,9 +11,6 @@ import {
   Loader2, 
   AlertCircle, 
   CheckCircle2, 
-  Package, 
-  BookOpen, 
-  Layers, 
   Network, 
   Camera, 
   ArrowLeftRight,
@@ -21,13 +18,12 @@ import {
   FlipHorizontal,
   FlipVertical
 } from 'lucide-react';
-import { CameraDevice, StationRole, SystemConfig } from '../types';
+import { CameraDevice, SystemConfig } from '../types';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   config?: SystemConfig | null;
-  currentStationRole?: StationRole;
   devices?: CameraDevice[];
   boxCameraDeviceId?: string;
   bookCameraDeviceId?: string;
@@ -38,7 +34,6 @@ interface SettingsModalProps {
   onRotationChange?: (deg: number) => void;
   onFlipHorizontalChange?: (flip: boolean) => void;
   onFlipVerticalChange?: (flip: boolean) => void;
-  onStationRoleChange?: (role: StationRole) => void;
   onBoxCameraChange?: (id: string) => void;
   onBookCameraChange?: (id: string) => void;
   onAutoSwitchCameraChange?: (enabled: boolean) => void;
@@ -49,7 +44,6 @@ interface SettingsModalProps {
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
-  currentStationRole = 'box_level',
   devices = [],
   boxCameraDeviceId = '',
   bookCameraDeviceId = '',
@@ -60,7 +54,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onRotationChange,
   onFlipHorizontalChange,
   onFlipVerticalChange,
-  onStationRoleChange,
   onBoxCameraChange,
   onBookCameraChange,
   onAutoSwitchCameraChange,
@@ -74,7 +67,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     imageQuality: 0.95,
     cameraResolution: '1080p',
     enforceManifest: false,
-    stationRole: currentStationRole,
     s3Enabled: false,
     s3Bucket: '',
     s3Region: 'us-east-1',
@@ -83,7 +75,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     s3Prefix: 'journal-proofs/',
     s3CustomEndpoint: ''
   });
-  const [selectedRole, setSelectedRole] = useState<StationRole>(currentStationRole);
   const [selectedBoxCam, setSelectedBoxCam] = useState<string>(boxCameraDeviceId);
   const [selectedBookCam, setSelectedBookCam] = useState<string>(bookCameraDeviceId);
   const [selectedAutoSwitch, setSelectedAutoSwitch] = useState<boolean>(autoSwitchCamera);
@@ -100,12 +91,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         .then((data) => setConfig(data))
         .catch((err) => console.error('Error fetching config:', err));
       
-      setSelectedRole(currentStationRole);
       setSelectedBoxCam(boxCameraDeviceId || (devices[0]?.deviceId ?? ''));
       setSelectedBookCam(bookCameraDeviceId || (devices[1]?.deviceId ?? devices[0]?.deviceId ?? ''));
       setSelectedAutoSwitch(autoSwitchCamera);
     }
-  }, [isOpen, currentStationRole, boxCameraDeviceId, bookCameraDeviceId, autoSwitchCamera, devices]);
+  }, [isOpen, boxCameraDeviceId, bookCameraDeviceId, autoSwitchCamera, devices]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -116,7 +106,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...config,
-          stationRole: selectedRole,
           boxCameraDeviceId: selectedBoxCam,
           bookCameraDeviceId: selectedBookCam,
           autoSwitchCamera: selectedAutoSwitch
@@ -126,7 +115,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       if (onBoxCameraChange) onBoxCameraChange(selectedBoxCam);
       if (onBookCameraChange) onBookCameraChange(selectedBookCam);
       if (onAutoSwitchCameraChange) onAutoSwitchCameraChange(selectedAutoSwitch);
-      if (onStationRoleChange) onStationRoleChange(selectedRole);
 
       if (res.ok) {
         const data = await res.json();
@@ -234,119 +222,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </p>
           </div>
 
-          {/* Workstation Workflow Role (PC 1 vs PC 2 vs Full Station) */}
-          <div className="p-4 rounded-xl border border-blue-200 bg-gradient-to-r from-blue-50/70 to-indigo-50/50 space-y-3">
-            <div className="flex items-center space-x-2 pb-1 border-b border-blue-100">
-              <Network className="w-4 h-4 text-brand-700" />
-              <span className="font-bold text-slate-800 text-xs">Workstation Role & Workflow Option</span>
-            </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-              {/* Option 1: PC 1 (Box Only 1-2) */}
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedRole('box_level');
-                }}
-                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-                  selectedRole === 'box_level'
-                    ? 'bg-gradient-to-br from-blue-50 to-white border-blue-500 ring-2 ring-blue-500/20 shadow-md'
-                    : 'bg-white/70 border-slate-200 hover:bg-white'
-                }`}
-              >
-                <div className="flex items-center space-x-2 mb-1.5">
-                  <div className={`p-1.5 rounded-lg ${selectedRole === 'box_level' ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'}`}>
-                    <Package className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <span className="text-xs font-extrabold text-blue-900 block">PC 1 (Box Only)</span>
-                    <span className="text-[10px] font-semibold text-blue-600">Shots 1 & 2</span>
-                  </div>
-                </div>
-                <p className="text-[11px] text-slate-600 leading-snug">
-                  Takes <b>Shot 1 (Box A)</b> and <b>Shot 2 (Box B)</b>, then moves to next box.
-                </p>
-              </button>
-
-              {/* Option 2: PC 2 (Book Only 3-7) */}
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedRole('book_level');
-                }}
-                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-                  selectedRole === 'book_level'
-                    ? 'bg-gradient-to-br from-indigo-50 to-white border-indigo-500 ring-2 ring-indigo-500/20 shadow-md'
-                    : 'bg-white/70 border-slate-200 hover:bg-white'
-                }`}
-              >
-                <div className="flex items-center space-x-2 mb-1.5">
-                  <div className={`p-1.5 rounded-lg ${selectedRole === 'book_level' ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600'}`}>
-                    <BookOpen className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <span className="text-xs font-extrabold text-indigo-900 block">PC 2 (Book Only)</span>
-                    <span className="text-[10px] font-semibold text-indigo-600">Shots 3 to 7</span>
-                  </div>
-                </div>
-                <p className="text-[11px] text-slate-600 leading-snug">
-                  Inherits Shots 1 & 2 from PC 1, captures <b>Shots 3 to 7</b> per journal.
-                </p>
-              </button>
-
-              {/* Option 3: Full Station (Box + Books 1-7) */}
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedRole('all_in_one');
-                }}
-                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-                  selectedRole === 'all_in_one'
-                    ? 'bg-gradient-to-br from-emerald-50 to-white border-emerald-500 ring-2 ring-emerald-500/20 shadow-md'
-                    : 'bg-white/70 border-slate-200 hover:bg-white'
-                }`}
-              >
-                <div className="flex items-center space-x-2 mb-1.5">
-                  <div className={`p-1.5 rounded-lg ${selectedRole === 'all_in_one' ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-600'}`}>
-                    <Layers className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <span className="text-xs font-extrabold text-emerald-900 block">Full (Box & Books)</span>
-                    <span className="text-[10px] font-semibold text-emerald-600">Shots 1 to 7</span>
-                  </div>
-                </div>
-                <p className="text-[11px] text-slate-600 leading-snug">
-                  Performs full 1–7 sequence on this PC. Run PC 1 & PC 2 in parallel for 2x speed!
-                </p>
-              </button>
-
-              {/* Option 4: Box + Spine (Shots 1, 2, 4) */}
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedRole('box_spine');
-                }}
-                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-                  selectedRole === 'box_spine'
-                    ? 'bg-gradient-to-br from-violet-50 to-white border-violet-500 ring-2 ring-violet-500/20 shadow-md'
-                    : 'bg-white/70 border-slate-200 hover:bg-white'
-                }`}
-              >
-                <div className="flex items-center space-x-2 mb-1.5">
-                  <div className={`p-1.5 rounded-lg ${selectedRole === 'box_spine' ? 'bg-violet-600 text-white' : 'bg-violet-50 text-violet-600'}`}>
-                    <Package className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <span className="text-xs font-extrabold text-violet-900 block">Box + Spine</span>
-                    <span className="text-[10px] font-semibold text-violet-600">Shots 1, 2 &amp; 4 only</span>
-                  </div>
-                </div>
-                <p className="text-[11px] text-slate-600 leading-snug">
-                  Captures only <b>Box A</b> (1), <b>Box B</b> (2), and <b>Spine</b> (4). Skips front cover, title page, edition notice &amp; back cover.
-                </p>
-              </button>
-            </div>
-          </div>
 
           {/* Multi-PC LAN Peer Synchronization Section */}
           <div className="p-4 rounded-xl border border-sky-200 bg-gradient-to-r from-sky-50/70 to-blue-50/40 space-y-3">

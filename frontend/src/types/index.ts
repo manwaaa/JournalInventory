@@ -107,6 +107,18 @@ export interface ProofItem {
   metadata?: JournalMetadata | null;
 }
 
+export interface ManifestFileEntry {
+  id: string;
+  filename: string;
+  sheetName?: string;
+  lotNumber?: string;
+  importedAt: string;
+  itemCount: number;
+  processableCount: number;
+  nonProcessableCount: number;
+  lotNumbers: string[];
+}
+
 export interface ManifestItem {
   sNo?: string;
   isbn: string;
@@ -123,10 +135,14 @@ export interface ManifestItem {
   reason?: string;
   notes?: string;
   importedAt?: string;
+  manifestId?: string;
+  manifestFilename?: string;
+  sheetName?: string;
 }
 
 export interface ManifestData {
   items: ManifestItem[];
+  manifests?: ManifestFileEntry[];
   totalCount: number;
   processableCount: number;
   nonProcessableCount: number;
