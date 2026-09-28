@@ -32,6 +32,7 @@ import { useCamera } from './hooks/useCamera';
 import { useBarcodeScanner } from './hooks/useBarcodeScanner';
 import { useSoundEffects } from './hooks/useSoundEffects';
 import { useSessionSync } from './hooks/useSessionSync';
+import { useS3Sync } from './hooks/useS3Sync';
 
 import { 
   CaptureStep, 
@@ -213,7 +214,12 @@ export function App() {
   }, [fetchBoxesList]);
 
   // Multi-device SSE Synchronization
-  const { resetRemoteSession } = useSessionSync({
+  const { 
+    resetRemoteSession,
+    isConnected: isPeerConnected,
+    lastEvent: lastPeerEvent,
+    lastHeartbeat: lastPeerHeartbeat
+  } = useSessionSync({
     onSessionSync: useCallback((event: SessionEvent) => {
       if (event.type === 'CONNECTED') {
         if (event.session?.activeIsbn && currentStep === 'SCAN_ISBN' && !activeIsbn) {
@@ -396,6 +402,14 @@ export function App() {
       }
     }, [currentStep, stationRole, activeIsbn, boxNumber, fetchStatus, fetchBoxesList, playAudioCue])
   });
+
+  // AWS S3 Cloud Background Sync Monitor & Control
+  const {
+    status: s3Status,
+    isManualSyncing: isS3ManualSyncing,
+    syncFeedback: s3SyncFeedback,
+    triggerSyncAll: triggerS3SyncAll,
+  } = useS3Sync(5000);
 
   useEffect(() => {
     fetchStatus();
@@ -1130,9 +1144,9 @@ export function App() {
   }
 
   return (
-    <div className="min-h-screen ambient-bg flex flex-col font-sans">
+    <div className="min-h-screen ambient-bg flex flex-col font-sans transition-colors duration-300">
       
-      {/* Top Navbar */}
+      {/* Top Navbar with LAN Peer & S3 Cloud Sync Status Indicators */}
       <Navbar
         viewMode={viewMode}
         setViewMode={setViewMode}
@@ -1196,7 +1210,7 @@ export function App() {
           <div className="w-full space-y-6 animate-page-transition">
             
             {/* Card 1: Receiving & Verification Setup */}
-            <div className="white-card rounded-2xl p-6 space-y-4 transition-all duration-300">
+            <div className="white-card rounded-2xl p-6 space-y-4 transition-all duration-300 dark:border-slate-800">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 
                 {/* Left: Icon, Title & Details */}
@@ -1214,22 +1228,22 @@ export function App() {
                   </div>
                   <div className="space-y-0.5">
                     <div className="flex items-center space-x-2">
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-blue-400">
                         RECEIVING & VERIFICATION
                       </span>
                       <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border shadow-xs transition-all duration-300 ${
                         stationRole === 'box_level' 
-                          ? 'bg-blue-50 text-blue-800 border-blue-300 ring-2 ring-blue-500/10'
+                          ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-800 ring-2 ring-blue-500/10'
                           : stationRole === 'book_level'
-                            ? 'bg-indigo-50 text-indigo-800 border-indigo-300 ring-2 ring-indigo-500/10'
+                            ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-300 border-indigo-300 dark:border-indigo-800 ring-2 ring-indigo-500/10'
                             : stationRole === 'box_spine'
-                              ? 'bg-violet-50 text-violet-800 border-violet-300 ring-2 ring-violet-500/10'
-                              : 'bg-emerald-50 text-emerald-800 border-emerald-300 ring-2 ring-emerald-500/10'
+                              ? 'bg-violet-50 dark:bg-violet-950/60 text-violet-800 dark:text-violet-300 border-violet-300 dark:border-violet-800 ring-2 ring-violet-500/10'
+                              : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800 ring-2 ring-emerald-500/10'
                       }`}>
                         {stationRole === 'box_level' ? '📦 PC 1: Station 1 (Box Level)' : stationRole === 'book_level' ? '📖 PC 2: Station 2 (Book Level)' : stationRole === 'box_spine' ? '📦🔖 Station: Box + Spine (1, 2, 4)' : '⚡ Full Station (Box + Books)'}
                       </span>
                     </div>
-                    <h3 className="text-base font-extrabold text-slate-900 transition-all duration-300">
+                    <h3 className="text-base font-extrabold text-slate-900 dark:text-white transition-all duration-300">
                       {stationRole === 'box_level' 
                         ? 'PC 1: Select or Scan Box to Photograph (Shot 1: Box A & Shot 2: Box B)' 
                         : stationRole === 'book_level'
@@ -1238,7 +1252,7 @@ export function App() {
                             ? 'Box + Spine Capture: Photograph Box A, Box B, and Spine only'
                             : 'Full Station: Complete Verification (Shots 1 to 7)'}
                     </h3>
-                    <p className="text-xs text-slate-500 transition-all duration-300">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 transition-all duration-300">
                       {stationRole === 'box_level'
                         ? 'Photograph Box A and Box B once. All journals in this box will automatically inherit these photos on PC 2.'
                         : stationRole === 'book_level'
@@ -1253,19 +1267,19 @@ export function App() {
                 {/* Right: Manifest Status Indicator & Box Stats */}
                 <div className="flex flex-wrap items-center gap-2">
                   {boxesList.length > 0 && (
-                    <span className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-800 border border-blue-200 shadow-xs">
-                      <Package className="w-3.5 h-3.5 text-blue-600" />
+                    <span className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-blue-50 dark:bg-slate-800 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-slate-700 shadow-xs">
+                      <Package className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                       <span>{boxesList.length} Boxes Detected</span>
                     </span>
                   )}
                   {manifestCount > 0 && (
                     <button
                       onClick={() => setManifestModalOpen(true)}
-                      className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-gradient-to-r from-emerald-50 to-teal-50 text-emerald-700 border border-emerald-300 shadow-xs hover:bg-emerald-100 transition-colors cursor-pointer"
+                      className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/40 dark:to-teal-950/30 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 shadow-xs hover:bg-emerald-100 transition-colors cursor-pointer"
                       title="View Active Manifest"
                     >
                       <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                       <span>Manifest Active ({manifestCount} items)</span>
                     </button>
                   )}
@@ -1275,9 +1289,9 @@ export function App() {
 
               {/* PC 1 Dedicated Box Selector Bar */}
               {stationRole === 'box_level' && boxesList.length > 0 && (
-                <div className="p-3 bg-blue-50/70 border border-blue-200/80 rounded-2xl flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-                  <div className="flex items-center space-x-2 text-xs font-bold text-brand-800 shrink-0">
-                    <Package className="w-4 h-4 text-brand-600" />
+                <div className="p-3 bg-blue-50/70 dark:bg-slate-800/80 border border-blue-200/80 dark:border-slate-700 rounded-2xl flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                  <div className="flex items-center space-x-2 text-xs font-bold text-brand-800 dark:text-blue-300 shrink-0">
+                    <Package className="w-4 h-4 text-brand-600 dark:text-blue-400" />
                     <span>Quick Select Box:</span>
                   </div>
                   <select
@@ -1288,7 +1302,7 @@ export function App() {
                       const [l, b] = val.split('__');
                       handleSelectBox(l, b);
                     }}
-                    className="flex-1 bg-white text-slate-800 font-medium text-xs rounded-xl px-3 py-2 border border-blue-300 outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer shadow-xs"
+                    className="flex-1 bg-white dark:bg-slate-900 text-slate-800 dark:text-white font-medium text-xs rounded-xl px-3 py-2 border border-blue-300 dark:border-slate-700 outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer shadow-xs"
                   >
                     <option value="">-- Choose a Box from Manifest ({boxesList.length} boxes available) --</option>
                     {boxesList.map((b) => (
@@ -1334,7 +1348,7 @@ export function App() {
               >
                 {/* Lot Number (Read-Only / Auto from Manifest) */}
                 <div className="sm:w-44 shrink-0">
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 mb-1 flex items-center justify-between">
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 dark:text-blue-400 mb-1 flex items-center justify-between">
                     <span>LOT NUMBER</span>
                     <span className="text-[9px] font-medium text-slate-400">Auto</span>
                   </label>
@@ -1345,7 +1359,7 @@ export function App() {
                       readOnly
                       placeholder="Auto (Manifest)"
                       title="Lot Number is automatically loaded from your uploaded manifest"
-                      className="w-full pl-4 pr-8 py-2.5 text-xs font-bold font-mono text-brand-900 bg-blue-50/50 border border-blue-200/70 rounded-full outline-none cursor-not-allowed placeholder:text-slate-400 placeholder:font-normal select-all shadow-inner"
+                      className="w-full pl-4 pr-8 py-2.5 text-xs font-bold font-mono text-brand-900 dark:text-blue-300 bg-blue-50/50 dark:bg-blue-950/40 border border-blue-200/70 dark:border-blue-900/50 rounded-full outline-none cursor-not-allowed placeholder:text-slate-400 placeholder:font-normal select-all shadow-inner"
                     />
                     <Lock className="w-3.5 h-3.5 text-brand-400 absolute right-3 pointer-events-none" />
                   </div>
@@ -1353,7 +1367,7 @@ export function App() {
 
                 {/* Box Number (Read-Only / Auto from Manifest) */}
                 <div className="sm:w-44 shrink-0">
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 mb-1 flex items-center justify-between">
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 dark:text-blue-400 mb-1 flex items-center justify-between">
                     <span>BOX NUMBER</span>
                     <span className="text-[9px] font-medium text-slate-400">Auto</span>
                   </label>
@@ -1364,7 +1378,7 @@ export function App() {
                       readOnly
                       placeholder="Auto (Manifest)"
                       title="Box Number is automatically loaded from your uploaded manifest"
-                      className="w-full pl-4 pr-8 py-2.5 text-xs font-bold font-mono text-indigo-900 bg-indigo-50/50 border border-indigo-200/70 rounded-full outline-none cursor-not-allowed placeholder:text-slate-400 placeholder:font-normal select-all shadow-inner"
+                      className="w-full pl-4 pr-8 py-2.5 text-xs font-bold font-mono text-indigo-900 dark:text-indigo-300 bg-indigo-50/50 dark:bg-indigo-950/40 border border-indigo-200/70 dark:border-indigo-900/50 rounded-full outline-none cursor-not-allowed placeholder:text-slate-400 placeholder:font-normal select-all shadow-inner"
                     />
                     <Lock className="w-3.5 h-3.5 text-indigo-400 absolute right-3 pointer-events-none" />
                   </div>
@@ -1372,7 +1386,7 @@ export function App() {
 
                 {/* ISBN Scan Input */}
                 <div className="flex-1">
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 mb-1">
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-brand-600 dark:text-blue-400 mb-1">
                     {stationRole === 'box_level' ? 'SCAN ANY ISBN IN BOX OR TYPE BOX' : 'JOURNAL ISBN / BARCODE'}
                   </label>
                   <div className="relative">
@@ -1437,7 +1451,7 @@ export function App() {
                         }
                       }}
                       placeholder={stationRole === 'box_level' ? "Scan any book barcode from box to auto-select box..." : "Scan barcode or type ISBN (e.g. 9780132350884)..."}
-                      className="w-full pl-10 pr-24 py-2.5 text-xs font-mono text-slate-900 input-smooth rounded-full outline-none placeholder:text-slate-400"
+                      className="w-full pl-10 pr-24 py-2.5 text-xs font-mono text-slate-900 dark:text-white input-smooth rounded-full outline-none placeholder:text-slate-400"
                     />
                     {isbnInput && (
                       <button
@@ -1446,7 +1460,7 @@ export function App() {
                           setIsbnInput('');
                           isbnInputRef.current?.focus();
                         }}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 rounded-md transition-colors cursor-pointer"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-md transition-colors cursor-pointer"
                       >
                         <X className="w-3.5 h-3.5" />
                       </button>
@@ -1468,59 +1482,59 @@ export function App() {
 
               {/* Bibliographic Info Row & Auto-Matched Lot/Box if ISBN is Active */}
               {activeIsbn && (
-                <div className="pt-3 border-t border-blue-100 flex flex-wrap items-center justify-between gap-2">
+                <div className="pt-3 border-t border-blue-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     {/* Auto-detected Lot and Box Badges */}
                     {lotNumber && (
-                      <span className="inline-flex items-center gap-1 font-bold text-brand-800 bg-blue-50 border border-blue-200 px-2.5 py-0.5 rounded-lg shadow-xs font-mono">
+                      <span className="inline-flex items-center gap-1 font-bold text-brand-800 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 px-2.5 py-0.5 rounded-lg shadow-xs font-mono">
                         {lotNumber}
                       </span>
                     )}
                     {boxNumber && (
-                      <span className="inline-flex items-center gap-1 font-bold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2.5 py-0.5 rounded-lg shadow-xs font-mono">
+                      <span className="inline-flex items-center gap-1 font-bold text-indigo-800 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 px-2.5 py-0.5 rounded-lg shadow-xs font-mono">
                         Box: {boxNumber}
                       </span>
                     )}
 
-                    <div className="flex flex-wrap items-center gap-1.5 text-slate-700">
-                      <BookOpen className="w-4 h-4 text-brand-700 shrink-0" />
+                    <div className="flex flex-wrap items-center gap-1.5 text-slate-700 dark:text-slate-300">
+                      <BookOpen className="w-4 h-4 text-brand-700 dark:text-blue-400 shrink-0" />
                       {isLookingUpMeta ? (
-                        <span className="text-slate-500 animate-pulse">Looking up journal details...</span>
+                        <span className="text-slate-500 dark:text-slate-400 animate-pulse">Looking up journal details...</span>
                       ) : bookDetails?.title ? (
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="font-bold text-slate-800">
+                          <span className="font-bold text-slate-800 dark:text-white">
                             {bookDetails.title} {bookDetails.authors ? `— ${bookDetails.authors}` : ''}
                           </span>
                           {bookDetails.volume && (
-                            <span className="px-1.5 py-0.2 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-semibold">
+                            <span className="px-1.5 py-0.2 rounded bg-blue-50 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 text-[10px] font-semibold">
                               Vol: {bookDetails.volume}
                             </span>
                           )}
                           {bookDetails.issues && (
-                            <span className="px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-semibold">
+                            <span className="px-1.5 py-0.2 rounded bg-indigo-50 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 text-[10px] font-semibold">
                               Issue: {bookDetails.issues}
                             </span>
                           )}
                           {bookDetails.publishYear && (
-                            <span className="px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-semibold">
+                            <span className="px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 text-[10px] font-semibold">
                               {bookDetails.publishYear}
                             </span>
                           )}
                           {bookDetails.printIssn && (
-                            <span className="px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-mono font-semibold">
+                            <span className="px-1.5 py-0.2 rounded bg-emerald-50 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[10px] font-mono font-semibold">
                               ISSN: {bookDetails.printIssn}
                             </span>
                           )}
                         </div>
                       ) : (
-                        <span className="text-slate-500 font-mono">Target: {activeIsbn}</span>
+                        <span className="text-slate-500 dark:text-slate-400 font-mono">Target: {activeIsbn}</span>
                       )}
                     </div>
                   </div>
 
                   <button
                     onClick={() => handleProcessIsbn(activeIsbn, true)}
-                    className="text-[11px] font-bold text-brand-700 hover:underline flex items-center space-x-1 shrink-0 cursor-pointer"
+                    className="text-[11px] font-bold text-brand-700 dark:text-blue-400 hover:underline flex items-center space-x-1 shrink-0 cursor-pointer"
                   >
                     <Plus className="w-3 h-3" />
                     <span>Add Another Copy</span>

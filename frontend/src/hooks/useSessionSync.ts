@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { SessionEvent } from '../types';
 
 interface UseSessionSyncOptions {
@@ -8,6 +8,10 @@ interface UseSessionSyncOptions {
 
 export function useSessionSync({ onSessionSync, enabled = true }: UseSessionSyncOptions = {}) {
   const eventSourceRef = useRef<EventSource | null>(null);
+  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [lastEvent, setLastEvent] = useState<SessionEvent | null>(null);
+  const [lastHeartbeat, setLastHeartbeat] = useState<Date | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -20,10 +24,23 @@ export function useSessionSync({ onSessionSync, enabled = true }: UseSessionSync
         es = new EventSource('/api/session/stream');
         eventSourceRef.current = es;
 
+        es.onopen = () => {
+          setIsConnected(true);
+          setConnectionError(null);
+          setLastHeartbeat(new Date());
+        };
+
         es.onmessage = (event) => {
           try {
-            if (!event.data || event.data.startsWith(':')) return; // ignore heartbeat
+            setLastHeartbeat(new Date());
+            setIsConnected(true);
+            setConnectionError(null);
+
+            if (!event.data || event.data.startsWith(':')) return; // ignore heartbeat comments
+            
             const data: SessionEvent = JSON.parse(event.data);
+            setLastEvent(data);
+
             if (onSessionSync) {
               onSessionSync(data);
             }
@@ -33,14 +50,17 @@ export function useSessionSync({ onSessionSync, enabled = true }: UseSessionSync
         };
 
         es.onerror = () => {
+          setIsConnected(false);
+          setConnectionError('Reconnecting to LAN peer session...');
           if (es) {
             es.close();
           }
           // Attempt auto-reconnect after 3s
           reconnectTimeout = setTimeout(connect, 3000);
         };
-      } catch (err) {
-        console.warn('SSE connection error:', err);
+      } catch (err: any) {
+        setIsConnected(false);
+        setConnectionError(err.message || 'SSE connection error');
         reconnectTimeout = setTimeout(connect, 4000);
       }
     };
@@ -50,23 +70,28 @@ export function useSessionSync({ onSessionSync, enabled = true }: UseSessionSync
     return () => {
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
       if (es) es.close();
+      setIsConnected(false);
     };
   }, [enabled, onSessionSync]);
 
   const resetRemoteSession = useCallback(async (opts?: { clearBoxContext?: boolean; lotNumber?: string; boxNumber?: string }) => {
     try {
-      await fetch('/api/session/reset', {
+      const res = await fetch('/api/session/reset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(opts || {})
       });
+      return await res.json();
     } catch (err) {
       console.error('Failed to reset remote session:', err);
     }
   }, []);
 
   return {
+    isConnected,
+    lastEvent,
+    lastHeartbeat,
+    connectionError,
     resetRemoteSession
   };
 }
-

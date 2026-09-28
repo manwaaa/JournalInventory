@@ -9,25 +9,29 @@ import {
   Table,
   Package,
   BookOpen,
-  Layers
+  Layers,
 } from 'lucide-react';
-import { StationRole, SystemStatus, ViewMode } from '../types';
+import { StationRole, SystemStatus, ViewMode, SessionEvent, NavbarProps, S3SyncStatus } from '../types';
+import { SyncStatusIndicators } from './SyncStatusIndicators';
 
-interface NavbarProps {
-  viewMode: ViewMode;
-  setViewMode: (m: ViewMode) => void;
-  stationRole: StationRole;
-  setStationRole: (r: StationRole) => void;
-  systemStatus: SystemStatus | null;
-  manifestItemCount: number;
-  onOpenQuickSearch?: () => void;
-  onOpenManifestModal: () => void;
-  onOpenSettings: () => void;
-  onOpenStorageFolder: () => void;
-  onOpenMobilePairing: () => void;
-}
+export type { NavbarProps };
 
-export const Navbar: React.FC<NavbarProps> = ({
+const defaultS3Status: S3SyncStatus = {
+  s3Configured: false,
+  queueSize: 0,
+  progress: {
+    isSyncing: false,
+    totalPending: 0,
+    completedCount: 0,
+    failedCount: 0,
+    currentIsbn: null,
+    lastSyncAt: null,
+    lastError: null,
+  },
+  isLoading: false,
+};
+
+export function Navbar({
   viewMode,
   setViewMode,
   stationRole,
@@ -38,7 +42,15 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenSettings,
   onOpenStorageFolder,
   onOpenMobilePairing,
-}) => {
+  isPeerConnected = false,
+  lastPeerEvent = null,
+  lastPeerHeartbeat = null,
+  onResetRemoteSession,
+  s3Status = defaultS3Status,
+  isS3ManualSyncing = false,
+  s3SyncFeedback = null,
+  onTriggerS3Sync = async () => {},
+}: NavbarProps) {
   return (
     <header className="sticky top-0 z-30 w-full glass-panel border-b border-blue-100/90 transition-colors shadow-[0_4px_16px_rgba(24,62,142,0.03)]">
       <div className="w-full px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4 relative">
@@ -171,21 +183,35 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         )}
 
-        {/* Far Right: View Toggle, Manifest, Live Sync & Tools */}
-        <div className="flex items-center space-x-2 sm:space-x-3 shrink-0 z-10">
+        {/* Far Right: View Toggle, Live Sync Indicators, Manifest & Tools */}
+        <div className="flex items-center space-x-2 sm:space-x-2.5 shrink-0 z-10">
+
+          {/* Real-Time LAN Peer & AWS S3 Sync Status Indicators */}
+          <SyncStatusIndicators
+            isPeerConnected={isPeerConnected}
+            lastPeerEvent={lastPeerEvent}
+            lastPeerHeartbeat={lastPeerHeartbeat}
+            stationRole={stationRole}
+            onResetRemoteSession={onResetRemoteSession}
+            s3Status={s3Status}
+            isS3ManualSyncing={isS3ManualSyncing}
+            s3SyncFeedback={s3SyncFeedback}
+            onTriggerS3Sync={onTriggerS3Sync}
+            onOpenSettings={onOpenSettings}
+          />
 
           {/* View Mode Toggle: Capture vs Search & View */}
           <div className="flex items-center bg-gradient-to-r from-blue-50/80 to-indigo-50/60 p-1 rounded-xl border border-blue-100 shadow-xs">
             <button
               onClick={() => setViewMode('CAPTURE')}
-              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
                 viewMode === 'CAPTURE'
                   ? 'btn-primary-gradient text-white shadow-md shadow-brand-500/25 scale-[1.02]'
                   : 'text-slate-600 hover:text-brand-700 hover:bg-white/60'
               }`}
             >
               <Camera className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Capture Mode</span>
+              <span className="hidden sm:inline">Capture</span>
             </button>
             <button
               onClick={() => setViewMode('SEARCH_VIEW')}
@@ -196,7 +222,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               }`}
             >
               <Table className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Search & View</span>
+              <span className="hidden sm:inline">Catalog</span>
             </button>
           </div>
 
@@ -219,7 +245,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             onClick={onOpenMobilePairing}
             title="Connect Phone Camera (Wireless)"
-            className="p-2 text-slate-600 hover:text-brand-700 rounded-xl hover:bg-blue-50 border border-transparent hover:border-blue-100 transition-all"
+            className="p-2 text-slate-600 hover:text-brand-700 rounded-xl hover:bg-blue-50 border border-transparent hover:border-blue-100 transition-all cursor-pointer"
           >
             <Smartphone className="w-4 h-4" />
           </button>
@@ -228,7 +254,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             onClick={onOpenStorageFolder}
             title="Open C:\Journal_Proofs in Windows Explorer"
-            className="p-2 text-slate-600 hover:text-brand-700 rounded-xl hover:bg-blue-50 border border-transparent hover:border-blue-100 transition-all"
+            className="p-2 text-slate-600 hover:text-brand-700 rounded-xl hover:bg-blue-50 border border-transparent hover:border-blue-100 transition-all cursor-pointer"
           >
             <FolderOpen className="w-4 h-4 text-amber-500" />
           </button>
@@ -236,8 +262,8 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Settings */}
           <button
             onClick={onOpenSettings}
-            title="System Settings"
-            className="p-2 text-slate-600 hover:text-brand-700 rounded-xl hover:bg-blue-50 border border-transparent hover:border-blue-100 transition-all"
+            title="System Settings & AWS S3 Configuration"
+            className="p-2 text-slate-600 hover:text-brand-700 rounded-xl hover:bg-blue-50 border border-transparent hover:border-blue-100 transition-all cursor-pointer"
           >
             <Settings className="w-4 h-4" />
           </button>
@@ -247,4 +273,6 @@ export const Navbar: React.FC<NavbarProps> = ({
       </div>
     </header>
   );
-};
+}
+
+export default Navbar;

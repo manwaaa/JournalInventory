@@ -333,3 +333,45 @@ export const SHOT_DEFINITIONS: ShotConfig[] = [
     instructions: 'Capture flat, clear shot of the back of the journal showing barcodes and summary'
   }
 ];
+
+export interface S3SyncProgress {
+  isSyncing: boolean;
+  totalPending: number;
+  completedCount: number;
+  failedCount: number;
+  currentIsbn: string | null;
+  lastSyncAt: string | null;
+  lastError: string | null;
+}
+
+export interface S3SyncStatus {
+  s3Configured: boolean;
+  queueSize: number;
+  progress: S3SyncProgress;
+  isLoading: boolean;
+}
+
+export interface NavbarProps {
+  viewMode: ViewMode;
+  setViewMode: (m: ViewMode) => void;
+  stationRole: StationRole;
+  setStationRole: (r: StationRole) => void;
+  systemStatus: SystemStatus | null;
+  manifestItemCount: number;
+  onOpenQuickSearch?: () => void;
+  onOpenManifestModal: () => void;
+  onOpenSettings: () => void;
+  onOpenStorageFolder: () => void;
+  onOpenMobilePairing: () => void;
+
+  // Multi-PC LAN Peer & AWS S3 Sync indicators
+  isPeerConnected?: boolean;
+  lastPeerEvent?: SessionEvent | null;
+  lastPeerHeartbeat?: Date | null;
+  onResetRemoteSession?: (opts?: { clearBoxContext?: boolean; lotNumber?: string; boxNumber?: string }) => Promise<any>;
+  s3Status?: S3SyncStatus;
+  isS3ManualSyncing?: boolean;
+  s3SyncFeedback?: string | null;
+  onTriggerS3Sync?: (force?: boolean) => Promise<void>;
+}
+
