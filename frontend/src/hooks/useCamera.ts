@@ -116,6 +116,18 @@ export function useCamera() {
     localStorage.setItem('journal_auto_switch_camera', String(enabled));
   }, []);
 
+  const boxCameraDeviceIdRef = useRef<string>(boxCameraDeviceId);
+  boxCameraDeviceIdRef.current = boxCameraDeviceId;
+
+  const bookCameraDeviceIdRef = useRef<string>(bookCameraDeviceId);
+  bookCameraDeviceIdRef.current = bookCameraDeviceId;
+
+  const selectedDeviceIdRef = useRef<string>(selectedDeviceId);
+  selectedDeviceIdRef.current = selectedDeviceId;
+
+  const cameraErrorRef = useRef<string | null>(cameraError);
+  cameraErrorRef.current = cameraError;
+
   // Load available video devices
   const updateDeviceList = useCallback(async () => {
     try {
@@ -133,19 +145,23 @@ export function useCamera() {
       setDevices(videoDevs);
 
       if (videoDevs.length > 0) {
+        const curBox = boxCameraDeviceIdRef.current;
+        const curBook = bookCameraDeviceIdRef.current;
+        const curSelected = selectedDeviceIdRef.current;
+
         // Auto-assign default box camera (Cam 1) and book camera (Cam 2) if not already set
-        if (!boxCameraDeviceId || !videoDevs.some(d => d.deviceId === boxCameraDeviceId)) {
+        if (!curBox || !videoDevs.some(d => d.deviceId === curBox)) {
           setBoxCameraDeviceId(videoDevs[0].deviceId);
         }
         if (videoDevs.length > 1) {
-          if (!bookCameraDeviceId || !videoDevs.some(d => d.deviceId === bookCameraDeviceId)) {
+          if (!curBook || !videoDevs.some(d => d.deviceId === curBook)) {
             setBookCameraDeviceId(videoDevs[1].deviceId);
           }
-        } else if (!bookCameraDeviceId) {
+        } else if (!curBook) {
           setBookCameraDeviceId(videoDevs[0].deviceId);
         }
 
-        if (!selectedDeviceId || !videoDevs.some(d => d.deviceId === selectedDeviceId)) {
+        if (!curSelected || !videoDevs.some(d => d.deviceId === curSelected)) {
           setSelectedDeviceId(videoDevs[0].deviceId);
           localStorage.setItem('journal_active_camera_id', videoDevs[0].deviceId);
         }
@@ -153,7 +169,7 @@ export function useCamera() {
     } catch (err: any) {
       console.error('Error enumerating cameras:', err);
     }
-  }, [boxCameraDeviceId, bookCameraDeviceId, selectedDeviceId, setBoxCameraDeviceId, setBookCameraDeviceId]);
+  }, [setBoxCameraDeviceId, setBookCameraDeviceId]);
 
   // Attach media stream to video element safely and reliably
   const attachStreamToVideo = useCallback((stream: MediaStream) => {
@@ -263,10 +279,8 @@ export function useCamera() {
       setIsStreaming(false);
       if (err.name === 'NotAllowedError') {
         setCameraError('Camera access was denied. Please allow camera permissions in your browser.');
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        setCameraError('No camera found. Please plug in a USB webcam or document camera.');
       } else {
-        setCameraError(`Camera error: ${err.message || 'Unable to open video stream'}`);
+        setCameraError('Camera is off or not detected. Please plug in or turn on your camera hardware.');
       }
     }
   }, [attachStreamToVideo, updateDeviceList]);
@@ -278,6 +292,44 @@ export function useCamera() {
     localStorage.setItem('journal_active_camera_id', newDeviceId);
     startCamera(newDeviceId);
   }, [startCamera]);
+
+  // Ensure camera stream is actively connected and playing on video element (no blackouts)
+  const ensureStreamPlaying = useCallback(() => {
+    const stream = streamRef.current;
+    const video = videoRef.current;
+
+    // 1. If stream does not exist or video track has stopped/ended
+    if (!stream) {
+      if (!cameraErrorRef.current) {
+        startCamera(selectedDeviceIdRef.current);
+      }
+      return;
+    }
+
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack || videoTrack.readyState === 'ended') {
+      console.warn('[useCamera] Video track ended. Restarting camera stream...');
+      startCamera(selectedDeviceIdRef.current);
+      return;
+    }
+
+    // 2. If stream exists and is live, ensure video element has srcObject and is actively playing
+    if (video) {
+      if (video.srcObject !== stream) {
+        attachStreamToVideo(stream);
+      } else if (video.paused) {
+        video.play().catch((playErr: any) => {
+          if (playErr.name !== 'AbortError') {
+            console.warn('[useCamera] Video play resume error:', playErr);
+          }
+        });
+      }
+      setIsStreaming(true);
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setResolution({ width: video.videoWidth, height: video.videoHeight });
+      }
+    }
+  }, [startCamera, attachStreamToVideo]);
 
   // Quick switch toggle between Box Camera (Cam 1) and Book Camera (Cam 2)
   const quickSwitchCamera = useCallback(() => {
@@ -406,15 +458,36 @@ export function useCamera() {
     };
   }, [isStreaming, rotation, flipHorizontal, flipVertical]);
 
+  // Initialize / switch camera when selectedDeviceId changes
   useEffect(() => {
     startCamera(selectedDeviceId);
+  }, [selectedDeviceId, startCamera]);
+
+  // Window visibility and focus recovery + stream health check
+  useEffect(() => {
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        ensureStreamPlaying();
+      }
+    };
+
+    // Periodic heartbeat to prevent black screen or frozen camera frames
+    const heartbeatTimer = setInterval(() => {
+      ensureStreamPlaying();
+    }, 2000);
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
 
     return () => {
+      clearInterval(heartbeatTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
       }
     };
-  }, []);
+  }, [ensureStreamPlaying]);
 
   return {
     videoRef,
@@ -446,6 +519,7 @@ export function useCamera() {
     toggleTorch,
     startCamera,
     switchCamera,
-    captureSnapshot
+    captureSnapshot,
+    ensureStreamPlaying
   };
 }

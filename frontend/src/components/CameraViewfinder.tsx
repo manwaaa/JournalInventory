@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, RefreshCw, AlertCircle, Zap, ZapOff, ArrowRight, Package, ArrowLeftRight, Check, CheckCircle2, RotateCcw, RotateCw, FlipHorizontal, FlipVertical } from 'lucide-react';
+import { Camera, CameraOff, RefreshCw, AlertCircle, Zap, ZapOff, ArrowRight, Package, ArrowLeftRight, Check, CheckCircle2, RotateCcw, RotateCw, FlipHorizontal, FlipVertical } from 'lucide-react';
 import { CameraDevice, CaptureStep, SHOT_DEFINITIONS, StationRole } from '../types';
 
 interface CameraViewfinderProps {
@@ -34,6 +34,7 @@ interface CameraViewfinderProps {
   onToggleFlipH?: () => void;
   onToggleFlipV?: () => void;
   onResetOrientation?: () => void;
+  onEnsureStream?: () => void;
 }
 
 export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
@@ -67,9 +68,18 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   onRotate,
   onToggleFlipH,
   onToggleFlipV,
-  onResetOrientation
+  onResetOrientation,
+  onEnsureStream
 }) => {
   const [triggerFlash, setTriggerFlash] = useState<boolean>(false);
+
+  // When viewfinder mounts or becomes visible, verify video stream is playing
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video && video.paused && video.srcObject) {
+      video.play().catch(() => {});
+    }
+  }, [videoRef]);
 
   // Keyboard shortcut listener for 'C' (swap cameras)
   useEffect(() => {
@@ -99,6 +109,9 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   const shotNum = isStepCaptureActive ? parseInt(currentStep.replace('CAPTURE_SHOT_', ''), 10) : 1;
   const currentDef = SHOT_DEFINITIONS.find(d => d.shotNumber === shotNum) || SHOT_DEFINITIONS[0];
   const isRetaking = isStepCaptureActive && Boolean(shots?.[shotNum]);
+
+  const isCameraUnavailable = Boolean(cameraError) || (!isStreaming && devices.length === 0);
+  const errorMessage = cameraError || 'Camera is off or not detected. Please plug in or turn on your camera hardware.';
 
   const isBoxStationFinished = stationRole === 'box_level' && isBoxLevelDone;
 
@@ -169,10 +182,15 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
                 </button>
               )}
             </>
-          ) : (
+          ) : devices.length === 1 ? (
             <div className="bg-black/70 backdrop-blur-md text-white text-xs px-3 py-1.5 rounded-xl border border-white/20 flex items-center space-x-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span className="font-semibold">Live Camera</span>
+              <span className="font-semibold">{devices[0]?.label || 'Live Camera'}</span>
+            </div>
+          ) : (
+            <div className="bg-red-950/80 backdrop-blur-md text-red-300 text-xs px-3 py-1.5 rounded-xl border border-red-500/40 flex items-center space-x-1.5">
+              <span className="w-2 h-2 rounded-full bg-red-500"></span>
+              <span className="font-semibold">No Camera</span>
             </div>
           )}
         </div>
@@ -293,7 +311,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             transformOrigin: 'center center'
           }}
           className={`w-full h-full object-contain transition-transform duration-300 ease-out ${
-            cameraError ? 'opacity-0' : 'opacity-100'
+            isCameraUnavailable ? 'opacity-0' : 'opacity-100'
           }`}
         />
 
@@ -301,8 +319,34 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           <div className="absolute inset-0 bg-white z-30 animate-shutter-flash pointer-events-none" />
         )}
 
-        {/* Overlay for PC 1 when Box Level (1 & 2) is finished */}
-        {isBoxStationFinished && (
+        {/* Camera Unavailable Overlay */}
+        {isCameraUnavailable ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-30 bg-slate-950/95 backdrop-blur-md animate-fade-in">
+            <div className="max-w-md bg-gradient-to-b from-red-950/90 to-slate-950/90 border border-red-500/50 rounded-2xl p-6 text-red-200 shadow-2xl shadow-red-950/50 space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-red-500/20 text-red-400 border border-red-500/30 flex items-center justify-center mx-auto shadow-inner">
+                <CameraOff className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="font-extrabold text-base text-white tracking-wide">Camera Unavailable</h4>
+                <p className="text-xs text-red-300 mt-1.5 leading-relaxed">{errorMessage}</p>
+              </div>
+              <div className="pt-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onEnsureStream) onEnsureStream();
+                    onSwitchCamera(selectedDeviceId);
+                  }}
+                  className="inline-flex items-center space-x-2 px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-red-600/30 transition-all active:scale-95 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Retry Camera Stream</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : isBoxStationFinished ? (
+          /* Overlay for PC 1 when Box Level (1 & 2) is finished */
           <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm z-25 flex flex-col items-center justify-center p-6 text-center animate-fade-in">
             <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 text-white flex items-center justify-center shadow-xl shadow-blue-500/30 mb-3 animate-bounce">
               <Package className="w-7 h-7" />
@@ -343,10 +387,8 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               )}
             </div>
           </div>
-        )}
-
-        {/* Overlay when All Verification Shots are Completed */}
-        {currentStep === 'COMPLETE' && !isBoxStationFinished && (
+        ) : currentStep === 'COMPLETE' ? (
+          /* Overlay when All Verification Shots are Completed */
           <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm z-25 flex flex-col items-center justify-center p-6 text-center animate-fade-in">
             <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 text-white flex items-center justify-center shadow-xl shadow-emerald-500/30 mb-3 animate-bounce">
               <CheckCircle2 className="w-8 h-8" />
@@ -367,10 +409,8 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               </button>
             )}
           </div>
-        )}
-
-        {/* Overlay for PC 2 while waiting for PC 1 to capture Box A & Box B */}
-        {stationRole === 'book_level' && !hasBoxShots && (currentStep === 'CAPTURE_SHOT_1' || currentStep === 'CAPTURE_SHOT_2') && (
+        ) : stationRole === 'book_level' && !hasBoxShots && (currentStep === 'CAPTURE_SHOT_1' || currentStep === 'CAPTURE_SHOT_2') ? (
+          /* Overlay for PC 2 while waiting for PC 1 to capture Box A & Box B */
           <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-xs z-25 flex flex-col items-center justify-center p-6 text-center animate-fade-in">
             <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-blue-500 text-white flex items-center justify-center shadow-xl shadow-indigo-500/30 mb-3 animate-pulse">
               <Package className="w-7 h-7" />
@@ -386,24 +426,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               <span>Listening for live Box sync...</span>
             </div>
           </div>
-        )}
-
-        {cameraError && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-20 bg-slate-950/90 backdrop-blur-sm">
-            <div className="max-w-md bg-red-950/90 border border-red-500/50 rounded-2xl p-5 text-red-200 shadow-2xl">
-              <AlertCircle className="w-8 h-8 text-red-400 mx-auto mb-2" />
-              <h4 className="font-bold text-sm text-white mb-1">Camera Unavailable</h4>
-              <p className="text-xs text-red-300 mb-3">{cameraError}</p>
-              <button
-                onClick={() => onSwitchCamera(selectedDeviceId)}
-                className="inline-flex items-center space-x-1.5 px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-semibold text-xs rounded-xl transition-colors cursor-pointer"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Retry Camera Stream</span>
-              </button>
-            </div>
-          </div>
-        )}
+        ) : null}
       </div>
 
       {/* Bottom Shutter Capture Bar */}
