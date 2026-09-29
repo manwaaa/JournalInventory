@@ -16,6 +16,10 @@ interface CameraViewfinderProps {
   onToggleAutoSwitch?: () => void;
   onCapture: () => void;
   onRetakeShot?: (shotNumber: number) => void;
+  onCancelRetake?: () => void;
+  canUndo?: boolean;
+  onUndo?: () => void;
+  undoLabel?: string;
   currentStep: CaptureStep;
   resolution: { width: number; height: number };
   isCapturing: boolean;
@@ -51,6 +55,10 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   onToggleAutoSwitch,
   onCapture,
   onRetakeShot,
+  onCancelRetake,
+  canUndo,
+  onUndo,
+  undoLabel,
   currentStep,
   resolution,
   isCapturing,
@@ -381,7 +389,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
                   onClick={onNextJournal}
                   className="flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs text-white btn-primary-gradient shadow-lg shadow-brand-500/30 hover:scale-105 active:scale-95 transition-all cursor-pointer"
                 >
-                  <span>Proceed to Next Box (Enter ↵)</span>
+                  <span>Proceed to Next Box</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               )}
@@ -397,14 +405,14 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               Verification Photos Completed!
             </h3>
             <p className="text-xs text-emerald-200 max-w-sm mb-4 leading-relaxed">
-              All required photos are saved. Press <b className="text-white">Enter ↵</b> on your keyboard or click below to verify the next book.
+              All required photos are saved. Click below to verify the next journal.
             </p>
             {onNextJournal && (
               <button
                 onClick={onNextJournal}
                 className="flex items-center space-x-2 px-7 py-3 rounded-xl font-bold text-sm text-white btn-primary-gradient shadow-xl shadow-brand-500/30 hover:scale-105 active:scale-95 transition-all cursor-pointer ring-2 ring-white/30"
               >
-                <span>Proceed to Next Book (Enter ↵)</span>
+                <span>{stationRole === 'box_level' ? 'Proceed to Next Box' : 'Proceed to Next Journal'}</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             )}
@@ -458,18 +466,42 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             </div>
           </div>
 
-          <button
-            onClick={handleCaptureClick}
-            disabled={!isStreaming || isCapturing}
-            className={`flex items-center justify-center space-x-2 px-7 py-2.5 rounded-xl font-bold text-sm transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 cursor-pointer ${
-              isRetaking
-                ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black border border-amber-300 ring-2 ring-amber-400 shadow-lg shadow-amber-500/40'
-                : 'btn-primary-gradient text-white'
-            }`}
-          >
-            <Camera className="w-4 h-4" />
-            <span>{isCapturing ? 'Saving to PC...' : isRetaking ? `Retake Shot ${shotNum} (Replace)` : `Take Shot ${shotNum}`}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {isRetaking && onCancelRetake && (
+              <button
+                onClick={onCancelRetake}
+                type="button"
+                className="px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-all active:scale-95 cursor-pointer"
+              >
+                Cancel Retake
+              </button>
+            )}
+
+            {canUndo && onUndo && !isRetaking && (
+              <button
+                onClick={onUndo}
+                type="button"
+                title="Undo last capture (Ctrl+Z)"
+                className="px-3 py-2.5 rounded-xl text-xs font-semibold text-amber-300 bg-amber-950/60 hover:bg-amber-900/60 border border-amber-800/80 transition-all active:scale-95 cursor-pointer flex items-center space-x-1"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Undo</span>
+              </button>
+            )}
+
+            <button
+              onClick={handleCaptureClick}
+              disabled={!isStreaming || isCapturing}
+              className={`flex items-center justify-center space-x-2 px-7 py-2.5 rounded-xl font-bold text-sm transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 cursor-pointer ${
+                isRetaking
+                  ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black border border-amber-300 ring-2 ring-amber-400 shadow-lg shadow-amber-500/40'
+                  : 'btn-primary-gradient text-white'
+              }`}
+            >
+              <Camera className="w-4 h-4" />
+              <span>{isCapturing ? 'Saving to PC...' : isRetaking ? `Retake Shot ${shotNum} (Replace)` : `Take Shot ${shotNum}`}</span>
+            </button>
+          </div>
         </div>
       )}
 

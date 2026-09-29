@@ -252,14 +252,23 @@ export interface CaptureSession {
   isProcessable: boolean;
 }
 
+export interface UndoHistoryAction {
+  shotNumber: number;
+  wasRetake: boolean;
+  previousShotInfo?: ShotInfo | null;
+  previousStep?: CaptureStep;
+  timestamp?: number;
+}
+
 export interface SessionEvent {
-  type: 'CONNECTED' | 'ISBN_INITIALIZED' | 'SHOT_SAVED' | 'SESSION_RESET' | 'MANIFEST_UPDATED' | 'BOX_INITIALIZED' | 'BOX_SHOT_SAVED' | 'S3_AUTO_UPLOADED';
+  type: 'CONNECTED' | 'ISBN_INITIALIZED' | 'SHOT_SAVED' | 'SESSION_RESET' | 'MANIFEST_UPDATED' | 'BOX_INITIALIZED' | 'BOX_SHOT_SAVED' | 'S3_AUTO_UPLOADED' | 'SHOT_UNDO';
   session: CaptureSession;
   isbn?: string;
   lotNumber?: string;
   boxNumber?: string;
   shotNumber?: number;
   shotInfo?: ShotInfo;
+  wasRetake?: boolean;
   boxShots?: any;
   boxSummary?: BoxSummary;
   isComplete?: boolean;

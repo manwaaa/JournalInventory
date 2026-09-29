@@ -1792,6 +1792,14 @@ async function saveBoxShotToFile(lotNumber, boxNumber, shotNumber, buffer, blurS
 
   const filename = shotNumber === 1 ? 'shot_1_box_a.jpg' : 'shot_2_box_b.jpg';
   const filePath = path.join(boxDir, filename);
+
+  // Backup existing file before overwrite for undo capability
+  if (fs.existsSync(filePath) && isValidImageFile(filePath)) {
+    try {
+      await fs.copy(filePath, path.join(boxDir, `.bak_${filename}`));
+    } catch (e) {}
+  }
+
   await fs.writeFile(filePath, buffer);
 
   const metaPath = path.join(boxDir, 'box_meta.json');
@@ -1803,6 +1811,10 @@ async function saveBoxShotToFile(lotNumber, boxNumber, shotNumber, buffer, blurS
   };
   if (fs.existsSync(metaPath)) {
     try { meta = fs.readJsonSync(metaPath); } catch (e) {}
+  }
+  if (meta.shots && meta.shots[shotNumber]) {
+    meta._backups = meta._backups || {};
+    meta._backups[shotNumber] = { ...meta.shots[shotNumber] };
   }
   meta.updatedAt = new Date().toISOString();
   meta.shots = meta.shots || {};
@@ -2248,6 +2260,16 @@ app.post('/api/capture/save-shot', async (req, res) => {
     const filename = getShotFilename(sNum, cleanIsbn);
     const filePath = path.join(folderPath, filename);
 
+    // Detect if this shot already exists (Retake scenario) and create backup for Undo capability
+    const existingFilename = findShotFileInFolder(folderPath, sNum, cleanIsbn);
+    let wasRetake = false;
+    if (existingFilename && isValidImageFile(path.join(folderPath, existingFilename))) {
+      wasRetake = true;
+      try {
+        await fs.copy(path.join(folderPath, existingFilename), path.join(folderPath, `.bak_${filename}`));
+      } catch (e) {}
+    }
+
     // Save image buffer to disk
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
@@ -2276,6 +2298,11 @@ app.post('/api/capture/save-shot', async (req, res) => {
       bookDetails: bookDetails || null,
       shots: {}
     };
+
+    if (wasRetake && metadata.shots && metadata.shots[sNum]) {
+      metadata._backups = metadata._backups || {};
+      metadata._backups[sNum] = { ...metadata.shots[sNum] };
+    }
 
     metadata.lotNumber = resolvedLot;
     metadata.boxNumber = resolvedBox;
@@ -2312,6 +2339,15 @@ app.post('/api/capture/save-shot', async (req, res) => {
     currentSession.metadata = metadata;
     if (bookDetails) currentSession.bookDetails = bookDetails;
 
+    // Track in session undo history
+    if (!currentSession.undoHistory) currentSession.undoHistory = [];
+    currentSession.undoHistory.push({
+      isbn: cleanIsbn,
+      shotNumber: sNum,
+      wasRetake,
+      timestamp: Date.now()
+    });
+
     // Calculate next step
     let nextStep = 'COMPLETE';
     for (let s = 1; s <= 7; s++) {
@@ -2328,6 +2364,7 @@ app.post('/api/capture/save-shot', async (req, res) => {
       isbn: cleanIsbn,
       shotNumber: sNum,
       shotInfo: newShotInfo,
+      wasRetake,
       isComplete: totalShots >= 7,
       currentStep: nextStep,
       session: currentSession,
@@ -2411,6 +2448,7 @@ app.post('/api/capture/save-shot', async (req, res) => {
       success: true,
       isbn: cleanIsbn,
       shotNumber: sNum,
+      wasRetake,
       filename,
       filePath,
       relativeUrl: `/proofs/${encodeURIComponent(cleanIsbn)}/${filename}`,
@@ -2422,6 +2460,155 @@ app.post('/api/capture/save-shot', async (req, res) => {
   } catch (err) {
     console.error('Error saving shot:', err);
     res.status(500).json({ error: 'Failed to save photo to disk', details: err.message });
+  }
+});
+
+// Undo a captured or retaken shot (Reverts to previous image or cancels capture)
+app.post('/api/capture/undo-shot', async (req, res) => {
+  try {
+    const { isbn, shotNumber } = req.body;
+    const cleanIsbn = sanitizeIsbn(isbn || currentSession.activeIsbn);
+    if (!cleanIsbn) {
+      return res.status(400).json({ error: 'Active ISBN required for undo' });
+    }
+
+    const folderPath = path.join(config.storagePath, cleanIsbn);
+    let metadata = readIsbnMetadata(cleanIsbn) || currentSession.metadata;
+
+    let sNum = shotNumber ? parseInt(shotNumber, 10) : null;
+    let lastHistoryItem = null;
+
+    if (!sNum) {
+      if (currentSession.undoHistory && currentSession.undoHistory.length > 0) {
+        for (let i = currentSession.undoHistory.length - 1; i >= 0; i--) {
+          if (currentSession.undoHistory[i].isbn === cleanIsbn) {
+            lastHistoryItem = currentSession.undoHistory.splice(i, 1)[0];
+            sNum = lastHistoryItem.shotNumber;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!sNum && metadata?.shots) {
+      const shotNums = Object.keys(metadata.shots).map(n => parseInt(n, 10)).filter(n => !isNaN(n));
+      if (shotNums.length > 0) {
+        sNum = Math.max(...shotNums);
+      }
+    }
+
+    if (!sNum) {
+      return res.status(400).json({ error: 'No shot available to undo for this journal' });
+    }
+
+    const shotDef = SHOT_DEFINITIONS[sNum];
+    const shotFilename = getShotFilename(sNum, cleanIsbn);
+    const targetFilePath = path.join(folderPath, shotFilename);
+    const backupName = `.bak_${shotFilename}`;
+    const backupPath = path.join(folderPath, backupName);
+
+    let wasRetake = false;
+    let restoredShotInfo = null;
+
+    if (fs.existsSync(backupPath) && isValidImageFile(backupPath)) {
+      // 1. Retake restore: Restore previous image from backup
+      wasRetake = true;
+      await fs.copy(backupPath, targetFilePath);
+      await fs.remove(backupPath);
+
+      const restoredMeta = metadata?._backups?.[sNum] || {
+        filename: shotFilename,
+        savedAt: new Date().toISOString(),
+        type: shotDef?.type || `Shot ${sNum}`,
+        scope: shotDef?.scope || 'book_level'
+      };
+
+      if (metadata) {
+        metadata.shots = metadata.shots || {};
+        metadata.shots[sNum] = restoredMeta;
+        if (metadata._backups) delete metadata._backups[sNum];
+        metadata.updatedAt = new Date().toISOString();
+        const totalShots = Object.keys(metadata.shots).length;
+        metadata.isComplete = totalShots >= 7;
+        await saveIsbnMetadata(cleanIsbn, metadata);
+      }
+
+      restoredShotInfo = {
+        filename: shotFilename,
+        savedAt: new Date().toISOString(),
+        type: shotDef?.type || `Shot ${sNum}`,
+        scope: shotDef?.scope || 'book_level',
+        previewDataUrl: `/proofs/${encodeURIComponent(cleanIsbn)}/${encodeURIComponent(shotFilename)}?t=${Date.now()}`
+      };
+
+      if (currentSession.shots) {
+        currentSession.shots[sNum] = restoredShotInfo;
+        currentSession.metadata = metadata;
+      }
+    } else {
+      // 2. Accidental new capture undo: delete file and remove from metadata
+      const foundFile = findShotFileInFolder(folderPath, sNum, cleanIsbn);
+      if (foundFile) {
+        const delPath = path.join(folderPath, foundFile);
+        if (fs.existsSync(delPath)) await fs.remove(delPath);
+      }
+      if (fs.existsSync(targetFilePath)) {
+        await fs.remove(targetFilePath);
+      }
+
+      if (metadata?.shots?.[sNum]) {
+        delete metadata.shots[sNum];
+        metadata.updatedAt = new Date().toISOString();
+        const totalShots = Object.keys(metadata.shots).length;
+        metadata.isComplete = totalShots >= 7;
+        await saveIsbnMetadata(cleanIsbn, metadata);
+      }
+
+      if (currentSession.shots) {
+        currentSession.shots[sNum] = null;
+        currentSession.metadata = metadata;
+      }
+    }
+
+    // Determine target step after undo
+    let newStep = `CAPTURE_SHOT_${sNum}`;
+    if (wasRetake) {
+      let allFilled = true;
+      for (let s = 1; s <= 7; s++) {
+        if (!currentSession.shots?.[s]) {
+          allFilled = false;
+          newStep = `CAPTURE_SHOT_${s}`;
+          break;
+        }
+      }
+      if (allFilled) newStep = 'COMPLETE';
+    }
+    currentSession.currentStep = newStep;
+
+    broadcastSession('SHOT_UNDO', {
+      isbn: cleanIsbn,
+      shotNumber: sNum,
+      wasRetake,
+      restoredShotInfo,
+      currentStep: newStep,
+      session: currentSession
+    });
+
+    res.json({
+      success: true,
+      restored: true,
+      wasRetake,
+      shotNumber: sNum,
+      currentStep: newStep,
+      shots: currentSession.shots,
+      metadata,
+      message: wasRetake 
+        ? `Restored previous photo for Shot ${sNum} (${shotDef?.type || ''})` 
+        : `Undid capture for Shot ${sNum} (${shotDef?.type || ''}). Ready to capture again.`
+    });
+  } catch (err) {
+    console.error('Error undoing shot:', err);
+    res.status(500).json({ error: 'Failed to undo shot', details: err.message });
   }
 });
 
@@ -2638,6 +2825,73 @@ app.post('/api/boxes/save-shot', async (req, res) => {
       shotNumber: sNum,
       filename,
       boxShots
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Undo Shot 1 (Box A) or Shot 2 (Box B) for Box-level capture
+app.post('/api/boxes/undo-shot', async (req, res) => {
+  try {
+    const { lotNumber, boxNumber, shotNumber } = req.body;
+    const sNum = parseInt(shotNumber, 10);
+    if (!boxNumber || (sNum !== 1 && sNum !== 2)) {
+      return res.status(400).json({ error: 'Valid boxNumber and shotNumber (1 or 2) required' });
+    }
+
+    const key = getBoxKey(lotNumber, boxNumber);
+    if (!key) return res.status(400).json({ error: 'Invalid lot and box' });
+    const boxDir = path.join(config.storagePath, '_boxes', key);
+
+    const filename = sNum === 1 ? 'shot_1_box_a.jpg' : 'shot_2_box_b.jpg';
+    const filePath = path.join(boxDir, filename);
+    const backupPath = path.join(boxDir, `.bak_${filename}`);
+
+    const metaPath = path.join(boxDir, 'box_meta.json');
+    let meta = fs.existsSync(metaPath) ? fs.readJsonSync(metaPath) : null;
+
+    let wasRetake = false;
+
+    if (fs.existsSync(backupPath) && isValidImageFile(backupPath)) {
+      wasRetake = true;
+      await fs.copy(backupPath, filePath);
+      await fs.remove(backupPath);
+      if (meta && meta._backups && meta._backups[sNum]) {
+        meta.shots = meta.shots || {};
+        meta.shots[sNum] = meta._backups[sNum];
+        delete meta._backups[sNum];
+        await fs.writeJson(metaPath, meta, { spaces: 2 });
+      }
+    } else {
+      if (fs.existsSync(filePath)) {
+        await fs.remove(filePath);
+      }
+      if (meta && meta.shots && meta.shots[sNum]) {
+        delete meta.shots[sNum];
+        await fs.writeJson(metaPath, meta, { spaces: 2 });
+      }
+    }
+
+    const boxShots = getBoxShots(lotNumber, boxNumber);
+
+    broadcastSession('BOX_SHOT_SAVED', {
+      lotNumber,
+      boxNumber,
+      shotNumber: sNum,
+      wasRetake,
+      boxShots
+    });
+
+    res.json({
+      success: true,
+      restored: true,
+      wasRetake,
+      lotNumber,
+      boxNumber,
+      shotNumber: sNum,
+      boxShots,
+      message: wasRetake ? `Restored previous photo for Box Shot ${sNum}` : `Undid Box Shot ${sNum}`
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

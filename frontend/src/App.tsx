@@ -50,7 +50,8 @@ import {
   ManifestData,
   ManifestItem,
   SHOT_DEFINITIONS,
-  BOX_SPINE_SHOTS
+  BOX_SPINE_SHOTS,
+  UndoHistoryAction
 } from './types';
 
 export function App() {
@@ -88,6 +89,9 @@ export function App() {
     6: null,
     7: null
   });
+
+  // Undo / Restore History Stack for accidental captures & retakes
+  const [undoHistory, setUndoHistory] = useState<UndoHistoryAction[]>([]);
 
   const [metadata, setMetadata] = useState<JournalMetadata | null>(null);
   const [bookDetails, setBookDetails] = useState<BookDetails | null>(null);
@@ -396,6 +400,13 @@ export function App() {
           setBlurWarning(null);
           setCurrentStep('SCAN_ISBN');
         }
+      } else if (event.type === 'SHOT_UNDO') {
+        if (event.isbn === activeIsbn) {
+          if (event.session?.shots) setShots(event.session.shots);
+          if (event.session?.metadata) setMetadata(event.session.metadata);
+          if (event.currentStep) setCurrentStep(event.currentStep as CaptureStep);
+          playAudioCue('click');
+        }
       } else if (event.type === 'MANIFEST_UPDATED') {
         fetchStatus();
         fetchBoxesList();
@@ -584,6 +595,7 @@ export function App() {
       setDuplicateModal(null);
       setActiveIsbn(data.isbn);
       setIsbnInput(data.isbn);
+      setUndoHistory([]);
 
       lookupMetadata(data.baseIsbn || data.isbn);
 
@@ -803,6 +815,22 @@ export function App() {
         blurScore
       };
 
+      const previousShotInfo = shots[shotNumber] || null;
+      const wasRetake = Boolean(previousShotInfo);
+      const stepBeforeCapture = currentStep;
+
+      // Save undo history for instant revert / retake restore
+      setUndoHistory(prev => [
+        ...prev,
+        {
+          shotNumber,
+          wasRetake,
+          previousShotInfo,
+          previousStep: stepBeforeCapture,
+          timestamp: Date.now()
+        }
+      ]);
+
       const updatedShots = {
         ...shots,
         [shotNumber]: newShotInfo
@@ -829,7 +857,7 @@ export function App() {
       } else if (stationRole === 'box_level' && shotNumber === 2) {
         // Shot 2 is complete on PC 1
         playAudioCue('success');
-        setCurrentStep('CAPTURE_SHOT_3');
+        setCurrentStep('COMPLETE');
         setToastAlert({
           message: `📦 Box level completed for ${activeIsbn}! Shot 1 & 2 saved. PC 2 can now capture book shots.`,
           type: 'info'
@@ -929,6 +957,153 @@ export function App() {
     setCurrentStep(`CAPTURE_SHOT_${shotNumber}` as CaptureStep);
   };
 
+  // Cancel active retake without replacing existing photo
+  const handleCancelRetake = () => {
+    if (!currentStep.startsWith('CAPTURE_SHOT_')) return;
+    const shotNumber = parseInt(currentStep.replace('CAPTURE_SHOT_', ''), 10);
+    if (!shots[shotNumber]) return;
+
+    playAudioCue('click');
+
+    // Find next uncaptured shot for current station role
+    let nextStep: CaptureStep = 'COMPLETE';
+    if (stationRole === 'box_level') {
+      if (!shots[1]) nextStep = 'CAPTURE_SHOT_1';
+      else if (!shots[2]) nextStep = 'CAPTURE_SHOT_2';
+      else nextStep = 'COMPLETE';
+    } else if (stationRole === 'box_spine') {
+      const missing = (BOX_SPINE_SHOTS as readonly number[]).filter(s => !shots[s]);
+      if (missing.length > 0) nextStep = `CAPTURE_SHOT_${missing[0]}` as CaptureStep;
+      else nextStep = 'COMPLETE';
+    } else if (stationRole === 'book_level') {
+      let found = false;
+      for (let s = 3; s <= 7; s++) {
+        if (!shots[s]) {
+          nextStep = `CAPTURE_SHOT_${s}` as CaptureStep;
+          found = true;
+          break;
+        }
+      }
+      if (!found) nextStep = 'COMPLETE';
+    } else {
+      let found = false;
+      for (let s = 1; s <= 7; s++) {
+        if (!shots[s]) {
+          nextStep = `CAPTURE_SHOT_${s}` as CaptureStep;
+          found = true;
+          break;
+        }
+      }
+      if (!found) nextStep = 'COMPLETE';
+    }
+
+    setCurrentStep(nextStep);
+    setToastAlert({
+      message: `Retake cancelled for Shot ${shotNumber} (${SHOT_DEFINITIONS[shotNumber - 1]?.label || ''}). Existing photo kept.`,
+      type: 'info'
+    });
+  };
+
+  // Undo last capture or restore previous photo after accidental retake
+  const handleUndoShot = async (targetShotNumber?: number) => {
+    if (!activeIsbn || isCapturing) return;
+
+    let sNum = targetShotNumber;
+    let lastAction: UndoHistoryAction | undefined;
+
+    if (!sNum) {
+      if (undoHistory.length > 0) {
+        lastAction = undoHistory[undoHistory.length - 1];
+        sNum = lastAction.shotNumber;
+      } else {
+        // Fallback: detect most recently captured or active shot
+        if (currentStep.startsWith('CAPTURE_SHOT_')) {
+          const curr = parseInt(currentStep.replace('CAPTURE_SHOT_', ''), 10);
+          if (shots[curr]) {
+            sNum = curr;
+          } else {
+            for (let s = curr - 1; s >= 1; s--) {
+              if (shots[s]) { sNum = s; break; }
+            }
+          }
+        } else if (currentStep === 'COMPLETE') {
+          for (let s = 7; s >= 1; s--) {
+            if (shots[s]) { sNum = s; break; }
+          }
+        }
+      }
+    }
+
+    if (!sNum) {
+      setToastAlert({
+        message: 'No photo available to undo.',
+        type: 'info'
+      });
+      return;
+    }
+
+    const shotDef = SHOT_DEFINITIONS[sNum - 1];
+    playAudioCue('click');
+
+    try {
+      const res = await fetch('/api/capture/undo-shot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          isbn: activeIsbn,
+          shotNumber: sNum
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to undo shot');
+      }
+
+      // Update frontend shots
+      if (data.wasRetake && data.shots?.[sNum]) {
+        setShots(prev => ({
+          ...prev,
+          [sNum]: data.shots[sNum]
+        }));
+        setToastAlert({
+          message: `↺ Restored previous photo for Shot ${sNum} (${shotDef?.label || ''}).`,
+          type: 'info'
+        });
+      } else {
+        setShots(prev => ({
+          ...prev,
+          [sNum]: null
+        }));
+        setToastAlert({
+          message: `↺ Shot ${sNum} (${shotDef?.label || ''}) undone. Ready to capture again.`,
+          type: 'info'
+        });
+      }
+
+      if (data.metadata) {
+        setMetadata(data.metadata);
+      }
+
+      if (data.currentStep) {
+        setCurrentStep(data.currentStep as CaptureStep);
+      } else {
+        setCurrentStep(`CAPTURE_SHOT_${sNum}` as CaptureStep);
+      }
+
+      // Pop from undo history stack
+      setUndoHistory(prev => prev.slice(0, -1));
+      fetchStatus();
+    } catch (err: any) {
+      console.error('Undo error:', err);
+      setToastAlert({
+        message: err.message || 'Failed to undo shot',
+        type: 'error'
+      });
+      playAudioCue('error');
+    }
+  };
+
   // Incomplete shots warning (Validation 4.1)
   const handleIncompleteWarning = () => {
     let captured = 0;
@@ -958,6 +1133,7 @@ export function App() {
     setActiveIsbn('');
     setIsbnInput('');
     setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
+    setUndoHistory([]);
     setMetadata(null);
     setBookDetails(null);
     setToastAlert(null);
@@ -1045,6 +1221,7 @@ export function App() {
       setActiveBoxSummary(null);
     }
     setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
+    setUndoHistory([]);
     setMetadata(null);
     setBookDetails(null);
     setToastAlert(null);
@@ -1087,8 +1264,10 @@ export function App() {
   isCapturingRef.current = isCapturing;
   const isbnInputRefValue = useRef(isbnInput);
   isbnInputRefValue.current = isbnInput;
+  const undoHistoryRef = useRef(undoHistory);
+  undoHistoryRef.current = undoHistory;
 
-  // Global Keyboard shortcuts: Enter / Space to capture photo; Enter to proceed in 1 press
+  // Global Keyboard shortcuts: Spacebar/Enter to trigger shutter, Ctrl+Z / Z for Undo, Esc for Cancel Retake
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -1096,82 +1275,35 @@ export function App() {
 
       const step = currentStepRef.current;
       const currentShots = shotsRef.current;
-      const role = stationRoleRef.current;
-      const curActiveIsbn = activeIsbnRef.current;
-      const inputVal = (isbnInputRefValue.current || '').trim();
 
-      if (e.key === 'Enter') {
-        // Check if the current station role has completed all required shots:
-        const isBoxDone = role === 'box_level' && Boolean(currentShots[1] && currentShots[2]);
-        const isBoxSpineDone = role === 'box_spine' && Boolean(currentShots[1] && currentShots[2] && currentShots[4]);
-        const isBookDone = role === 'book_level' && Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
-        const isFullDone = Boolean(currentShots[1] && currentShots[2] && currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
-        const hasAllBookShots = Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
+      // 1. Ctrl+Z or Cmd+Z -> Undo / Restore previous photo
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleUndoShot();
+        return;
+      }
 
-        const isSessionFinished = step === 'COMPLETE' || isBoxDone || isBoxSpineDone || isBookDone || (role === 'all_in_one' && (isFullDone || hasAllBookShots));
-
-        // 1. If session is complete / ready for next journal: 1-press Enter proceeds immediately
-        if (isSessionFinished) {
+      // 2. Escape key -> Cancel retake if currently retaking an existing shot
+      if (e.key === 'Escape' && step.startsWith('CAPTURE_SHOT_')) {
+        const shotNum = parseInt(step.replace('CAPTURE_SHOT_', ''), 10);
+        if (currentShots[shotNum]) {
           e.preventDefault();
           e.stopPropagation();
-
-          // If a new / different ISBN was typed into the input, start that new ISBN
-          if (inputVal && inputVal !== curActiveIsbn) {
-            if (document.activeElement instanceof HTMLElement) {
-              document.activeElement.blur();
-            }
-            handleProcessIsbn(inputVal);
-            return;
-          }
-
-          // If a photo save is currently in-flight, queue the transition so it runs immediately when the save finishes
-          if (isCapturingRef.current) {
-            pendingNextRef.current = true;
-            return;
-          }
-
-          // Blur active elements to reset focus
-          if (document.activeElement instanceof HTMLElement) {
-            document.activeElement.blur();
-          }
-
-          // 1 single press of Enter resets and moves to the next journal
-          handleNextJournal();
-          return;
-        }
-
-        // 2. If an ISBN is typed in the input field while in SCAN_ISBN step:
-        if (inputVal && (step === 'SCAN_ISBN' || isInput)) {
-          e.preventDefault();
-          e.stopPropagation();
-          if (document.activeElement instanceof HTMLElement) {
-            document.activeElement.blur();
-          }
-          handleProcessIsbn(inputVal);
-          return;
-        }
-
-        // 3. If photo capture is active: Enter takes the photo
-        if (step.startsWith('CAPTURE_SHOT_')) {
-          e.preventDefault();
-          e.stopPropagation();
-
-          // If a shot is already saving, ignore repeated rapid taps
-          if (isCapturingRef.current) {
-            return;
-          }
-
-          // Automatically blur any active input field
-          if (isInput && document.activeElement instanceof HTMLElement) {
-            document.activeElement.blur();
-          }
-
-          handleCapturePhoto();
+          handleCancelRetake();
           return;
         }
       }
 
-      // Spacebar for camera shutter trigger during active capture
+      // 3. Single key 'z' or 'Z' -> Undo when hands are on keyboard and not in input
+      if ((e.key === 'z' || e.key === 'Z') && !isInput && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleUndoShot();
+        return;
+      }
+
+      // 4. Spacebar for camera shutter trigger during active capture
       if (e.code === 'Space' && step.startsWith('CAPTURE_SHOT_') && !isInput) {
         e.preventDefault();
         e.stopPropagation();
@@ -1183,7 +1315,7 @@ export function App() {
     };
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [handleCapturePhoto, handleNextJournal]);
+  }, [handleCapturePhoto, handleUndoShot, handleCancelRetake]);
 
   // Count captured shots
   let totalCapturedShots = 0;
@@ -1587,6 +1719,10 @@ export function App() {
                   onToggleAutoSwitch={() => setAutoSwitchCamera(!autoSwitchCamera)}
                   onCapture={handleCapturePhoto}
                   onRetakeShot={handleRetakeShot}
+                  onCancelRetake={handleCancelRetake}
+                  canUndo={Boolean(activeIsbn && (undoHistory.length > 0 || Object.values(shots).some(Boolean)))}
+                  onUndo={() => handleUndoShot()}
+                  undoLabel={undoHistory.length > 0 ? `Shot ${undoHistory[undoHistory.length - 1].shotNumber}` : undefined}
                   currentStep={currentStep}
                   resolution={resolution}
                   isCapturing={isCapturing}
@@ -1620,7 +1756,10 @@ export function App() {
                     stationRole={stationRole}
                     boxSummary={activeBoxSummary}
                     currentStep={currentStep}
+                    canUndo={Boolean(activeIsbn && (undoHistory.length > 0 || Object.values(shots).some(Boolean)))}
+                    onUndoShot={handleUndoShot}
                     onRetakeShot={handleRetakeShot}
+                    onCancelRetake={handleCancelRetake}
                     onOpenExplorer={handleOpenExplorer}
                     onDownloadZip={handleDownloadZip}
                     onNextJournal={handleNextJournal}
