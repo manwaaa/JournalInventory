@@ -34,6 +34,8 @@ export function useBarcodeScanner({
       // Enter key submits the barcode buffer
       if (e.key === 'Enter') {
         if (bufferRef.current.length >= minChars) {
+          e.preventDefault();
+          e.stopPropagation();
           const scannedCode = bufferRef.current.trim();
           bufferRef.current = '';
           onScan(scannedCode);

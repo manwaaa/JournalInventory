@@ -451,10 +451,12 @@ export function App() {
   };
 
   const isProcessingIsbnRef = useRef(false);
+  const lastBarcodeScanTimeRef = useRef<number>(0);
 
   // Process ISBN & validate processable status
   const handleProcessIsbn = async (code: string, forceNewCopy: boolean = false, targetIdentifier?: string) => {
     if (!code || !code.trim()) return;
+    lastBarcodeScanTimeRef.current = Date.now();
     if (isProcessingIsbnRef.current) return;
     isProcessingIsbnRef.current = true;
 
@@ -1103,6 +1105,13 @@ export function App() {
       const inputVal = (isbnInputRefValue.current || '').trim();
 
       if (e.key === 'Enter') {
+        // Shield against trailing Enter key sent by physical barcode scanner
+        if (Date.now() - lastBarcodeScanTimeRef.current < 800) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+
         // Check if the current station role has completed all required shots:
         const isBoxDone = role === 'box_level' && Boolean(currentShots[1] && currentShots[2]);
         const isBoxSpineDone = role === 'box_spine' && Boolean(currentShots[1] && currentShots[2] && currentShots[4]);
