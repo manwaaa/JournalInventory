@@ -1015,9 +1015,9 @@ export function App() {
       }
     }
 
-    // Automatically ensure S3 upload is triggered in background
+    // Automatically trigger S3 upload in background ONLY IF the journal verification is 100% complete
     const curIsbn = activeIsbnRef.current || activeIsbn;
-    if (curIsbn) {
+    if (curIsbn && isSessionComplete) {
       fetch('/api/s3/upload-isbn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -1301,6 +1301,17 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     throw new Error(`Folder for ISBN ${cleanIsbn} contains no captured picture files.`);
   }
 
+  // Strictly enforce that the journal verification is complete before uploading to S3
+  const meta = readIsbnMetadata(cleanIsbn);
+  let shotsCount = 0;
+  for (let s = 1; s <= 7; s++) {
+    if (findShotFileInFolder(folderPath, s, cleanIsbn)) shotsCount++;
+  }
+  const isComplete = Boolean(meta && meta.isComplete) || shotsCount >= 7;
+  if (!isComplete && !customConfig.forceUpload) {
+    throw new Error(`Journal verification for ISBN ${cleanIsbn} is incomplete (${shotsCount}/7 shots). Incomplete captures are not uploaded to S3.`);
+  }
+
   const uploadedFiles = [];
   const s3BaseFolderKey = `${prefix}${cleanIsbn}`;
 
@@ -1475,10 +1486,19 @@ async function scanAllPendingJournalsForS3(forceAll = false) {
       }
 
       const meta = readIsbnMetadata(entry);
+
+      // ONLY upload to S3 if the journal verification is 100% COMPLETE (all 7 shots verified)
+      let shotsFound = 0;
+      for (let s = 1; s <= 7; s++) {
+        if (findShotFileInFolder(folderPath, s, entry)) shotsFound++;
+      }
+      const isComplete = (meta && meta.isComplete) || shotsFound >= 7;
+      if (!isComplete && !forceAll) continue;
+
       const hasUploaded = Boolean(meta?.s3Upload?.uploadedAt);
       const uploadedFileCount = meta?.s3Upload?.fileCount || 0;
 
-      // Queue for auto-upload if never uploaded, if new photos were added, or if forced
+      // Queue for S3 upload if complete and not yet uploaded, or if forced
       if (!hasUploaded || imageFiles.length > uploadedFileCount || forceAll) {
         s3SyncQueue.add(entry);
         queuedCount++;
@@ -2354,55 +2374,46 @@ app.post('/api/capture/save-shot', async (req, res) => {
       }
     }
 
-    // Automatic S3 Upload upon completion:
-    // - All 7 shots completed (Full station), OR
-    // - Shots 3-7 completed (Book-level station), OR
-    // - Shots 1, 2, and 4 completed (Box + Spine station)
-    const isBoxSpineComplete = Boolean(
-      metadata.shots[1] && 
-      metadata.shots[2] && 
-      metadata.shots[4]
-    );
-    const isBookComplete = Boolean(
-      metadata.shots[3] && 
-      metadata.shots[4] && 
-      metadata.shots[5] && 
-      metadata.shots[6] && 
-      metadata.shots[7]
-    );
-    const isReadyForS3 = (totalShots >= 7) || isBookComplete || isBoxSpineComplete;
+    // Automatic S3 Upload ONLY upon 100% full verification completion (all 7 shots saved & verified)
+    const isReadyForS3 = (totalShots >= 7) || Boolean(metadata && metadata.isComplete);
 
     if (isReadyForS3 && config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
-      console.log(`[S3 Auto-Upload] Verification capture complete for ${cleanIsbn} (${totalShots} shots saved). Enqueuing background upload...`);
+      console.log(`[S3 Auto-Upload] Verification capture 100% complete for ${cleanIsbn} (${totalShots} shots saved). Enqueuing background upload...`);
       enqueueS3Upload(cleanIsbn);
     }
 
-    // If Shot 1 (Box) or Shot 2 (Unbox), save to box-level storage and replicate to peer PC
+    // If Shot 1 (Box) or Shot 2 (Unbox), save to box-level storage and replicate to peer PC ONLY IF not already captured
     if (sNum === 1 || sNum === 2) {
       if (resolvedBox) {
-        await saveBoxShotToFile(resolvedLot, resolvedBox, sNum, buffer, blurScore);
+        const existingBoxShots = getBoxShots(resolvedLot, resolvedBox);
+        const isAlreadyCaptured = (sNum === 1 && existingBoxShots.hasBoxShot) || (sNum === 2 && existingBoxShots.hasUnboxShot);
 
-        if (!req.body.isReplication && config.peerSyncEnabled && config.peerIp) {
-          replicateBoxShotToPeer({
-            lotNumber: resolvedLot,
-            boxNumber: resolvedBox,
-            shotNumber: sNum,
-            imageBase64,
-            blurScore
-          });
-        }
+        // Do not overwrite existing shared box photos from a regular book capture!
+        if (!isAlreadyCaptured || req.body.forceBoxOverwrite) {
+          await saveBoxShotToFile(resolvedLot, resolvedBox, sNum, buffer, blurScore);
 
-        // Propagate to any other books in this box that are already scanned or in manifest
-        if (manifestData.items && manifestData.items.length > 0) {
-          const normResolvedBox = normalizeBoxString(resolvedBox);
-          const matchingItems = manifestData.items.filter(i => 
-            normalizeBoxString(i.boxNumber) === normResolvedBox
-          );
-          for (const item of matchingItems) {
-            const itemClean = sanitizeIsbn(item.isbn);
-            const itemFolder = path.join(config.storagePath, itemClean);
-            if (fs.existsSync(itemFolder) && itemClean !== cleanIsbn) {
-              await applyBoxShotsToIsbn(itemClean, resolvedLot, resolvedBox, itemFolder);
+          if (!req.body.isReplication && config.peerSyncEnabled && config.peerIp) {
+            replicateBoxShotToPeer({
+              lotNumber: resolvedLot,
+              boxNumber: resolvedBox,
+              shotNumber: sNum,
+              imageBase64,
+              blurScore
+            });
+          }
+
+          // Propagate to any other books in this box that are already scanned or in manifest
+          if (manifestData.items && manifestData.items.length > 0) {
+            const normResolvedBox = normalizeBoxString(resolvedBox);
+            const matchingItems = manifestData.items.filter(i => 
+              normalizeBoxString(i.boxNumber) === normResolvedBox
+            );
+            for (const item of matchingItems) {
+              const itemClean = sanitizeIsbn(item.isbn);
+              const itemFolder = path.join(config.storagePath, itemClean);
+              if (fs.existsSync(itemFolder) && itemClean !== cleanIsbn) {
+                await applyBoxShotsToIsbn(itemClean, resolvedLot, resolvedBox, itemFolder);
+              }
             }
           }
         }
