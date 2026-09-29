@@ -333,6 +333,144 @@ function findManifestItem(identifier) {
   }) || null;
 }
 
+/**
+ * Universal Barcode & ISBN validation, de-duplication, and human-error guard.
+ * Catches:
+ * 1. Exact double-scans: "987456987987456987" -> cleans to "987456987"
+ * 2. Merged scans: multiple ISBNs in one scan -> blocked
+ * 3. Invalid characters/letters: "9z157326", "x3291047", "s9917362" -> blocked
+ * 4. Manifest enforcement: rejects unmanifested barcodes when manifest is loaded
+ */
+function validateAndCleanBarcode(input, manifestItems = []) {
+  if (!input || typeof input !== 'string') {
+    return { valid: false, cleaned: '', original: '', error: 'Barcode/ISBN is required.' };
+  }
+
+  let raw = input.trim();
+  const original = raw;
+
+  // Strip accidental quotes or brackets
+  raw = raw.replace(/^["'\[\(]+|["'\]\)]+$/g, '').trim();
+
+  // 1. Check direct manifest match (accepts whatever is in the uploaded manifest)
+  const directMatch = findManifestItem(raw);
+  if (directMatch) {
+    return {
+      valid: true,
+      cleaned: String(directMatch.isbn).trim(),
+      original,
+      isDoubleScan: false,
+      isMerged: false,
+      manifestMatch: directMatch
+    };
+  }
+
+  // 2. Double-Scan Detection & Auto-Correction (e.g. 987456987987456987)
+  if (raw.length >= 8 && raw.length % 2 === 0) {
+    const halfLen = raw.length / 2;
+    const firstHalf = raw.substring(0, halfLen);
+    const secondHalf = raw.substring(halfLen);
+    if (firstHalf.toLowerCase() === secondHalf.toLowerCase()) {
+      const halfMatch = findManifestItem(firstHalf);
+      return {
+        valid: true,
+        cleaned: halfMatch ? String(halfMatch.isbn).trim() : firstHalf,
+        original,
+        isDoubleScan: true,
+        isMerged: false,
+        manifestMatch: halfMatch || null
+      };
+    }
+  }
+
+  // Double 13-digit EAN/ISBN starting with 978 or 979
+  if (raw.length >= 26) {
+    const m = raw.match(/^(97[89]\d{10})(97[89]\d{10})$/);
+    if (m && m[1] === m[2]) {
+      const halfMatch = findManifestItem(m[1]);
+      return {
+        valid: true,
+        cleaned: halfMatch ? String(halfMatch.isbn).trim() : m[1],
+        original,
+        isDoubleScan: true,
+        isMerged: false,
+        manifestMatch: halfMatch || null
+      };
+    }
+  }
+
+  // 3. Merged scan detection (> 17 characters)
+  if (raw.length > 17) {
+    return {
+      valid: false,
+      cleaned: raw,
+      original,
+      isDoubleScan: false,
+      isMerged: true,
+      error: `Merged barcode error: "${original}" contains multiple scans combined (${raw.length} chars). Please rescan single item.`
+    };
+  }
+
+  // 4. Invalid letter / corrupted character check (e.g. 9z157326, x3291047, s9917362)
+  // Standard barcodes only allow digits, hyphens, and a single trailing 'X' (for ISBN-10 or ISSN)
+  const cleanChars = raw.replace(/[-\s]/g, '');
+  const isValidBarcodeFormat = /^[0-9]+[0-9Xx]?$/.test(cleanChars);
+
+  if (!isValidBarcodeFormat) {
+    return {
+      valid: false,
+      cleaned: raw,
+      original,
+      isDoubleScan: false,
+      isMerged: false,
+      error: `Invalid barcode format: "${original}" contains invalid letters and does not exist in the manifest.`
+    };
+  }
+
+  // 5. Minimum length check
+  if (cleanChars.length < 4) {
+    return {
+      valid: false,
+      cleaned: raw,
+      original,
+      isDoubleScan: false,
+      isMerged: false,
+      error: `Barcode "${original}" is too short (minimum 4 characters).`
+    };
+  }
+
+  // 6. Strict Manifest Validation (if manifest is loaded)
+  if (manifestItems && manifestItems.length > 0) {
+    const match = findManifestItem(cleanChars) || findManifestItem(raw);
+    if (!match) {
+      return {
+        valid: false,
+        cleaned: raw,
+        original,
+        isDoubleScan: false,
+        isMerged: false,
+        error: `ISBN/Barcode "${original}" is not in the uploaded manifest.`
+      };
+    }
+    return {
+      valid: true,
+      cleaned: String(match.isbn).trim(),
+      original,
+      isDoubleScan: false,
+      isMerged: false,
+      manifestMatch: match
+    };
+  }
+
+  return {
+    valid: true,
+    cleaned: raw,
+    original,
+    isDoubleScan: false,
+    isMerged: false
+  };
+}
+
 // Automatically synchronizes and self-heals all metadata files with manifest Lot, Box, and Title info
 async function selfHealAllMetadataWithManifest() {
   if (!manifestData.items || manifestData.items.length === 0 || !fs.existsSync(config.storagePath)) return;
@@ -848,19 +986,30 @@ app.post('/api/manifest/import', async (req, res) => {
 
 app.get('/api/manifest/check/:isbn', (req, res) => {
   const rawIsbn = req.params.isbn;
+  const validation = validateAndCleanBarcode(rawIsbn, manifestData.items);
 
-  if (!manifestData.items || manifestData.items.length === 0) {
-    return res.json({
-      manifestActive: false,
+  if (!validation.valid) {
+    return res.status(400).json({
+      valid: false,
+      error: validation.error,
+      isDoubleScan: Boolean(validation.isDoubleScan),
+      isMerged: Boolean(validation.isMerged),
+      cleaned: validation.cleaned,
+      manifestActive: Boolean(manifestData.items && manifestData.items.length > 0),
       found: false,
-      isProcessable: true
+      isProcessable: false,
+      reason: validation.error
     });
   }
 
-  const match = findManifestItem(rawIsbn);
+  const effectiveIsbn = validation.cleaned;
+  const match = validation.manifestMatch || findManifestItem(effectiveIsbn) || findManifestItem(rawIsbn);
 
   if (match) {
     return res.json({
+      valid: true,
+      cleaned: effectiveIsbn,
+      isDoubleScan: Boolean(validation.isDoubleScan),
       manifestActive: true,
       found: true,
       isProcessable: match.isProcessable,
@@ -869,11 +1018,24 @@ app.get('/api/manifest/check/:isbn', (req, res) => {
     });
   }
 
+  if (manifestData.items && manifestData.items.length > 0) {
+    return res.status(404).json({
+      valid: false,
+      manifestActive: true,
+      found: false,
+      isProcessable: false,
+      error: `ISBN/Barcode "${rawIsbn}" was not found in the uploaded manifest.`,
+      reason: `ISBN "${rawIsbn}" was not found in the uploaded manifest.`
+    });
+  }
+
   return res.json({
-    manifestActive: true,
+    valid: true,
+    cleaned: effectiveIsbn,
+    isDoubleScan: Boolean(validation.isDoubleScan),
+    manifestActive: false,
     found: false,
-    isProcessable: !config.enforceManifest, // if strict enforcement is on, missing = not processable
-    reason: config.enforceManifest ? 'ISBN not found in imported manifest' : ''
+    isProcessable: true
   });
 });
 
@@ -1872,11 +2034,21 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       return res.status(400).json({ error: 'ISBN is required' });
     }
 
-    const cleanBaseIsbn = sanitizeIsbn(isbn);
+    const validation = validateAndCleanBarcode(isbn, manifestData.items);
+    if (!validation.valid) {
+      return res.status(400).json({
+        error: validation.error || `Invalid barcode format: "${isbn}"`,
+        isDoubleScan: Boolean(validation.isDoubleScan),
+        isMerged: Boolean(validation.isMerged)
+      });
+    }
+
+    const effectiveIsbn = validation.cleaned;
+    const cleanBaseIsbn = sanitizeIsbn(effectiveIsbn);
     const baseIsbnOnly = getBaseIsbn(cleanBaseIsbn);
 
     // Universal manifest matching
-    const manifestMatch = findManifestItem(cleanBaseIsbn) || findManifestItem(isbn) || findManifestItem(baseIsbnOnly);
+    const manifestMatch = validation.manifestMatch || findManifestItem(cleanBaseIsbn) || findManifestItem(effectiveIsbn) || findManifestItem(baseIsbnOnly);
     let isProcessable = true;
     let nonProcessableReason = '';
 
@@ -1885,9 +2057,10 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       if (!isProcessable) {
         nonProcessableReason = manifestMatch.reason || 'Journal is marked as Not Processable in the imported manifest.';
       }
-    } else if (config.enforceManifest && manifestData.items && manifestData.items.length > 0) {
-      isProcessable = false;
-      nonProcessableReason = 'ISBN is not listed in the imported manifest (Strict Mode Active).';
+    } else if (manifestData.items && manifestData.items.length > 0) {
+      return res.status(400).json({
+        error: `ISBN/Barcode "${effectiveIsbn}" is not listed in the imported manifest. Verification session cannot be created.`
+      });
     }
 
     const existingCopies = await findExistingCopies(baseIsbnOnly);

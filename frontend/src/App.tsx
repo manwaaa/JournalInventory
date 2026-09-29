@@ -33,6 +33,7 @@ import { useBarcodeScanner } from './hooks/useBarcodeScanner';
 import { useSoundEffects } from './hooks/useSoundEffects';
 import { useSessionSync } from './hooks/useSessionSync';
 import { useS3Sync } from './hooks/useS3Sync';
+import { validateAndCleanBarcode } from './utils/barcode';
 
 import { 
   CaptureStep, 
@@ -46,6 +47,8 @@ import {
   ViewMode,
   StationRole,
   BoxSummary,
+  ManifestData,
+  ManifestItem,
   SHOT_DEFINITIONS,
   BOX_SPINE_SHOTS
 } from './types';
@@ -116,6 +119,7 @@ export function App() {
   const [manifestModalOpen, setManifestModalOpen] = useState(false);
   const [quickSearchOpen, setQuickSearchOpen] = useState(false);
   const [quickSearchText, setQuickSearchText] = useState('');
+  const [manifestData, setManifestData] = useState<ManifestData | null>(null);
   const [manifestCount, setManifestCount] = useState<number>(0);
 
   const [duplicateModal, setDuplicateModal] = useState<{
@@ -205,6 +209,7 @@ export function App() {
       }
       if (resManifest.ok) {
         const m = await resManifest.json();
+        setManifestData(m);
         setManifestCount(m.totalCount || 0);
       }
       fetchBoxesList();
@@ -449,10 +454,31 @@ export function App() {
 
   // Process ISBN & validate processable status
   const handleProcessIsbn = async (code: string, forceNewCopy: boolean = false, targetIdentifier?: string) => {
-    const clean = code.trim();
-    if (!clean) return;
+    if (!code || !code.trim()) return;
     if (isProcessingIsbnRef.current) return;
     isProcessingIsbnRef.current = true;
+
+    // Run Barcode Sanitization, Format Validation & De-duplication Guard
+    const validation = validateAndCleanBarcode(code, manifestData?.items || []);
+    if (!validation.valid) {
+      setIsbnInput('');
+      setToastAlert({
+        message: validation.error || `Invalid barcode: "${code}". Please rescan or verify your manifest.`,
+        type: 'error'
+      });
+      playAudioCue('error');
+      isProcessingIsbnRef.current = false;
+      return;
+    }
+
+    const clean = validation.cleaned;
+
+    if (validation.isDoubleScan) {
+      setToastAlert({
+        message: `⚠️ Double scan detected! Automatically corrected "${code}" to "${clean}".`,
+        type: 'info'
+      });
+    }
 
     // Immediately blur input so cursor stops blinking and keyboard capture shortcuts work hands-free
     isbnInputRef.current?.blur();
@@ -460,7 +486,9 @@ export function App() {
       document.activeElement.blur();
     }
 
-    setToastAlert(null);
+    if (!validation.isDoubleScan) {
+      setToastAlert(null);
+    }
     playAudioCue('beep');
 
     // Check manifest processable validation & pre-fetch lot and box (Validation 4.2)
@@ -468,24 +496,34 @@ export function App() {
     let matchedBox = '';
     try {
       const checkRes = await fetch(`/api/manifest/check/${encodeURIComponent(clean)}`);
-      if (checkRes.ok) {
-        const checkData = await checkRes.json();
-        matchedLot = checkData.item?.lotNumber || '';
-        matchedBox = checkData.item?.boxNumber || '';
-        if (matchedLot) setLotNumber(matchedLot);
-        if (matchedBox) setBoxNumber(matchedBox);
+      const checkData = await checkRes.json();
 
-        if (checkData.manifestActive && !checkData.isProcessable) {
-          const reasonMsg = checkData.reason || 'Journal is marked as Not Processable in the imported manifest.';
-          const locStr = matchedLot || matchedBox ? `[Lot: ${matchedLot || 'N/A'}${matchedBox ? ` • Box: ${matchedBox}` : ''}] ` : '';
-          setToastAlert({
-            message: `${locStr}ISBN ${clean} is NOT processable. ${reasonMsg} You cannot start a verification session for this journal.`,
-            type: 'error'
-          });
-          playAudioCue('error');
-          isProcessingIsbnRef.current = false;
-          return;
-        }
+      if (!checkRes.ok || checkData.valid === false) {
+        setIsbnInput('');
+        setToastAlert({
+          message: checkData.error || checkData.reason || `ISBN "${clean}" was not found in the manifest or has an invalid format.`,
+          type: 'error'
+        });
+        playAudioCue('error');
+        isProcessingIsbnRef.current = false;
+        return;
+      }
+
+      matchedLot = checkData.item?.lotNumber || '';
+      matchedBox = checkData.item?.boxNumber || '';
+      if (matchedLot) setLotNumber(matchedLot);
+      if (matchedBox) setBoxNumber(matchedBox);
+
+      if (checkData.manifestActive && !checkData.isProcessable) {
+        const reasonMsg = checkData.reason || 'Journal is marked as Not Processable in the imported manifest.';
+        const locStr = matchedLot || matchedBox ? `[Lot: ${matchedLot || 'N/A'}${matchedBox ? ` • Box: ${matchedBox}` : ''}] ` : '';
+        setToastAlert({
+          message: `${locStr}ISBN ${clean} is NOT processable. ${reasonMsg} You cannot start a verification session for this journal.`,
+          type: 'error'
+        });
+        playAudioCue('error');
+        isProcessingIsbnRef.current = false;
+        return;
       }
     } catch (e) {
       console.warn('Manifest pre-check failed, continuing:', e);
@@ -718,12 +756,12 @@ export function App() {
     }
   };
 
-  // Hardware scanner listener
+  // Hardware scanner listener - active at all times for seamless 1-scan workflow
   useBarcodeScanner({
     onScan: (scannedCode) => {
       handleProcessIsbn(scannedCode);
     },
-    enabled: currentStep === 'SCAN_ISBN' || currentStep === 'COMPLETE'
+    enabled: !settingsModalOpen && !mobilePairingOpen && !manifestModalOpen && !duplicateModal
   });
 
   // Save shot payload helper (1 to 7)
@@ -1074,13 +1112,13 @@ export function App() {
 
         const isSessionFinished = step === 'COMPLETE' || isBoxDone || isBoxSpineDone || isBookDone || (role === 'all_in_one' && (isFullDone || hasAllBookShots));
 
-        // 1. If session is complete for this workstation: 1-press Enter proceeds immediately
+        // 1. If session is complete / ready for next journal: 1-press Enter proceeds immediately
         if (isSessionFinished) {
           e.preventDefault();
           e.stopPropagation();
 
-          // If a new/different ISBN was typed into the input, start that new ISBN
-          if (isInput && inputVal && inputVal !== curActiveIsbn) {
+          // If a new / different ISBN was typed into the input, start that new ISBN
+          if (inputVal && inputVal !== curActiveIsbn) {
             if (document.activeElement instanceof HTMLElement) {
               document.activeElement.blur();
             }
@@ -1099,11 +1137,23 @@ export function App() {
             document.activeElement.blur();
           }
 
+          // 1 single press of Enter resets and moves to the next journal
           handleNextJournal();
           return;
         }
 
-        // 2. If photo capture is active: Enter takes the photo
+        // 2. If an ISBN is typed in the input field while in SCAN_ISBN step:
+        if (inputVal && (step === 'SCAN_ISBN' || isInput)) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+          handleProcessIsbn(inputVal);
+          return;
+        }
+
+        // 3. If photo capture is active: Enter takes the photo
         if (step.startsWith('CAPTURE_SHOT_')) {
           e.preventDefault();
           e.stopPropagation();
@@ -1318,31 +1368,15 @@ export function App() {
                 onSubmit={(e) => {
                   e.preventDefault();
                   const val = isbnInput.trim();
-                  const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
-                  const hasBoxShots = Boolean(shots[1] && shots[2]);
-                  const isSessionComplete = currentStep === 'COMPLETE' ||
-                    (stationRole === 'box_level' && (currentStep === 'CAPTURE_SHOT_3' || hasBoxShots)) ||
-                    (hasAllBookShots && !currentStep.startsWith('CAPTURE_SHOT_'));
-
-                  if (isSessionComplete && (!val || val === activeIsbn)) {
-                    handleNextJournal();
-                    return;
-                  }
-
-                  if (val && val !== activeIsbn) {
+                  if (val) {
                     isbnInputRef.current?.blur();
                     if (document.activeElement instanceof HTMLElement) {
                       document.activeElement.blur();
                     }
                     handleProcessIsbn(val);
-                  } else if (val) {
-                    isbnInputRef.current?.blur();
-                    if (document.activeElement instanceof HTMLElement) {
-                      document.activeElement.blur();
-                    }
-                  } else if (isSessionComplete) {
-                    handleNextJournal();
+                    return;
                   }
+                  handleNextJournal();
                 }}
                 className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1"
               >
@@ -1395,8 +1429,15 @@ export function App() {
                       ref={isbnInputRef}
                       type="text"
                       value={isbnInput}
+                      onFocus={(e) => e.target.select()}
+                      onClick={(e) => (e.target as HTMLInputElement).select()}
                       onChange={(e) => {
-                        const val = e.target.value;
+                        let val = e.target.value;
+                        // Auto-strip illegal characters in real-time unless manifest contains custom alphanumeric codes
+                        const hasCustomManifestCodes = manifestData?.items?.some((i: ManifestItem) => /[a-wyzA-WYZ]/.test(String(i.isbn || '')));
+                        if (!hasCustomManifestCodes) {
+                          val = val.replace(/[^0-9Xx\-_]/g, '');
+                        }
                         setIsbnInput(val);
                         if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
                         if (val.trim().length >= 8) {
@@ -1415,39 +1456,15 @@ export function App() {
                         if (e.key === 'Enter') {
                           e.preventDefault();
                           const val = isbnInput.trim();
-                          const hasAllBookShots = Boolean(shots[3] && shots[4] && shots[5] && shots[6] && shots[7]);
-                          const hasBoxShots = Boolean(shots[1] && shots[2]);
-                          const hasBoxSpineShots = Boolean(shots[1] && shots[2] && shots[4]);
-
-                          const isReadyForNext = currentStep === 'COMPLETE' ||
-                            (stationRole === 'box_level' && hasBoxShots) ||
-                            (stationRole === 'box_spine' && hasBoxSpineShots) ||
-                            (stationRole === 'book_level' && hasAllBookShots) ||
-                            hasAllBookShots;
-
-                          if (isReadyForNext && (!val || val === activeIsbn)) {
-                            if (isCapturingRef.current) {
-                              pendingNextRef.current = true;
-                              return;
-                            }
-                            handleNextJournal();
-                            return;
-                          }
-
-                          if (val && val !== activeIsbn) {
+                          if (val) {
                             isbnInputRef.current?.blur();
                             if (document.activeElement instanceof HTMLElement) {
                               document.activeElement.blur();
                             }
                             handleProcessIsbn(val);
-                          } else if (val) {
-                            isbnInputRef.current?.blur();
-                            if (document.activeElement instanceof HTMLElement) {
-                              document.activeElement.blur();
-                            }
-                          } else if (activeIsbn && isReadyForNext) {
-                            handleNextJournal();
+                            return;
                           }
+                          handleNextJournal();
                         }
                       }}
                       placeholder={stationRole === 'box_level' ? "Scan any book barcode from box to auto-select box..." : "Scan barcode or type ISBN (e.g. 9780132350884)..."}
