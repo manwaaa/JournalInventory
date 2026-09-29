@@ -381,7 +381,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
                   onClick={onNextJournal}
                   className="flex items-center space-x-2 px-6 py-2.5 rounded-xl font-bold text-xs text-white btn-primary-gradient shadow-lg shadow-brand-500/30 hover:scale-105 active:scale-95 transition-all cursor-pointer"
                 >
-                  <span>Proceed to Next Box (Enter ↵)</span>
+                  <span>Proceed to Next Box</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               )}
@@ -397,14 +397,14 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
               Verification Photos Completed!
             </h3>
             <p className="text-xs text-emerald-200 max-w-sm mb-4 leading-relaxed">
-              All required photos are saved. Press <b className="text-white">Enter ↵</b> on your keyboard or click below to verify the next book.
+              All required photos are saved. Click below to verify the next journal.
             </p>
             {onNextJournal && (
               <button
                 onClick={onNextJournal}
                 className="flex items-center space-x-2 px-7 py-3 rounded-xl font-bold text-sm text-white btn-primary-gradient shadow-xl shadow-brand-500/30 hover:scale-105 active:scale-95 transition-all cursor-pointer ring-2 ring-white/30"
               >
-                <span>Proceed to Next Book (Enter ↵)</span>
+                <span>{stationRole === 'box_level' ? 'Proceed to Next Box' : 'Proceed to Next Journal'}</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             )}
