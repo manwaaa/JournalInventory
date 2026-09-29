@@ -824,7 +824,8 @@ app.post('/api/session/reset', async (req, res) => {
 app.post('/api/capture/discard', async (req, res) => {
   try {
     const targetIsbn = req.body?.isbn || currentSession.activeIsbn;
-    if (targetIsbn) {
+    const shouldDelete = req.body?.deleteFiles === true;
+    if (targetIsbn && shouldDelete) {
       const cleanIsbn = sanitizeIsbn(targetIsbn);
       const folderPath = path.join(config.storagePath, cleanIsbn);
       if (fs.existsSync(folderPath)) {
@@ -836,8 +837,8 @@ app.post('/api/capture/discard', async (req, res) => {
     currentSession = {
       activeIsbn: '',
       baseIsbn: '',
-      lotNumber: '',
-      boxNumber: '',
+      lotNumber: req.body?.lotNumber || currentSession.lotNumber || '',
+      boxNumber: req.body?.boxNumber || currentSession.boxNumber || '',
       currentStep: 'SCAN_ISBN',
       shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null },
       metadata: null,

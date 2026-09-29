@@ -943,22 +943,20 @@ export function App() {
     playAudioCue('error');
   };
 
-  // Discard current active session
-  const handleDiscardSession = async () => {
+  // Close current active session without deleting saved local files
+  const handleCloseSession = async () => {
     playAudioCue('click');
     try {
-      await fetch('/api/capture/discard', {
+      await fetch('/api/session/reset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isbn: activeIsbn })
+        body: JSON.stringify({ lotNumber, boxNumber })
       });
     } catch (e) {
-      console.error('Discard session error:', e);
+      console.error('Close session error:', e);
     }
     setActiveIsbn('');
     setIsbnInput('');
-    setLotNumber('');
-    setBoxNumber('');
     setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
     setMetadata(null);
     setBookDetails(null);
@@ -1626,7 +1624,7 @@ export function App() {
                     onOpenExplorer={handleOpenExplorer}
                     onDownloadZip={handleDownloadZip}
                     onNextJournal={handleNextJournal}
-                    onDiscardSession={handleDiscardSession}
+                    onCloseSession={handleCloseSession}
                     onIncompleteWarning={handleIncompleteWarning}
                   />
                 ) : (

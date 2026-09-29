@@ -18,7 +18,8 @@ import {
   Trash2,
   AlertTriangle,
   Lock,
-  CloudUpload
+  CloudUpload,
+  X
 } from 'lucide-react';
 import { JournalMetadata, ShotInfo, SHOT_DEFINITIONS, StationRole, BoxSummary, CaptureStep } from '../types';
 
@@ -35,6 +36,7 @@ interface ReviewCardProps {
   onOpenExplorer: (isbn: string) => void;
   onDownloadZip: (isbn: string) => void;
   onNextJournal: () => void;
+  onCloseSession?: () => void;
   onDiscardSession?: () => void;
   onIncompleteWarning?: () => void;
 }
@@ -52,6 +54,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
   onOpenExplorer,
   onDownloadZip,
   onNextJournal,
+  onCloseSession,
   onDiscardSession,
   onIncompleteWarning
 }) => {
@@ -219,16 +222,16 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
           )}
         </div>
 
-        {/* Top Actions: Discard & Next Book */}
+        {/* Top Actions: Close & Next Book */}
         <div className="flex items-center space-x-2">
-          {onDiscardSession && (
+          {(onCloseSession || onDiscardSession) && (
             <button
-              onClick={onDiscardSession}
-              title="Discard this session"
-              className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-rose-700 bg-gradient-to-b from-rose-50 to-red-50/60 hover:from-rose-100 hover:to-rose-50 border border-rose-200/80 transition-all active:scale-95 shadow-sm"
+              onClick={onCloseSession || onDiscardSession}
+              title="Close and return to barcode scan (keeps all saved photos intact)"
+              className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-gradient-to-b from-slate-50 to-slate-100 hover:from-slate-100 hover:to-slate-200 border border-slate-300/80 transition-all active:scale-95 shadow-sm"
             >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Discard / Fix</span>
+              <X className="w-3.5 h-3.5 text-slate-500" />
+              <span>Close</span>
             </button>
           )}
 
