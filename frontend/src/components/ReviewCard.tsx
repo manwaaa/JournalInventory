@@ -18,7 +18,8 @@ import {
   Trash2,
   AlertTriangle,
   Lock,
-  CloudUpload
+  CloudUpload,
+  Undo2
 } from 'lucide-react';
 import { JournalMetadata, ShotInfo, SHOT_DEFINITIONS, StationRole, BoxSummary, CaptureStep } from '../types';
 
@@ -31,7 +32,10 @@ interface ReviewCardProps {
   stationRole?: StationRole;
   boxSummary?: BoxSummary | null;
   currentStep?: CaptureStep;
+  canUndo?: boolean;
+  onUndoShot?: (shotNumber?: number) => void;
   onRetakeShot: (shotNumber: number) => void;
+  onCancelRetake?: () => void;
   onOpenExplorer: (isbn: string) => void;
   onDownloadZip: (isbn: string) => void;
   onNextJournal: () => void;
@@ -48,7 +52,10 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
   stationRole = 'book_level',
   boxSummary,
   currentStep,
+  canUndo = false,
+  onUndoShot,
   onRetakeShot,
+  onCancelRetake,
   onOpenExplorer,
   onDownloadZip,
   onNextJournal,
@@ -219,8 +226,19 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
           )}
         </div>
 
-        {/* Top Actions: Discard & Next Book */}
+        {/* Top Actions: Undo, Discard & Next Book */}
         <div className="flex items-center space-x-2">
+          {canUndo && onUndoShot && (
+            <button
+              onClick={() => onUndoShot()}
+              title="Undo last capture or restore previous photo (Ctrl+Z)"
+              className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-amber-800 bg-gradient-to-b from-amber-50 to-orange-50 hover:from-amber-100 hover:to-amber-50 border border-amber-300 transition-all active:scale-95 shadow-sm cursor-pointer"
+            >
+              <Undo2 className="w-3.5 h-3.5 text-amber-600" />
+              <span>Undo (Ctrl+Z)</span>
+            </button>
+          )}
+
           {onDiscardSession && (
             <button
               onClick={onDiscardSession}
@@ -241,7 +259,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
             }`}
           >
             {!canProceed && <Lock className="w-3.5 h-3.5 mr-0.5 text-slate-400" />}
-            <span>{stationRole === 'box_level' ? 'Proceed to Next Box (Enter ↵)' : 'Next Book (Enter ↵)'}</span>
+            <span>{stationRole === 'box_level' ? 'Proceed to Next Box' : 'Next Journal'}</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -355,12 +373,23 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
                       onClick={() => setSelectedPreview(shotInfo?.previewDataUrl || `/proofs/${encodeURIComponent(isbn)}/${encodeURIComponent(shotInfo?.filename || '')}`)}
                     />
                     {isCurrentlyRetaking && (
-                      <div className="absolute inset-0 bg-amber-950/20 backdrop-blur-[1px] pointer-events-none flex items-center justify-center">
-                        <div className="bg-amber-500/95 text-slate-950 text-[10px] font-black px-2 py-1 rounded-md shadow-lg border border-amber-300 flex items-center space-x-1">
-                          <RotateCcw className="w-3 h-3 animate-spin" />
-                          <span>RETAKE IN PROGRESS</span>
+                      <>
+                        <div className="absolute inset-0 bg-amber-950/20 backdrop-blur-[1px] pointer-events-none flex items-center justify-center">
+                          <div className="bg-amber-500/95 text-slate-950 text-[10px] font-black px-2 py-1 rounded-md shadow-lg border border-amber-300 flex items-center space-x-1">
+                            <RotateCcw className="w-3 h-3 animate-spin" />
+                            <span>RETAKE IN PROGRESS</span>
+                          </div>
                         </div>
-                      </div>
+                        {onCancelRetake && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onCancelRetake(); }}
+                            className="absolute top-1.5 left-1.5 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-900/90 hover:bg-slate-950 text-white border border-white/20 shadow-md transition-all active:scale-95 cursor-pointer z-10"
+                            title="Cancel retake and keep current photo"
+                          >
+                            ✕ Cancel
+                          </button>
+                        )}
+                      </>
                     )}
                     <button
                       onClick={() => onRetakeShot(def.shotNumber)}

@@ -46,14 +46,15 @@ Photos are automatically saved in `C:\Journal_Proofs\<ISBN>\` (or your configure
 
 ---
 
-## ⌨️ Keyboard Shortcuts Reference
+## ⌨️ Controls & Shortcuts Reference
 
-| Key | Action | Description |
+| Control | Action | Description |
 | :--- | :--- | :--- |
+| **Next Button** (Mouse Click) | **Proceed to Next** | Single click on the Next button to finalize review and instantly advance to the next journal/box. |
 | <kbd>Space</kbd> | **Capture Photo** | Triggers camera shutter for current active shot. |
-| <kbd>Enter</kbd> | **Proceed to Next** | Finalizes review and instantly resets workflow for the next journal/box. |
-| <kbd>R</kbd> | **Retake Current Shot** | Discards the current shot and reactivates the live viewfinder. |
-| <kbd>Ctrl</kbd> + <kbd>Z</kbd> | **Undo Last Capture** | Steps back to the previous shot in the sequence. |
+| <kbd>Ctrl</kbd> + <kbd>Z</kbd> or <kbd>Z</kbd> | **Undo / Restore Photo** | Instantly undoes an accidental capture (removes file & steps back) or restores the previous image if a shot was accidentally retaken. |
+| <kbd>Esc</kbd> | **Cancel Retake** | Exits retake mode without overwriting the existing photo. |
+| <kbd>C</kbd> | **Swap Active Camera** | Toggles between Camera 1 (Box Cam) and Camera 2 (Book Cam). |
 
 ---
 
