@@ -273,10 +273,12 @@ export function App() {
   };
 
   const isProcessingIsbnRef = useRef(false);
+  const lastBarcodeScanTimeRef = useRef<number>(0);
 
   // Process ISBN & validate processable status
   const handleProcessIsbn = async (code: string, forceNewCopy: boolean = false, targetIdentifier?: string) => {
     if (!code || !code.trim()) return;
+    lastBarcodeScanTimeRef.current = Date.now();
     if (isProcessingIsbnRef.current) return;
     isProcessingIsbnRef.current = true;
 
@@ -1009,9 +1011,9 @@ export function App() {
       }
     }
 
-    // Automatically ensure S3 upload is triggered in background
+    // Automatically trigger S3 upload in background ONLY IF the journal verification is 100% complete
     const curIsbn = activeIsbnRef.current || activeIsbn;
-    if (curIsbn) {
+    if (curIsbn && isSessionComplete) {
       fetch('/api/s3/upload-isbn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1090,6 +1092,54 @@ export function App() {
 
       const step = currentStepRef.current;
       const currentShots = shotsRef.current;
+
+      // 0. Shield against trailing Enter key sent by physical barcode scanner
+      if (e.key === 'Enter') {
+        if (Date.now() - lastBarcodeScanTimeRef.current < 800) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+
+        const role = stationRoleRef.current;
+        const curActiveIsbn = activeIsbnRef.current;
+        const inputVal = (isbnInputRefValue.current || '').trim();
+
+        // Check if the current station role has completed all required shots:
+        const isBoxDone = role === 'box_level' && Boolean(currentShots[1] && currentShots[2]);
+        const isBoxSpineDone = role === 'box_spine' && Boolean(currentShots[1] && currentShots[2] && currentShots[4]);
+        const isBookDone = role === 'book_level' && Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
+        const isFullDone = Boolean(currentShots[1] && currentShots[2] && currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
+        const hasAllBookShots = Boolean(currentShots[3] && currentShots[4] && currentShots[5] && currentShots[6] && currentShots[7]);
+
+        const isSessionFinished = step === 'COMPLETE' || isBoxDone || isBoxSpineDone || isBookDone || (role === 'all_in_one' && (isFullDone || hasAllBookShots));
+
+        // If session is complete / ready for next journal: 1-press Enter proceeds immediately
+        if (isSessionFinished) {
+          e.preventDefault();
+          e.stopPropagation();
+
+          if (inputVal && inputVal !== curActiveIsbn) {
+            if (document.activeElement instanceof HTMLElement) {
+              document.activeElement.blur();
+            }
+            handleProcessIsbn(inputVal);
+            return;
+          }
+
+          if (isCapturingRef.current) {
+            pendingNextRef.current = true;
+            return;
+          }
+
+          if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+
+          handleNextJournal();
+          return;
+        }
+      }
 
       // 1. Ctrl+Z or Cmd+Z -> Undo / Restore previous photo
       if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {

@@ -9,7 +9,19 @@ import {
   ChevronDown,
   X
 } from 'lucide-react';
-import { S3SyncStatus } from '../types';
+
+interface S3SyncStatus {
+  s3Configured: boolean;
+  queueSize: number;
+  progress: {
+    isSyncing: boolean;
+    completedCount: number;
+    failedCount: number;
+    currentIsbn?: string | null;
+    lastSyncAt?: Date | string | null;
+    lastError?: string | null;
+  };
+}
 
 interface SyncStatusIndicatorsProps {
   s3Status: S3SyncStatus;
@@ -211,3 +223,4 @@ export const SyncStatusIndicators: React.FC<SyncStatusIndicatorsProps> = ({
     </div>
   );
 };
+
