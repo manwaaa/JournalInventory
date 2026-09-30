@@ -31,7 +31,6 @@ import { SearchViewCatalog } from './components/SearchViewCatalog';
 import { useCamera } from './hooks/useCamera';
 import { useBarcodeScanner } from './hooks/useBarcodeScanner';
 import { useSoundEffects } from './hooks/useSoundEffects';
-import { useSessionSync } from './hooks/useSessionSync';
 import { useS3Sync } from './hooks/useS3Sync';
 import { validateAndCleanBarcode } from './utils/barcode';
 
@@ -50,9 +49,16 @@ import {
   ManifestData,
   ManifestItem,
   SHOT_DEFINITIONS,
-  BOX_SPINE_SHOTS,
-  UndoHistoryAction
+  BOX_SPINE_SHOTS
 } from './types';
+
+type UndoHistoryAction = {
+  shotNumber: number;
+  wasRetake: boolean;
+  previousShotInfo: ShotInfo | null;
+  previousStep: CaptureStep;
+  timestamp: number;
+};
 
 export function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('CAPTURE');
@@ -222,202 +228,7 @@ export function App() {
     }
   }, [fetchBoxesList]);
 
-  // Multi-device SSE Synchronization
-  const { 
-    resetRemoteSession,
-    isConnected: isPeerConnected,
-    lastEvent: lastPeerEvent,
-    lastHeartbeat: lastPeerHeartbeat
-  } = useSessionSync({
-    onSessionSync: useCallback((event: SessionEvent) => {
-      if (event.type === 'CONNECTED') {
-        if (event.session?.activeIsbn && currentStep === 'SCAN_ISBN' && !activeIsbn) {
-          setActiveIsbn(event.session.activeIsbn);
-          setIsbnInput(event.session.activeIsbn);
-          setLotNumber(event.session.lotNumber || '');
-          setBoxNumber(event.session.boxNumber || '');
-          setCurrentStep(event.session.currentStep);
-          setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
-          setMetadata(event.session.metadata);
-          setBookDetails(event.session.bookDetails);
-        }
-      } else if (event.type === 'ISBN_INITIALIZED') {
-        if (stationRole === 'book_level' && (!activeIsbn || event.session.activeIsbn === activeIsbn)) {
-          setActiveIsbn(event.session.activeIsbn);
-          setIsbnInput(event.session.activeIsbn);
-          setLotNumber(event.session.lotNumber || '');
-          setBoxNumber(event.session.boxNumber || '');
-          
-          const initialShots = event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null };
-          setShots(initialShots);
-          setMetadata(event.session.metadata);
-          setBookDetails(event.session.bookDetails);
 
-          // On PC 2, advance to first missing book shot (3 to 7)
-          let nextBookShot = 3;
-          for (let s = 3; s <= 7; s++) {
-            if (!initialShots[s]) {
-              nextBookShot = s;
-              break;
-            }
-          }
-          if (initialShots[3] && initialShots[4] && initialShots[5] && initialShots[6] && initialShots[7]) {
-            setCurrentStep('COMPLETE');
-          } else {
-            setCurrentStep(`CAPTURE_SHOT_${nextBookShot}` as CaptureStep);
-          }
-          playAudioCue('beep');
-        }
-      } else if (event.type === 'BOX_INITIALIZED') {
-        if (stationRole === 'book_level' && (!activeIsbn || event.session.activeIsbn === activeIsbn)) {
-          setActiveIsbn(event.session.activeIsbn);
-          setIsbnInput('');
-          setLotNumber(event.session.lotNumber || '');
-          setBoxNumber(event.session.boxNumber || '');
-          setCurrentStep('CAPTURE_SHOT_3');
-          setShots(event.session.shots || { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
-          setMetadata(event.session.metadata);
-          setBookDetails(event.session.bookDetails);
-          if (event.boxSummary) setActiveBoxSummary(event.boxSummary);
-          playAudioCue('beep');
-        }
-      } else if (event.type === 'BOX_SHOT_SAVED') {
-        fetchBoxesList();
-        if (event.boxShots) {
-          const bShots = event.boxShots;
-          setShots(prev => ({
-            ...prev,
-            1: bShots.hasBoxShot && bShots.boxShotUrl ? {
-              filename: 'shot_1_box_a.jpg',
-              savedAt: new Date().toISOString(),
-              type: 'Box A',
-              scope: 'box_level',
-              previewDataUrl: bShots.boxShotUrl,
-              inheritedFromBox: true
-            } : prev[1],
-            2: bShots.hasUnboxShot && bShots.unboxShotUrl ? {
-              filename: 'shot_2_box_b.jpg',
-              savedAt: new Date().toISOString(),
-              type: 'Box B',
-              scope: 'box_level',
-              previewDataUrl: bShots.unboxShotUrl,
-              inheritedFromBox: true
-            } : prev[2]
-          }));
-
-          if (bShots.hasBoxShot && bShots.hasUnboxShot) {
-            if (stationRole === 'book_level' && (currentStep === 'CAPTURE_SHOT_1' || currentStep === 'CAPTURE_SHOT_2')) {
-              setCurrentStep('CAPTURE_SHOT_3');
-            }
-            playAudioCue('success');
-            setToastAlert({
-              message: `✓ Box A & Box B photos received from PC 1 for Box ${event.boxNumber || ''}! Ready for Book shots (Shots 3–7).`,
-              type: 'info'
-            });
-          }
-        }
-      } else if (event.type === 'SHOT_SAVED') {
-        const isTargetMatch = event.isbn === activeIsbn || (stationRole === 'book_level' && !activeIsbn);
-        if (isTargetMatch) {
-          if (!activeIsbn && event.isbn) {
-            setActiveIsbn(event.isbn);
-            setIsbnInput(event.isbn);
-            if (event.session?.lotNumber) setLotNumber(event.session.lotNumber);
-            if (event.session?.boxNumber) setBoxNumber(event.session.boxNumber);
-          }
-          if (event.session?.shots) setShots(event.session.shots);
-          if (event.session?.metadata) setMetadata(event.session.metadata);
-          if (event.session?.bookDetails) setBookDetails(event.session.bookDetails);
-
-          // If it was Shot 1 or 2 saved on PC 1, also inherit onto PC 2
-          if ((event.shotNumber === 1 || event.shotNumber === 2) && event.boxShots) {
-            const bShots = event.boxShots;
-            setShots(prev => ({
-              ...prev,
-              1: bShots.hasBoxShot && bShots.boxShotUrl ? {
-                filename: 'shot_1_box_a.jpg',
-                savedAt: new Date().toISOString(),
-                type: 'Box A',
-                scope: 'box_level',
-                previewDataUrl: bShots.boxShotUrl,
-                inheritedFromBox: true
-              } : (event.shotNumber === 1 && event.shotInfo ? event.shotInfo : prev[1]),
-              2: bShots.hasUnboxShot && bShots.unboxShotUrl ? {
-                filename: 'shot_2_box_b.jpg',
-                savedAt: new Date().toISOString(),
-                type: 'Box B',
-                scope: 'box_level',
-                previewDataUrl: bShots.unboxShotUrl,
-                inheritedFromBox: true
-              } : (event.shotNumber === 2 && event.shotInfo ? event.shotInfo : prev[2])
-            }));
-          }
-
-          if (stationRole === 'book_level') {
-            let nextBookShot = 3;
-            const curShots = event.session?.shots || shots;
-            for (let s = 3; s <= 7; s++) {
-              if (!curShots?.[s]) {
-                nextBookShot = s;
-                break;
-              }
-            }
-            if (curShots?.[3] && curShots?.[4] && curShots?.[5] && curShots?.[6] && curShots?.[7]) {
-              setCurrentStep('COMPLETE');
-            } else {
-              setCurrentStep(`CAPTURE_SHOT_${nextBookShot}` as CaptureStep);
-            }
-            if (event.shotNumber === 2) {
-              playAudioCue('success');
-              setToastAlert({
-                message: `✓ Box A & Box B photos completed on PC 1! You can now capture Shots 3 to 7 on PC 2.`,
-                type: 'info'
-              });
-            }
-          } else if (event.session?.currentStep) {
-            setCurrentStep(event.session.currentStep);
-          }
-
-          if (event.isComplete) {
-            playAudioCue('success');
-            fetchStatus();
-          }
-        }
-      } else if (event.type === 'SESSION_RESET') {
-        if (event.isbn === activeIsbn) {
-          setActiveIsbn('');
-          setIsbnInput('');
-          if (stationRole === 'box_level') {
-            setLotNumber('');
-            setBoxNumber('');
-            setActiveBoxSummary(null);
-          }
-          setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
-          setMetadata(null);
-          setBookDetails(null);
-          setToastAlert(null);
-          setDuplicateModal(null);
-          setBlurWarning(null);
-          setCurrentStep('SCAN_ISBN');
-        }
-      } else if (event.type === 'SHOT_UNDO') {
-        if (event.isbn === activeIsbn) {
-          if (event.session?.shots) setShots(event.session.shots);
-          if (event.session?.metadata) setMetadata(event.session.metadata);
-          if (event.currentStep) setCurrentStep(event.currentStep as CaptureStep);
-          playAudioCue('click');
-        }
-      } else if (event.type === 'MANIFEST_UPDATED') {
-        fetchStatus();
-        fetchBoxesList();
-      } else if (event.type === 'S3_AUTO_UPLOADED') {
-        if (event.isbn === activeIsbn && event.s3Upload) {
-          setMetadata(prev => prev ? { ...prev, s3Upload: event.s3Upload } : prev);
-        }
-        fetchStatus();
-      }
-    }, [currentStep, stationRole, activeIsbn, boxNumber, fetchStatus, fetchBoxesList, playAudioCue])
-  });
 
   // AWS S3 Cloud Background Sync Monitor & Control
   const {
@@ -1061,13 +872,22 @@ export function App() {
       }
 
       // Update frontend shots
-      if (data.wasRetake && data.shots?.[sNum]) {
+      if (data.shots?.[sNum]) {
         setShots(prev => ({
           ...prev,
           [sNum]: data.shots[sNum]
         }));
         setToastAlert({
-          message: `↺ Restored previous photo for Shot ${sNum} (${shotDef?.label || ''}).`,
+          message: data.message || `↺ Restored previous photo for Shot ${sNum} (${shotDef?.label || ''}).`,
+          type: 'info'
+        });
+      } else if (data.restoredShotInfo) {
+        setShots(prev => ({
+          ...prev,
+          [sNum]: data.restoredShotInfo
+        }));
+        setToastAlert({
+          message: data.message || `↺ Restored real box photo for Shot ${sNum} (${shotDef?.label || ''}).`,
           type: 'info'
         });
       } else {
@@ -1076,7 +896,7 @@ export function App() {
           [sNum]: null
         }));
         setToastAlert({
-          message: `↺ Shot ${sNum} (${shotDef?.label || ''}) undone. Ready to capture again.`,
+          message: data.message || `↺ Shot ${sNum} (${shotDef?.label || ''}) undone. Ready to capture again.`,
           type: 'info'
         });
       }
@@ -1202,11 +1022,6 @@ export function App() {
     }
 
     playAudioCue('click');
-    resetRemoteSession({
-      clearBoxContext: role === 'box_level',
-      lotNumber,
-      boxNumber
-    });
 
     setActiveIsbn('');
     setIsbnInput('');
