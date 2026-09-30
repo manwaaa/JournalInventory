@@ -56,7 +56,7 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   onCapture,
   onRetakeShot,
   onCancelRetake,
-  canUndo,
+  canUndo = false,
   onUndo,
   undoLabel,
   currentStep,
@@ -466,26 +466,26 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center space-x-2 shrink-0">
             {isRetaking && onCancelRetake && (
               <button
-                onClick={onCancelRetake}
                 type="button"
-                className="px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-all active:scale-95 cursor-pointer"
+                onClick={onCancelRetake}
+                className="flex items-center space-x-1 px-4 py-2.5 rounded-xl font-bold text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 transition-all active:scale-95 cursor-pointer"
               >
-                Cancel Retake
+                <span>Cancel Retake</span>
               </button>
             )}
 
             {canUndo && onUndo && !isRetaking && (
               <button
-                onClick={onUndo}
                 type="button"
-                title="Undo last capture (Ctrl+Z)"
-                className="px-3 py-2.5 rounded-xl text-xs font-semibold text-amber-300 bg-amber-950/60 hover:bg-amber-900/60 border border-amber-800/80 transition-all active:scale-95 cursor-pointer flex items-center space-x-1"
+                onClick={onUndo}
+                title={`Undo last action (${undoLabel || 'previous shot'})`}
+                className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl font-bold text-xs bg-slate-800/90 hover:bg-slate-700 text-amber-300 border border-amber-500/40 transition-all active:scale-95 cursor-pointer shadow-sm"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>Undo</span>
+                <span>Undo {undoLabel || ''}</span>
               </button>
             )}
 

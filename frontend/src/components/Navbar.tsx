@@ -12,7 +12,6 @@ import {
   Layers,
 } from 'lucide-react';
 import { StationRole, SystemStatus, ViewMode, SessionEvent, NavbarProps, S3SyncStatus } from '../types';
-import { SyncStatusIndicators } from './SyncStatusIndicators';
 
 export type { NavbarProps };
 
@@ -42,10 +41,6 @@ export function Navbar({
   onOpenSettings,
   onOpenStorageFolder,
   onOpenMobilePairing,
-  isPeerConnected = false,
-  lastPeerEvent = null,
-  lastPeerHeartbeat = null,
-  onResetRemoteSession,
   s3Status = defaultS3Status,
   isS3ManualSyncing = false,
   s3SyncFeedback = null,
@@ -185,20 +180,6 @@ export function Navbar({
 
         {/* Far Right: View Toggle, Live Sync Indicators, Manifest & Tools */}
         <div className="flex items-center space-x-2 sm:space-x-2.5 shrink-0 z-10">
-
-          {/* Real-Time LAN Peer & AWS S3 Sync Status Indicators */}
-          <SyncStatusIndicators
-            isPeerConnected={isPeerConnected}
-            lastPeerEvent={lastPeerEvent}
-            lastPeerHeartbeat={lastPeerHeartbeat}
-            stationRole={stationRole}
-            onResetRemoteSession={onResetRemoteSession}
-            s3Status={s3Status}
-            isS3ManualSyncing={isS3ManualSyncing}
-            s3SyncFeedback={s3SyncFeedback}
-            onTriggerS3Sync={onTriggerS3Sync}
-            onOpenSettings={onOpenSettings}
-          />
 
           {/* View Mode Toggle: Capture vs Search & View */}
           <div className="flex items-center bg-gradient-to-r from-blue-50/80 to-indigo-50/60 p-1 rounded-xl border border-blue-100 shadow-xs">
