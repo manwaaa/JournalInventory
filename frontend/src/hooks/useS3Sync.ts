@@ -45,7 +45,7 @@ export function useS3Sync(pollIntervalMs = 5000) {
       }
     } catch (err) {
       // Keep previous status or mark not loading
-      setStatus(prev => ({ ...prev, isLoading: false }));
+      setStatus((prev: S3SyncStatus) => ({ ...prev, isLoading: false }));
     }
   }, []);
 
