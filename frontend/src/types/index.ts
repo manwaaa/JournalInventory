@@ -110,8 +110,6 @@ export interface ProofItem {
 export interface ManifestFileEntry {
   id: string;
   filename: string;
-  sheetName?: string;
-  lotNumber?: string;
   importedAt: string;
   itemCount: number;
   processableCount: number;
@@ -269,6 +267,7 @@ export interface SessionEvent {
   shotNumber?: number;
   shotInfo?: ShotInfo;
   wasRetake?: boolean;
+  restoredShotInfo?: ShotInfo | null;
   boxShots?: any;
   boxSummary?: BoxSummary;
   isComplete?: boolean;
@@ -372,6 +371,8 @@ export interface NavbarProps {
   onOpenSettings: () => void;
   onOpenStorageFolder: () => void;
   onOpenMobilePairing: () => void;
+  darkMode?: boolean;
+  onToggleDarkMode?: () => void;
 
   // AWS S3 Sync indicators
   s3Status?: S3SyncStatus;
@@ -379,4 +380,3 @@ export interface NavbarProps {
   s3SyncFeedback?: string | null;
   onTriggerS3Sync?: (force?: boolean) => Promise<void>;
 }
-

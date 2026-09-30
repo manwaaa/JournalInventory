@@ -427,12 +427,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
   // Filter items by selected manifest
   const currentManifestItems = (selectedManifestId === 'all' || !activeManifestEntry)
     ? (manifest?.items || [])
-    : (manifest?.items || []).filter(i => {
-        if (i.manifestId && i.manifestId === selectedManifestId) return true;
-        if (activeManifestEntry.lotNumber && i.lotNumber === activeManifestEntry.lotNumber) return true;
-        if (activeManifestEntry.sheetName && i.sheetName === activeManifestEntry.sheetName) return true;
-        return false;
-      });
+    : (manifest?.items || []).filter(i => i.manifestId === selectedManifestId);
 
   // Display stats based on selection
   const displayTotal = (selectedManifestId === 'all' || !activeManifestEntry)
@@ -577,24 +572,16 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
                 <select
                   value={selectedManifestId}
                   onChange={(e) => setSelectedManifestId(e.target.value)}
-                  className="px-2 py-1 text-xs font-bold text-brand-800 bg-transparent outline-none cursor-pointer max-w-[240px] sm:max-w-[340px] truncate"
+                  className="px-2 py-1 text-xs font-bold text-brand-800 bg-transparent outline-none cursor-pointer max-w-[240px] sm:max-w-[320px] truncate"
                 >
                   <option value="all">
-                    📑 All Manifests ({manifest?.totalCount || 0} books{manifestsList.length > 1 ? ` • ${manifestsList.length} lots/sheets` : ''})
+                    📑 All Manifests ({manifest?.totalCount || 0} books{manifestsList.length > 1 ? ` • ${manifestsList.length} files` : ''})
                   </option>
                   {manifestsList.map((m) => {
-                    let label = '';
-                    if (m.lotNumber) {
-                      const sheetExtra = m.sheetName && m.sheetName !== m.lotNumber ? ` (${m.sheetName})` : '';
-                      label = `${m.lotNumber}${sheetExtra} • ${m.filename}`;
-                    } else if (m.sheetName) {
-                      label = `Sheet: ${m.sheetName} • ${m.filename}`;
-                    } else {
-                      label = m.filename;
-                    }
+                    const lots = m.lotNumbers && m.lotNumbers.length > 0 ? ` [${m.lotNumbers.join(', ')}]` : '';
                     return (
                       <option key={m.id} value={m.id}>
-                        📄 {label} — {m.itemCount} books
+                        📄 {m.filename}{lots} — {m.itemCount} books
                       </option>
                     );
                   })}
