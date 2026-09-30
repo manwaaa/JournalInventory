@@ -55,6 +55,10 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   onToggleAutoSwitch,
   onCapture,
   onRetakeShot,
+  onCancelRetake,
+  canUndo = false,
+  onUndo,
+  undoLabel,
   currentStep,
   resolution,
   isCapturing,
@@ -462,18 +466,42 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
             </div>
           </div>
 
-          <button
-            onClick={handleCaptureClick}
-            disabled={!isStreaming || isCapturing}
-            className={`flex items-center justify-center space-x-2 px-7 py-2.5 rounded-xl font-bold text-sm transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 cursor-pointer ${
-              isRetaking
-                ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black border border-amber-300 ring-2 ring-amber-400 shadow-lg shadow-amber-500/40'
-                : 'btn-primary-gradient text-white'
-            }`}
-          >
-            <Camera className="w-4 h-4" />
-            <span>{isCapturing ? 'Saving to PC...' : isRetaking ? `Retake Shot ${shotNum} (Replace)` : `Take Shot ${shotNum}`}</span>
-          </button>
+          <div className="flex items-center space-x-2 shrink-0">
+            {isRetaking && onCancelRetake && (
+              <button
+                type="button"
+                onClick={onCancelRetake}
+                className="flex items-center space-x-1 px-4 py-2.5 rounded-xl font-bold text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 transition-all active:scale-95 cursor-pointer"
+              >
+                <span>Cancel Retake</span>
+              </button>
+            )}
+
+            {canUndo && onUndo && !isRetaking && (
+              <button
+                type="button"
+                onClick={onUndo}
+                title={`Undo last action (${undoLabel || 'previous shot'})`}
+                className="flex items-center space-x-1.5 px-4 py-2.5 rounded-xl font-bold text-xs bg-slate-800/90 hover:bg-slate-700 text-amber-300 border border-amber-500/40 transition-all active:scale-95 cursor-pointer shadow-sm"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Undo {undoLabel || ''}</span>
+              </button>
+            )}
+
+            <button
+              onClick={handleCaptureClick}
+              disabled={!isStreaming || isCapturing}
+              className={`flex items-center justify-center space-x-2 px-7 py-2.5 rounded-xl font-bold text-sm transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 cursor-pointer ${
+                isRetaking
+                  ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black border border-amber-300 ring-2 ring-amber-400 shadow-lg shadow-amber-500/40'
+                  : 'btn-primary-gradient text-white'
+              }`}
+            >
+              <Camera className="w-4 h-4" />
+              <span>{isCapturing ? 'Saving to PC...' : isRetaking ? `Retake Shot ${shotNum} (Replace)` : `Take Shot ${shotNum}`}</span>
+            </button>
+          </div>
         </div>
       )}
 

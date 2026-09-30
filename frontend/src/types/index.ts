@@ -373,11 +373,7 @@ export interface NavbarProps {
   onOpenStorageFolder: () => void;
   onOpenMobilePairing: () => void;
 
-  // Multi-PC LAN Peer & AWS S3 Sync indicators
-  isPeerConnected?: boolean;
-  lastPeerEvent?: SessionEvent | null;
-  lastPeerHeartbeat?: Date | null;
-  onResetRemoteSession?: (opts?: { clearBoxContext?: boolean; lotNumber?: string; boxNumber?: string }) => Promise<any>;
+  // AWS S3 Sync indicators
   s3Status?: S3SyncStatus;
   isS3ManualSyncing?: boolean;
   s3SyncFeedback?: string | null;

@@ -824,14 +824,7 @@ app.post('/api/session/reset', async (req, res) => {
 app.post('/api/capture/discard', async (req, res) => {
   try {
     const targetIsbn = req.body?.isbn || currentSession.activeIsbn;
-    if (targetIsbn) {
-      const cleanIsbn = sanitizeIsbn(targetIsbn);
-      const folderPath = path.join(config.storagePath, cleanIsbn);
-      if (fs.existsSync(folderPath)) {
-        await fs.remove(folderPath);
-        console.log(`[Storage] Discarded proof folder: ${cleanIsbn}`);
-      }
-    }
+    // Note: Do NOT delete existing picture files! Closing/discarding the session preserves all captured photos.
     await cleanupEmptyProofFolders();
     currentSession = {
       activeIsbn: '',
@@ -846,10 +839,10 @@ app.post('/api/capture/discard', async (req, res) => {
       isProcessable: true
     };
     broadcastSession('SESSION_RESET', { discarded: true, isbn: targetIsbn });
-    res.json({ success: true, discarded: targetIsbn });
+    res.json({ success: true, message: 'Active session closed without deleting pictures', isbn: targetIsbn });
   } catch (err) {
-    console.error('Error discarding session:', err);
-    res.status(500).json({ error: 'Failed to discard session', details: err.message });
+    console.error('Error closing session:', err);
+    res.status(500).json({ error: 'Failed to close session', details: err.message });
   }
 });
 
@@ -1734,7 +1727,7 @@ function findBoxStorageDir(lotNumber, boxNumber) {
   try {
     const entries = fs.readdirSync(boxesBaseDir);
 
-    // Look for matching lot + box
+    // Look for matching lot + box ONLY
     for (const entry of entries) {
       const parts = entry.split('__');
       if (parts.length >= 2) {
@@ -1744,16 +1737,6 @@ function findBoxStorageDir(lotNumber, boxNumber) {
           const candidate = path.join(boxesBaseDir, entry);
           if (dirHasBoxShots(candidate)) return candidate;
         }
-      }
-    }
-
-    // Look for matching box number alone across any lot in _boxes ONLY IF it has shots
-    for (const entry of entries) {
-      const parts = entry.split('__');
-      const entryBoxNorm = normalizeBoxString(parts.length >= 2 ? parts.slice(1).join('__') : entry);
-      if (entryBoxNorm === normBox) {
-        const candidate = path.join(boxesBaseDir, entry);
-        if (dirHasBoxShots(candidate)) return candidate;
       }
     }
   } catch (err) {
@@ -1870,10 +1853,11 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
 
   let boxDir = findBoxStorageDir(lotNumber, boxNumber);
 
-  // Fallback 1: If no boxDir with shots in _boxes/, check sibling journals in config.storagePath
+  // Fallback 1: If no boxDir with shots in _boxes/, check sibling journals in config.storagePath belonging to the SAME lot
   if (!boxDir || !dirHasBoxShots(boxDir)) {
     try {
       const normBox = normalizeBoxString(boxNumber);
+      const normLot = normalizeLotString(lotNumber);
       if (fs.existsSync(config.storagePath)) {
         const allDirs = fs.readdirSync(config.storagePath);
         for (const dirName of allDirs) {
@@ -1881,15 +1865,22 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
           const candidateFolder = path.join(config.storagePath, dirName);
           const m = readIsbnMetadata(dirName);
           let candidateBox = m?.boxNumber;
-          if (!candidateBox && manifestData.items) {
+          let candidateLot = m?.lotNumber;
+          if ((!candidateBox || !candidateLot) && manifestData.items) {
             const mItem = manifestData.items.find(i => sanitizeIsbn(i.isbn) === dirName);
-            if (mItem) candidateBox = mItem.boxNumber;
+            if (mItem) {
+              if (!candidateBox) candidateBox = mItem.boxNumber;
+              if (!candidateLot) candidateLot = mItem.lotNumber;
+            }
           }
-          if (candidateBox && normalizeBoxString(candidateBox) === normBox) {
+          const candidateBoxNorm = normalizeBoxString(candidateBox);
+          const candidateLotNorm = normalizeLotString(candidateLot);
+
+          if (candidateBoxNorm === normBox && (candidateLotNorm === normLot || normLot === 'unassigned' || candidateLotNorm === 'unassigned')) {
             const shot1File = findShotFileInFolder(candidateFolder, 1, dirName);
             const shot2File = findShotFileInFolder(candidateFolder, 2, dirName);
             if (shot1File || shot2File) {
-              const fallbackBoxDir = path.join(config.storagePath, '_boxes', getBoxKey(m?.lotNumber || lotNumber, boxNumber));
+              const fallbackBoxDir = path.join(config.storagePath, '_boxes', getBoxKey(candidateLot || lotNumber, boxNumber));
               fs.ensureDirSync(fallbackBoxDir);
               if (shot1File && isValidImageFile(path.join(candidateFolder, shot1File)) && !isValidImageFile(path.join(fallbackBoxDir, 'shot_1_box_a.jpg')) && !isValidImageFile(path.join(fallbackBoxDir, 'shot_1_box.jpg'))) {
                 fs.copySync(path.join(candidateFolder, shot1File), path.join(fallbackBoxDir, 'shot_1_box_a.jpg'));
@@ -1914,37 +1905,71 @@ async function applyBoxShotsToIsbn(cleanIsbn, lotNumber, boxNumber, folderPath) 
   if ((!boxDir || !dirHasBoxShots(boxDir)) && config.peerIp) {
     try {
       const peerBoxKey = getBoxKey(lotNumber, boxNumber);
-      if (peerBoxKey) {
-        const destBoxDir = boxDir || path.join(config.storagePath, '_boxes', peerBoxKey);
-        // Try shot_1_box_a.jpg then shot_1_box.jpg
-        let p1Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_1_box_a.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
-        if (!p1Res || !p1Res.ok) {
-          p1Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_1_box.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
-        }
-        if (p1Res && p1Res.ok) {
-          const buf1 = Buffer.from(await p1Res.arrayBuffer());
-          if (buf1.length > 1024) {
-            fs.ensureDirSync(destBoxDir);
-            await fs.writeFile(path.join(destBoxDir, 'shot_1_box_a.jpg'), buf1);
-            boxDir = destBoxDir;
+      const destBoxDir = boxDir || (peerBoxKey ? path.join(config.storagePath, '_boxes', peerBoxKey) : null);
+
+      if (destBoxDir) {
+        fs.ensureDirSync(destBoxDir);
+
+        // First attempt: Query peer's /api/sync/get-box-shots endpoint
+        const peerApiUrl = `http://${config.peerIp}:${config.peerPort || 3001}/api/sync/get-box-shots?lotNumber=${encodeURIComponent(lotNumber || '')}&boxNumber=${encodeURIComponent(boxNumber || '')}`;
+        const apiRes = await fetch(peerApiUrl, { signal: AbortSignal.timeout(3000) }).catch(() => null);
+        
+        if (apiRes && apiRes.ok) {
+          const apiData = await apiRes.json().catch(() => null);
+          if (apiData?.boxShots) {
+            if (apiData.boxShots.hasBoxShot && apiData.boxShots.boxShotUrl) {
+              const imgRes = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}${apiData.boxShots.boxShotUrl}`, { signal: AbortSignal.timeout(3000) }).catch(() => null);
+              if (imgRes && imgRes.ok) {
+                const buf = Buffer.from(await imgRes.arrayBuffer());
+                if (buf.length > 1024) {
+                  await fs.writeFile(path.join(destBoxDir, 'shot_1_box_a.jpg'), buf);
+                  boxDir = destBoxDir;
+                }
+              }
+            }
+            if (apiData.boxShots.hasUnboxShot && apiData.boxShots.unboxShotUrl) {
+              const imgRes2 = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}${apiData.boxShots.unboxShotUrl}`, { signal: AbortSignal.timeout(3000) }).catch(() => null);
+              if (imgRes2 && imgRes2.ok) {
+                const buf2 = Buffer.from(await imgRes2.arrayBuffer());
+                if (buf2.length > 1024) {
+                  await fs.writeFile(path.join(destBoxDir, 'shot_2_box_b.jpg'), buf2);
+                  boxDir = destBoxDir;
+                }
+              }
+            }
           }
         }
 
-        // Try shot_2_box_b.jpg then shot_2_unbox.jpg
-        let p2Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_2_box_b.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
-        if (!p2Res || !p2Res.ok) {
-          p2Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_2_unbox.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
-        }
-        if (p2Res && p2Res.ok) {
-          const buf2 = Buffer.from(await p2Res.arrayBuffer());
-          if (buf2.length > 1024) {
-            fs.ensureDirSync(destBoxDir);
-            await fs.writeFile(path.join(destBoxDir, 'shot_2_box_b.jpg'), buf2);
-            boxDir = destBoxDir;
+        // Direct static file fallback if needed
+        if (!dirHasBoxShots(destBoxDir)) {
+          let p1Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_1_box_a.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
+          if (!p1Res || !p1Res.ok) {
+            p1Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_1_box.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
+          }
+          if (p1Res && p1Res.ok) {
+            const buf1 = Buffer.from(await p1Res.arrayBuffer());
+            if (buf1.length > 1024) {
+              await fs.writeFile(path.join(destBoxDir, 'shot_1_box_a.jpg'), buf1);
+              boxDir = destBoxDir;
+            }
+          }
+
+          let p2Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_2_box_b.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
+          if (!p2Res || !p2Res.ok) {
+            p2Res = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/proofs/_boxes/${encodeURIComponent(peerBoxKey)}/shot_2_unbox.jpg`, { signal: AbortSignal.timeout(2500) }).catch(() => null);
+          }
+          if (p2Res && p2Res.ok) {
+            const buf2 = Buffer.from(await p2Res.arrayBuffer());
+            if (buf2.length > 1024) {
+              await fs.writeFile(path.join(destBoxDir, 'shot_2_box_b.jpg'), buf2);
+              boxDir = destBoxDir;
+            }
           }
         }
       }
-    } catch (peerErr) {}
+    } catch (peerErr) {
+      console.warn('[PeerSync] Error fetching box shots from peer:', peerErr.message);
+    }
   }
 
   if (!boxDir || !fs.existsSync(boxDir)) return { inherited1: false, inherited2: false };
@@ -2147,6 +2172,39 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       : (manifestMatch?.boxNumber || metadata?.boxNumber || currentSession.boxNumber || boxNumber || '');
 
     const boxShots = getBoxShots(resolvedLot, resolvedBox);
+    let metadataModified = false;
+
+    // Self-healing: if the book previously inherited Shot 1 or 2, but this box actually has NO shots (e.g. cross-lot pollution from a prior bug), remove the stale inherited shots
+    if (!boxShots.hasBoxShot && metadata?.shots?.[1]?.inheritedFromBox) {
+      const shot1Target = path.join(folderPath, getShotFilename(1, activeIdentifier));
+      if (fs.existsSync(shot1Target)) {
+        try { fs.removeSync(shot1Target); } catch (e) {}
+      }
+      delete existingShots[1];
+      delete metadata.shots[1];
+      metadataModified = true;
+    }
+
+    if (!boxShots.hasUnboxShot && metadata?.shots?.[2]?.inheritedFromBox) {
+      const shot2Target = path.join(folderPath, getShotFilename(2, activeIdentifier));
+      if (fs.existsSync(shot2Target)) {
+        try { fs.removeSync(shot2Target); } catch (e) {}
+      }
+      delete existingShots[2];
+      delete metadata.shots[2];
+      metadataModified = true;
+    }
+
+    if (metadataModified && metadata) {
+      metadata.updatedAt = new Date().toISOString();
+      await saveIsbnMetadata(activeIdentifier, metadata);
+    }
+
+    // Recalculate shots found count after self-healing
+    shotsFoundCount = 0;
+    for (let s = 1; s <= 7; s++) {
+      if (existingShots[s]) shotsFoundCount++;
+    }
 
     // Fallback: If Shot 1 or Shot 2 were not yet in book folder, but box has them in _boxes/
     if (!existingShots[1] && boxShots.hasBoxShot) {
@@ -2441,8 +2499,10 @@ app.post('/api/capture/save-shot', async (req, res) => {
 
           // Propagate to any other books in this box that are already scanned or in manifest
           if (manifestData.items && manifestData.items.length > 0) {
+            const normResolvedLot = normalizeLotString(resolvedLot);
             const normResolvedBox = normalizeBoxString(resolvedBox);
             const matchingItems = manifestData.items.filter(i => 
+              normalizeLotString(i.lotNumber) === normResolvedLot &&
               normalizeBoxString(i.boxNumber) === normResolvedBox
             );
             for (const item of matchingItems) {
@@ -2694,6 +2754,8 @@ app.post('/api/capture/init-box', async (req, res) => {
     }
 
     const resolvedLot = lotNumber || 'Unassigned';
+    const normLot = normalizeLotString(resolvedLot);
+    const normBox = normalizeBoxString(boxNumber);
     let boxShots = getBoxShots(resolvedLot, boxNumber);
 
     // If box shots are missing locally, attempt on-demand fetch from peer PC
@@ -2732,10 +2794,9 @@ app.post('/api/capture/init-box', async (req, res) => {
         }
       } catch (e) {}
     }
-
     const boxBooks = (manifestData.items || []).filter(item => 
-      (item.lotNumber || 'Unassigned').toLowerCase() === (resolvedLot || 'Unassigned').toLowerCase() &&
-      (item.boxNumber || '').toLowerCase() === String(boxNumber).toLowerCase()
+      normalizeLotString(item.lotNumber) === normLot &&
+      normalizeBoxString(item.boxNumber) === normBox
     );
 
     const sampleIsbn = boxBooks.length > 0 ? boxBooks[0].isbn : `BOX_${sanitizeIsbn(boxNumber)}`;
@@ -2839,8 +2900,10 @@ app.post('/api/boxes/save-shot', async (req, res) => {
 
     // Propagate to any existing book folders belonging to this box
     if (manifestData.items && manifestData.items.length > 0) {
+      const normResolvedLot = normalizeLotString(lotNumber);
       const normResolvedBox = normalizeBoxString(boxNumber);
       const matchingItems = manifestData.items.filter(i => 
+        normalizeLotString(i.lotNumber) === normResolvedLot &&
         normalizeBoxString(i.boxNumber) === normResolvedBox
       );
       for (const item of matchingItems) {
@@ -2972,6 +3035,29 @@ app.post('/api/boxes/undo-shot', async (req, res) => {
         delete meta.shots[sNum];
         await fs.writeJson(metaPath, meta, { spaces: 2 });
       }
+
+      // If box shot was cancelled/deleted, clean up inherited copies from matching books in this lot
+      if (manifestData.items && manifestData.items.length > 0) {
+        const normResolvedLot = normalizeLotString(lotNumber);
+        const normResolvedBox = normalizeBoxString(boxNumber);
+        const matchingItems = manifestData.items.filter(i => 
+          normalizeLotString(i.lotNumber) === normResolvedLot &&
+          normalizeBoxString(i.boxNumber) === normResolvedBox
+        );
+        for (const item of matchingItems) {
+          const itemClean = sanitizeIsbn(item.isbn);
+          const itemFolder = path.join(config.storagePath, itemClean);
+          const itemShotFile = findShotFileInFolder(itemFolder, sNum, itemClean);
+          const itemMeta = readIsbnMetadata(itemClean);
+          if (itemMeta?.shots?.[sNum]?.inheritedFromBox && itemShotFile) {
+            try {
+              fs.removeSync(path.join(itemFolder, itemShotFile));
+              delete itemMeta.shots[sNum];
+              saveIsbnMetadata(itemClean, itemMeta);
+            } catch (e) {}
+          }
+        }
+      }
     }
 
     const boxShots = getBoxShots(lotNumber, boxNumber);
@@ -3068,8 +3154,10 @@ app.post('/api/sync/receive-box-shot', async (req, res) => {
 
     // Propagate to any existing book folders belonging to this box on peer PC
     if (manifestData.items && manifestData.items.length > 0) {
+      const normResolvedLot = normalizeLotString(lotNumber);
       const normResolvedBox = normalizeBoxString(boxNumber);
       const matchingItems = manifestData.items.filter(i => 
+        normalizeLotString(i.lotNumber) === normResolvedLot &&
         normalizeBoxString(i.boxNumber) === normResolvedBox
       );
       for (const item of matchingItems) {
@@ -3089,6 +3177,19 @@ app.post('/api/sync/receive-box-shot', async (req, res) => {
     });
 
     res.json({ success: true, replicated: true, lotNumber, boxNumber, shotNumber: sNum });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint: Query box shots for peer LAN pull
+app.get('/api/sync/get-box-shots', async (req, res) => {
+  try {
+    const lotNumber = req.query.lotNumber || 'Unassigned';
+    const boxNumber = req.query.boxNumber || '';
+    if (!boxNumber) return res.status(400).json({ error: 'boxNumber is required' });
+    const boxShots = getBoxShots(lotNumber, boxNumber);
+    res.json({ success: true, lotNumber, boxNumber, boxShots });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
