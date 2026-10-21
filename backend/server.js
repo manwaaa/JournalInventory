@@ -7,6 +7,7 @@ import { exec } from 'child_process';
 import os from 'os';
 import archiver from 'archiver';
 import dotenv from 'dotenv';
+import sharp from 'sharp';
 
 import http from 'http';
 import https from 'https';
@@ -69,7 +70,36 @@ function sanitizeIsbn(isbn) {
 // Helper to extract base ISBN from copy names (e.g. 9780198826545_Copy2 -> 9780198826545)
 function getBaseIsbn(identifier) {
   if (!identifier || typeof identifier !== 'string') return '';
-  return identifier.replace(/_Copy\d+$/i, '');
+  return identifier.replace(/(_Copy\d+|_Part\d+)+$/i, '');
+}
+
+// Helper to extract part number from identifier (e.g. 9788120309869_Part1 -> 1, 9788120309869_Part2 -> 2)
+function getPartNumber(identifier) {
+  if (!identifier || typeof identifier !== 'string') return null;
+  const match = identifier.match(/_Part(\d+)/i);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+// Helper to get folder for identifier (supports storing all parts in base ISBN folder or dedicated folder)
+function getFolderForIdentifier(identifier) {
+  const cleanId = sanitizeIsbn(identifier);
+  if (!cleanId) return config.storagePath;
+
+  // Dedicated directory check (e.g. if 9788120309869_Part1 directory explicitly exists)
+  const dedicatedPath = path.join(config.storagePath, cleanId);
+  if (fs.existsSync(dedicatedPath)) return dedicatedPath;
+
+  // Base ISBN directory check (stores all 21 pictures in 1 ISBN directory)
+  const base = getBaseIsbn(cleanId);
+  const basePath = path.join(config.storagePath, base);
+  if (fs.existsSync(basePath)) return basePath;
+
+  // If this identifier has a Part number, default to base ISBN folder so all parts stay together in 1 folder
+  if (getPartNumber(cleanId) !== null) {
+    return basePath;
+  }
+
+  return dedicatedPath;
 }
 
 // Helper to extract copy number from identifier (e.g. 9780198826545_Copy2 -> 2, otherwise 1)
@@ -134,21 +164,29 @@ function findShotFileInFolder(folderPath, shotNumber, identifier) {
     const suffix = def.suffix.toLowerCase();
     const underscoreSuffix = suffix.replace(/ /g, '_');
 
+    const partNum = getPartNumber(identifier);
+    const partTag = partNum !== null ? `_part${partNum}`.toLowerCase() : null;
+
     // Check files ending with this shot's suffix (e.g. any *_box a.jpg or *_box_a.jpg)
     for (const f of files) {
       const lower = f.toLowerCase();
+      if (partTag && !lower.includes(partTag)) continue;
+      if (!partTag && /_part\d+/i.test(lower)) continue;
+
       if (lower.endsWith(suffix) || (underscoreSuffix !== suffix && lower.endsWith(underscoreSuffix))) {
         const fullP = path.join(folderPath, f);
         if (isValidImageFile(fullP)) return f;
       }
     }
 
-    // Check legacy names
-    for (const leg of def.legacyNames) {
-      const legMatch = files.find(f => f.toLowerCase() === leg.toLowerCase() || f.toLowerCase().endsWith(leg.toLowerCase()));
-      if (legMatch) {
-        const fullP = path.join(folderPath, legMatch);
-        if (isValidImageFile(fullP)) return legMatch;
+    // Check legacy names (only if not searching for a specific part)
+    if (!partTag) {
+      for (const leg of def.legacyNames) {
+        const legMatch = files.find(f => !/_part\d+/i.test(f) && (f.toLowerCase() === leg.toLowerCase() || f.toLowerCase().endsWith(leg.toLowerCase())));
+        if (legMatch) {
+          const fullP = path.join(folderPath, legMatch);
+          if (isValidImageFile(fullP)) return legMatch;
+        }
       }
     }
   } catch (e) {}
@@ -729,9 +767,92 @@ app.use(cors());
 app.use(express.json({ limit: '60mb' }));
 app.use(express.urlencoded({ limit: '60mb', extended: true }));
 
+
+// -------------------------------------------------------------
+// High-Speed Thumbnail Generator & Disk Cache
+// -------------------------------------------------------------
+async function getOrGenerateThumbnail(dir, filename) {
+  try {
+    let originalPath = path.join(config.storagePath, dir, filename);
+    if (!fs.existsSync(originalPath)) {
+      const baseId = getBaseIsbn(dir);
+      if (baseId && baseId !== dir) {
+        originalPath = path.join(config.storagePath, baseId, filename);
+      }
+    }
+    if (!isValidImageFile(originalPath)) {
+      return null;
+    }
+
+    const thumbDir = path.join(config.storagePath, '.thumbnails', dir);
+    const thumbPath = path.join(thumbDir, filename);
+
+    // If cached thumbnail exists and is newer than original, return it
+    if (fs.existsSync(thumbPath)) {
+      const origStat = fs.statSync(originalPath);
+      const thumbStat = fs.statSync(thumbPath);
+      if (thumbStat.mtime >= origStat.mtime && thumbStat.size > 200) {
+        return thumbPath;
+      }
+    }
+
+    // Generate fast thumbnail (120x120 cover, jpeg quality 80)
+    fs.ensureDirSync(thumbDir);
+    await sharp(originalPath)
+      .resize(120, 120, { fit: 'cover' })
+      .jpeg({ quality: 80 })
+      .toFile(thumbPath);
+
+    return thumbPath;
+  } catch (err) {
+    console.warn(`[Thumbnail] Generation failed for ${dir}/${filename}:`, err.message);
+    return null;
+  }
+}
+
+app.get('/api/thumbnail/:dir/:file', async (req, res) => {
+  try {
+    const dir = decodeURIComponent(req.params.dir);
+    const file = decodeURIComponent(req.params.file);
+    const thumbPath = await getOrGenerateThumbnail(dir, file);
+    if (thumbPath && fs.existsSync(thumbPath)) {
+      res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+      return res.sendFile(thumbPath);
+    }
+
+    // Fallback: serve original if thumbnail fails
+    let originalPath = path.join(config.storagePath, dir, file);
+    if (!fs.existsSync(originalPath)) {
+      const baseId = getBaseIsbn(dir);
+      if (baseId && baseId !== dir) originalPath = path.join(config.storagePath, baseId, file);
+    }
+    if (isValidImageFile(originalPath)) {
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.sendFile(originalPath);
+    }
+    res.status(404).send('Image not found');
+  } catch (e) {
+    res.status(500).send('Thumbnail error');
+  }
+});
+
 // Serve saved shots statically with peer proxy/caching fallback
 app.use('/proofs', (req, res, next) => {
   express.static(config.storagePath)(req, res, async () => {
+    // Fallback for multi-part files stored in base ISBN directory
+    const cleanReqPath = decodeURIComponent(req.path.split('?')[0]).replace(/^[\\\/]/, '');
+    const pathParts = cleanReqPath.split(/[\\\/]/);
+    if (pathParts.length >= 2) {
+      const [idPart, ...rest] = pathParts;
+      const baseId = getBaseIsbn(idPart);
+      if (baseId && baseId !== idPart) {
+        const fallbackPath = path.join(config.storagePath, baseId, rest.join(path.sep));
+        if (isValidImageFile(fallbackPath)) {
+          return res.sendFile(fallbackPath);
+        }
+      }
+    }
+
     // If not found locally, attempt to fetch from peer PC (e.g. PC 1) over LAN
     if (config.peerIp) {
       try {
@@ -1255,7 +1376,7 @@ app.post('/api/s3/test-connection', async (req, res) => {
 
 // Core helper: Upload proof folder for a specific ISBN to S3 (Pictures ONLY, no metadata.json)
 async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
-  const folderPath = path.join(config.storagePath, cleanIsbn);
+  const folderPath = getFolderForIdentifier(cleanIsbn);
   if (!fs.existsSync(folderPath)) {
     throw new Error(`No local folder found for ISBN ${cleanIsbn}`);
   }
@@ -2102,10 +2223,85 @@ async function findExistingCopies(baseIsbn) {
   return copies;
 }
 
+// Helper to detect multi-part book sets (e.g. 9788120309869_Part1, Part2, Part3)
+async function findExistingParts(baseIsbn) {
+  if (!fs.existsSync(config.storagePath) || !baseIsbn) return [];
+
+  const cleanBase = sanitizeIsbn(baseIsbn);
+  const partsMap = new Map();
+
+  // 1. Check inside base ISBN directory (single folder containing all 21 pictures)
+  const baseFolder = path.join(config.storagePath, cleanBase);
+  if (fs.existsSync(baseFolder)) {
+    try {
+      const files = await fs.readdir(baseFolder);
+      for (const f of files) {
+        const m = f.match(/_Part(\d+)_/i);
+        if (m) {
+          const pNum = parseInt(m[1], 10);
+          if (!partsMap.has(pNum)) {
+            partsMap.set(pNum, {
+              identifier: `${cleanBase}_Part${pNum}`,
+              partNumber: pNum,
+              shotsCount: 0,
+              isComplete: false,
+              shots: {}
+            });
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 2. Check sibling directories (e.g. 9788120309869_Part1)
+  try {
+    const entries = await fs.readdir(config.storagePath, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        const m = e.name.match(new RegExp(`^${cleanBase}_Part(\\d+)$`, 'i'));
+        if (m) {
+          const pNum = parseInt(m[1], 10);
+          if (!partsMap.has(pNum)) {
+            partsMap.set(pNum, {
+              identifier: e.name,
+              partNumber: pNum,
+              shotsCount: 0,
+              isComplete: false,
+              shots: {}
+            });
+          }
+        }
+      }
+    }
+  } catch (e) {}
+
+  for (const [pNum, partInfo] of partsMap.entries()) {
+    const partFolder = getFolderForIdentifier(partInfo.identifier);
+    let count = 0;
+    for (let s = 1; s <= 7; s++) {
+      const found = findShotFileInFolder(partFolder, s, partInfo.identifier);
+      if (found) {
+        count++;
+        partInfo.shots[s] = `/proofs/${encodeURIComponent(cleanBase)}/${encodeURIComponent(found)}`;
+      } else {
+        partInfo.shots[s] = null;
+      }
+    }
+    partInfo.shotsCount = count;
+    partInfo.isComplete = count >= 7;
+    const meta = readIsbnMetadata(partInfo.identifier);
+    if (meta) partInfo.metadata = meta;
+  }
+
+  const parts = Array.from(partsMap.values());
+  parts.sort((a, b) => a.partNumber - b.partNumber);
+  return parts;
+}
+
 // Initialize ISBN verification session
 app.post('/api/capture/init-isbn', async (req, res) => {
   try {
-    const { isbn, forceNewCopy, targetIdentifier, lotNumber, boxNumber } = req.body;
+    const { isbn, forceNewCopy, forceNewPart, targetPartNumber, partNumber: reqPartNumber, totalParts: reqTotalParts, targetIdentifier, lotNumber, boxNumber } = req.body;
     if (!isbn || !isbn.trim()) {
       return res.status(400).json({ error: 'ISBN is required' });
     }
@@ -2140,24 +2336,52 @@ app.post('/api/capture/init-isbn', async (req, res) => {
     }
 
     const existingCopies = await findExistingCopies(baseIsbnOnly);
+    const existingParts = await findExistingParts(baseIsbnOnly);
 
     let activeIdentifier = cleanBaseIsbn;
     let copyNumber = 1;
+    let partNumber = null;
+    let totalParts = reqTotalParts || (existingParts.length > 0 ? Math.max(existingParts.length, 3) : undefined);
 
-    if (forceNewCopy) {
+    if (forceNewPart) {
+      const maxPart = existingParts.reduce((max, p) => Math.max(max, p.partNumber), 0);
+      const nextPartNum = Math.max(maxPart + 1, 2);
+      activeIdentifier = `${baseIsbnOnly}_Part${nextPartNum}`;
+      partNumber = nextPartNum;
+    } else if (targetPartNumber !== undefined && targetPartNumber !== null) {
+      activeIdentifier = `${baseIsbnOnly}_Part${targetPartNumber}`;
+      partNumber = Number(targetPartNumber);
+    } else if (reqPartNumber !== undefined && reqPartNumber !== null) {
+      activeIdentifier = `${baseIsbnOnly}_Part${reqPartNumber}`;
+      partNumber = Number(reqPartNumber);
+    } else if (forceNewCopy) {
       const maxCopy = existingCopies.reduce((max, c) => Math.max(max, c.copyNumber), 0);
       const nextCopyNum = Math.max(maxCopy + 1, 2);
       activeIdentifier = `${baseIsbnOnly}_Copy${nextCopyNum}`;
       copyNumber = nextCopyNum;
     } else if (targetIdentifier) {
       activeIdentifier = sanitizeIsbn(targetIdentifier);
-      const match = activeIdentifier.match(/_Copy(\d+)$/i);
-      copyNumber = match ? parseInt(match[1], 10) : 1;
+      const copyMatch = activeIdentifier.match(/_Copy(\d+)$/i);
+      copyNumber = copyMatch ? parseInt(match[1], 10) : 1;
+      const partMatch = activeIdentifier.match(/_Part(\d+)$/i);
+      if (partMatch) {
+        partNumber = parseInt(partMatch[1], 10);
+      }
+    } else if (existingParts.length > 0) {
+      const incomplete = existingParts.find(p => !p.isComplete);
+      const chosen = incomplete || existingParts[0];
+      activeIdentifier = chosen.identifier;
+      partNumber = chosen.partNumber;
+    }
+
+    if (partNumber === null) {
+      partNumber = getPartNumber(activeIdentifier);
     }
 
     await cleanupEmptyProofFolders();
 
-    const folderPath = path.join(config.storagePath, activeIdentifier);
+    const folderPath = getFolderForIdentifier(activeIdentifier);
+    await fs.ensureDir(folderPath);
     const initialLot = manifestMatch?.lotNumber || lotNumber || currentSession.lotNumber || 'Lot-1';
     const initialBox = manifestMatch?.boxNumber || boxNumber || currentSession.boxNumber || '';
 
@@ -2282,6 +2506,9 @@ app.post('/api/capture/init-isbn', async (req, res) => {
         source: 'Manifest'
       } : null),
       copyNumber,
+      partNumber: partNumber !== null ? partNumber : undefined,
+      totalParts,
+      existingParts,
       isProcessable
     };
 
@@ -2292,6 +2519,9 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       boxNumber: resolvedBox,
       currentStep: initialStep,
       copyNumber,
+      partNumber: partNumber !== null ? partNumber : undefined,
+      totalParts,
+      existingParts,
       isProcessable,
       nonProcessableReason,
       manifestMatch,
@@ -2306,6 +2536,10 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       boxNumber: resolvedBox,
       currentStep: initialStep,
       copyNumber,
+      partNumber: partNumber !== null ? partNumber : undefined,
+      totalParts,
+      hasParts: existingParts.length > 0,
+      existingParts,
       folderPath,
       exists: alreadyExists,
       shotsCount: shotsFoundCount,
@@ -2315,11 +2549,68 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       bookDetails: currentSession.bookDetails,
       isProcessable,
       nonProcessableReason,
-      manifestMatch
+      manifestMatch,
+      existingCopies,
+      hasDuplicateCopies: existingCopies.length > 1 || (existingCopies.length === 1 && existingCopies[0].isComplete)
     });
   } catch (err) {
     console.error('Error initializing ISBN folder:', err);
     res.status(500).json({ error: 'Failed to initialize ISBN folder', details: err.message });
+  }
+});
+
+// Convert standard single-book captures to multi-part (_Part1)
+app.post('/api/capture/convert-to-parts', async (req, res) => {
+  try {
+    const { isbn, totalParts = 3 } = req.body;
+    if (!isbn) return res.status(400).json({ error: 'ISBN is required' });
+
+    const cleanIsbn = sanitizeIsbn(isbn);
+    const baseIsbn = getBaseIsbn(cleanIsbn);
+    const folderPath = getFolderForIdentifier(baseIsbn);
+
+    if (fs.existsSync(folderPath)) {
+      const files = await fs.readdir(folderPath);
+      for (const f of files) {
+        if (f.startsWith(`${baseIsbn}_`) && !/_Part\d+/i.test(f) && !/_Copy\d+/i.test(f) && /\.(jpe?g|png)$/i.test(f)) {
+          const suffix = f.substring(baseIsbn.length);
+          const newName = `${baseIsbn}_Part1${suffix}`;
+          try {
+            await fs.rename(path.join(folderPath, f), path.join(folderPath, newName));
+          } catch (e) {
+            console.warn('[convertToParts] Rename failed:', e.message);
+          }
+        }
+      }
+    }
+
+    const oldMeta = readIsbnMetadata(baseIsbn);
+    const part1Meta = oldMeta ? { ...oldMeta } : {};
+    part1Meta.identifier = `${baseIsbn}_Part1`;
+    part1Meta.isbn = baseIsbn;
+    part1Meta.partNumber = 1;
+    part1Meta.totalParts = totalParts;
+    if (part1Meta.shots) {
+      for (const s of Object.keys(part1Meta.shots)) {
+        if (part1Meta.shots[s]?.filename) {
+          part1Meta.shots[s].filename = part1Meta.shots[s].filename.replace(new RegExp(`^${baseIsbn}_(?!Part)`, 'i'), `${baseIsbn}_Part1_`);
+        }
+      }
+    }
+    await saveIsbnMetadata(`${baseIsbn}_Part1`, part1Meta);
+
+    const existingParts = await findExistingParts(baseIsbn);
+    res.json({
+      success: true,
+      isbn: `${baseIsbn}_Part1`,
+      baseIsbn,
+      partNumber: 1,
+      totalParts,
+      existingParts
+    });
+  } catch (err) {
+    console.error('[convertToParts] Error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -2349,7 +2640,9 @@ app.post('/api/capture/save-shot', async (req, res) => {
     const cleanIsbn = sanitizeIsbn(isbn);
     const baseIsbnOnly = getBaseIsbn(cleanIsbn);
     const copyNumber = getCopyNumber(cleanIsbn);
-    const folderPath = path.join(config.storagePath, cleanIsbn);
+    const partNumber = getPartNumber(cleanIsbn);
+    const totalParts = req.body.totalParts || currentSession?.totalParts;
+    const folderPath = getFolderForIdentifier(cleanIsbn);
     await fs.ensureDir(folderPath);
 
     const shotDef = SHOT_DEFINITIONS[sNum];
@@ -2385,6 +2678,8 @@ app.post('/api/capture/save-shot', async (req, res) => {
       identifier: cleanIsbn,
       isbn: baseIsbnOnly,
       copyNumber,
+      partNumber: partNumber !== null ? partNumber : undefined,
+      totalParts: totalParts || undefined,
       lotNumber: resolvedLot,
       boxNumber: resolvedBox,
       createdAt: new Date().toISOString(),
@@ -2535,9 +2830,14 @@ app.post('/api/capture/save-shot', async (req, res) => {
       }
     }
 
+    const updatedParts = await findExistingParts(baseIsbnOnly);
     res.json({
       success: true,
       isbn: cleanIsbn,
+      baseIsbn: baseIsbnOnly,
+      partNumber: partNumber !== null ? partNumber : undefined,
+      totalParts,
+      existingParts: updatedParts,
       shotNumber: sNum,
       wasRetake,
       filename,
@@ -2563,7 +2863,7 @@ app.post('/api/capture/undo-shot', async (req, res) => {
       return res.status(400).json({ error: 'Active ISBN required for undo' });
     }
 
-    const folderPath = path.join(config.storagePath, cleanIsbn);
+    const folderPath = getFolderForIdentifier(cleanIsbn);
     let metadata = readIsbnMetadata(cleanIsbn) || currentSession.metadata;
 
     let sNum = shotNumber ? parseInt(shotNumber, 10) : null;
@@ -3365,7 +3665,7 @@ app.post('/api/sync/receive-shot', async (req, res) => {
 // Download ZIP of proof package (Pictures ONLY, no metadata.json)
 app.get('/api/capture/zip/:isbn', async (req, res) => {
   const cleanIsbn = sanitizeIsbn(req.params.isbn);
-  const folderPath = path.join(config.storagePath, cleanIsbn);
+  const folderPath = getFolderForIdentifier(cleanIsbn);
 
   if (!fs.existsSync(folderPath)) {
     return res.status(404).json({ error: 'Folder not found for this ISBN' });
@@ -3417,6 +3717,7 @@ app.get('/api/gallery/export-csv', async (req, res) => {
       'Box Number',
       'ISBN / ISSN',
       'Copy #',
+      'Part #',
       'Journal / Book Title',
       'Authors',
       'Publisher',
@@ -3493,6 +3794,7 @@ app.get('/api/gallery/export-csv', async (req, res) => {
         boxNum,
         baseIsbn,
         copyNum,
+        meta?.partNumber ? `Part ${meta.partNumber}` : (getPartNumber(dir.name) ? `Part ${getPartNumber(dir.name)}` : 'Single Book'),
         title,
         authors,
         publisher,
@@ -3546,6 +3848,51 @@ app.get('/api/gallery/list', async (req, res) => {
       try {
         stat = await fs.stat(folderPath);
       } catch (e) {}
+
+      // Multi-part detection: if this folder contains Part 1, Part 2, Part 3...
+      const existingParts = await findExistingParts(dir.name);
+      if (existingParts.length > 0) {
+        for (const p of existingParts) {
+          const pMeta = readIsbnMetadata(p.identifier) || metadata;
+          const pShots = {};
+          let pCount = 0;
+          for (let s = 1; s <= 7; s++) {
+            const foundFile = findShotFileInFolder(folderPath, s, p.identifier);
+            if (foundFile) {
+              pShots[s] = `/proofs/${encodeURIComponent(dir.name)}/${encodeURIComponent(foundFile)}`;
+              pCount++;
+            } else {
+              pShots[s] = null;
+            }
+          }
+
+          const baseIsbn = dir.name;
+          const manifestMatch = findManifestItem(baseIsbn);
+          items.push({
+            isbn: p.identifier,
+            baseIsbn,
+            lotNumber: pMeta?.lotNumber || metadata?.lotNumber || manifestMatch?.lotNumber || 'Unassigned Lot',
+            boxNumber: pMeta?.boxNumber || metadata?.boxNumber || manifestMatch?.boxNumber || '',
+            copyNumber: 1,
+            partNumber: p.partNumber,
+            totalParts: Math.max(existingParts.length, pMeta?.totalParts || 3),
+            folderPath,
+            shotsCount: pCount,
+            isComplete: pCount >= 7,
+            shots: pShots,
+            shot1Url: pShots[1],
+            shot2Url: pShots[2],
+            shot3Url: pShots[3],
+            shot4Url: pShots[4],
+            shot5Url: pShots[5],
+            shot6Url: pShots[6],
+            shot7Url: pShots[7],
+            modifiedAt: stat ? stat.mtime.toISOString() : null,
+            metadata: pMeta || metadata
+          });
+        }
+        continue;
+      }
 
       const shots = {};
       let shotsCount = 0;

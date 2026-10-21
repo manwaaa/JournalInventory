@@ -162,6 +162,12 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
                 Copy #{metadata.copyNumber}
               </span>
             )}
+            {(metadata?.partNumber || isbn.match(/_Part(\d+)/i)) && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-800 border border-indigo-200 flex items-center gap-1">
+                <Layers className="w-3 h-3 text-indigo-600" />
+                Part {metadata?.partNumber || (isbn.match(/_Part(\d+)/i)?.[1])}{metadata?.totalParts ? ` of ${metadata.totalParts}` : ''}
+              </span>
+            )}
           </div>
 
           <div className="flex items-center space-x-2">

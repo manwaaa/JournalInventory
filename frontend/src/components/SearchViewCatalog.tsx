@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   Search, 
@@ -42,6 +42,19 @@ export const getShotUrl = (item: ProofItem | null | undefined, shotNumber: numbe
   return null;
 };
 
+export const getShotThumbUrl = (item: ProofItem | null | undefined, shotNumber: number): string | null => {
+  if (!item) return null;
+  const numKey = shotNumber;
+  const strKey = String(shotNumber);
+  if (item.thumbnails && item.thumbnails[numKey]) return item.thumbnails[numKey];
+  if (item.thumbnails && item.thumbnails[strKey]) return item.thumbnails[strKey];
+  const shotUrl = getShotUrl(item, shotNumber);
+  if (shotUrl) {
+    return `${shotUrl}?thumb=1`;
+  }
+  return null;
+};
+
 interface SearchViewCatalogProps {
   onSelectIsbnForCapture: (isbn: string) => void;
   onOpenExplorer: (isbn: string) => void;
@@ -61,6 +74,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
   const [activeTab, setActiveTab] = useState<'all' | 'in_progress' | 'completed'>('all');
   const [expandedLots, setExpandedLots] = useState<Record<string, boolean>>({ 'Unassigned Lot': true });
   const [expandedBoxes, setExpandedBoxes] = useState<Record<string, boolean>>({});
+  const [boxPageLimits, setBoxPageLimits] = useState<Record<string, number>>({});
   const [uploadingS3Isbn, setUploadingS3Isbn] = useState<string | null>(null);
   const [activeActionMenu, setActiveActionMenu] = useState<{
     isbn: string;
@@ -655,13 +669,20 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                     const station = item.metadata?.station || item.metadata?.operator || 'Station-01';
 
                                     return (
-                                      <tr key={item.isbn} className="hover:bg-blue-50/30 transition-colors">
+                                      <tr key={item.isbn} className="hover:bg-blue-50/30 transition-colors" style={{ contentVisibility: 'auto', containIntrinsicSize: '0 54px' }}>
                                         <td className="py-3 px-3 font-mono text-slate-400 text-xs">
                                           {itemIdx + 1}
                                         </td>
 
                                         <td className="py-3 px-3 min-w-[200px]">
-                                          <div className="font-mono font-bold text-slate-900">{item.isbn}</div>
+                                          <div className="flex items-center space-x-1.5 flex-wrap">
+                                            <span className="font-mono font-bold text-slate-900">{item.isbn}</span>
+                                            {(item.partNumber || item.isbn.match(/_Part(\d+)/i)) && (
+                                              <span className="px-1.5 py-0.2 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-700 text-[10px] font-bold shrink-0">
+                                                Part {item.partNumber || item.isbn.match(/_Part(\d+)/i)?.[1]}{item.totalParts ? ` of ${item.totalParts}` : ''}
+                                              </span>
+                                            )}
+                                          </div>
                                           {book?.title && (
                                             <div className="text-[11px] font-semibold text-slate-600 truncate max-w-xs">{book.title}</div>
                                           )}

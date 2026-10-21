@@ -61,6 +61,8 @@ export interface JournalMetadata {
   lotNumber?: string;
   boxNumber?: string;
   copyNumber?: number;
+  partNumber?: number;
+  totalParts?: number;
   createdAt: string;
   updatedAt: string;
   operator: string;
@@ -78,9 +80,21 @@ export interface JournalMetadata {
   } | null;
 }
 
+export interface ExistingPart {
+  identifier: string;
+  partNumber: number;
+  shotsCount: number;
+  isComplete: boolean;
+  shots?: Record<string, string | null>;
+  metadata?: JournalMetadata | null;
+}
+
 export interface ExistingCopy {
   identifier: string;
   copyNumber: number;
+  partNumber?: number;
+  totalParts?: number;
+  existingParts?: ExistingPart[];
   shotsCount: number;
   isComplete: boolean;
   metadata?: JournalMetadata | null;
@@ -92,10 +106,13 @@ export interface ProofItem {
   lotNumber?: string;
   boxNumber?: string;
   copyNumber?: number;
+  partNumber?: number;
+  totalParts?: number;
   folderPath: string;
   shotsCount: number;
   isComplete: boolean;
   shots: Record<string, string | null>;
+  thumbnails?: Record<string, string | null>;
   shot1Url: string | null;
   shot2Url: string | null;
   shot3Url?: string | null;
@@ -247,6 +264,9 @@ export interface CaptureSession {
   metadata: JournalMetadata | null;
   bookDetails: BookDetails | null;
   copyNumber: number;
+  partNumber?: number;
+  totalParts?: number;
+  existingParts?: ExistingPart[];
   isProcessable: boolean;
 }
 

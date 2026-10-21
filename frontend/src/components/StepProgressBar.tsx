@@ -21,6 +21,7 @@ interface StepProgressBarProps {
 }
 
 export const StepProgressBar: React.FC<StepProgressBarProps> = ({ 
+  isbn,
   currentStep, 
   shotsCount,
   stationRole = 'book_level',
@@ -113,6 +114,12 @@ export const StepProgressBar: React.FC<StepProgressBarProps> = ({
           }`}>
             {isBoxSpine ? 'Box + Spine Sequence' : 'Verification Sequence'}
           </span>
+          {isbn && isbn.match(/_Part(\d+)/i) && (
+            <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-lg shadow-sm flex items-center gap-1">
+              <Layers className="w-3 h-3 text-indigo-600" />
+              Part {isbn.match(/_Part(\d+)/i)?.[1]}
+            </span>
+          )}
           <span className="text-xs font-semibold text-slate-600">
             {isBoxSpine ? '3 Required Shots (1. Box A • 2. Box B • 4. Spine)' : '7 Required Shots (2 Box Level • 5 Book Level)'}
           </span>

@@ -42,6 +42,7 @@ import {
   SystemConfig, 
   BookDetails, 
   ExistingCopy,
+  ExistingPart,
   SessionEvent,
   ViewMode,
   StationRole,
@@ -131,6 +132,11 @@ export function App() {
   const [quickSearchText, setQuickSearchText] = useState('');
   const [manifestData, setManifestData] = useState<ManifestData | null>(null);
   const [manifestCount, setManifestCount] = useState<number>(0);
+
+  const [existingParts, setExistingParts] = useState<ExistingPart[]>([]);
+  const [activePartNumber, setActivePartNumber] = useState<number | null>(null);
+  const [totalParts, setTotalParts] = useState<number>(3);
+  const [showMultiPartModal, setShowMultiPartModal] = useState<boolean>(false);
 
   const [duplicateModal, setDuplicateModal] = useState<{
     baseIsbn: string;
@@ -276,7 +282,14 @@ export function App() {
   const lastBarcodeScanTimeRef = useRef<number>(0);
 
   // Process ISBN & validate processable status
-  const handleProcessIsbn = async (code: string, forceNewCopy: boolean = false, targetIdentifier?: string) => {
+  const handleProcessIsbn = async (
+    code: string, 
+    forceNewCopy: boolean = false, 
+    targetIdentifier?: string,
+    partNumber?: number,
+    forceNewPart?: boolean,
+    totalPartsCount?: number
+  ) => {
     if (!code || !code.trim()) return;
     lastBarcodeScanTimeRef.current = Date.now();
     if (isProcessingIsbnRef.current) return;
@@ -360,6 +373,9 @@ export function App() {
         body: JSON.stringify({ 
           isbn: clean,
           forceNewCopy,
+          forceNewPart,
+          partNumber,
+          totalParts: totalPartsCount || totalParts,
           targetIdentifier,
           lotNumber: matchedLot || lotNumber || activeBoxSummary?.lotNumber || '',
           boxNumber: matchedBox || boxNumber || activeBoxSummary?.boxNumber || ''
@@ -409,6 +425,19 @@ export function App() {
       setActiveIsbn(data.isbn);
       setIsbnInput(data.isbn);
       setUndoHistory([]);
+      if (data.existingParts) {
+        setExistingParts(data.existingParts);
+      } else {
+        setExistingParts([]);
+      }
+      if (data.partNumber !== undefined && data.partNumber !== null) {
+        setActivePartNumber(data.partNumber);
+      } else {
+        setActivePartNumber(null);
+      }
+      if (data.totalParts) {
+        setTotalParts(data.totalParts);
+      }
 
       lookupMetadata(data.baseIsbn || data.isbn);
 
@@ -609,13 +638,18 @@ export function App() {
           bookDetails,
           blurScore,
           lotNumber,
-          boxNumber
+          boxNumber,
+          totalParts
         })
       });
 
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Failed to save shot');
+      }
+
+      if (data.existingParts) {
+        setExistingParts(data.existingParts);
       }
 
       const shotDef = SHOT_DEFINITIONS[shotNumber - 1];
@@ -715,6 +749,8 @@ export function App() {
     } finally {
       setIsCapturing(false);
       setBlurWarning(null);
+    setActivePartNumber(null);
+    setExistingParts([]);
       if (pendingNextRef.current) {
         pendingNextRef.current = false;
         setTimeout(() => handleNextJournal(), 60);
@@ -940,6 +976,30 @@ export function App() {
     playAudioCue('error');
   };
 
+  // Convert current session to multi-part (_Part1)
+  const handleConvertToParts = async (totalCount: number = 3) => {
+    if (!activeIsbn) return;
+    try {
+      const res = await fetch('/api/capture/convert-to-parts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isbn: activeIsbn, totalParts: totalCount })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to convert to multi-part');
+      setToastAlert({
+        message: `📚 Successfully set ${data.baseIsbn} as Multi-Part Set (${totalCount} Parts). Files labeled with _Part1.`,
+        type: 'success'
+      });
+      playAudioCue('success');
+      setShowMultiPartModal(false);
+      await handleProcessIsbn(data.baseIsbn, false, `${data.baseIsbn}_Part1`, 1, false, totalCount);
+    } catch (e: any) {
+      setToastAlert({ message: e.message || 'Error converting to multi-part', type: 'error' });
+      playAudioCue('error');
+    }
+  };
+
   // Close current active session without deleting saved local files
   const handleCloseSession = async () => {
     playAudioCue('click');
@@ -961,6 +1021,8 @@ export function App() {
     setToastAlert(null);
     setDuplicateModal(null);
     setBlurWarning(null);
+    setActivePartNumber(null);
+    setExistingParts([]);
     setCurrentStep('SCAN_ISBN');
     fetchStatus();
   };
@@ -1044,6 +1106,8 @@ export function App() {
     setToastAlert(null);
     setDuplicateModal(null);
     setBlurWarning(null);
+    setActivePartNumber(null);
+    setExistingParts([]);
     setIsCapturing(false);
     setCurrentStep('SCAN_ISBN');
     fetchStatus();
@@ -1494,6 +1558,7 @@ export function App() {
 
               {/* Bibliographic Info Row & Auto-Matched Lot/Box if ISBN is Active */}
               {activeIsbn && (
+                <>
                 <div className="pt-3 border-t border-blue-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     {/* Auto-detected Lot and Box Badges */}
@@ -1544,16 +1609,112 @@ export function App() {
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => handleProcessIsbn(activeIsbn, true)}
-                    className="text-[11px] font-bold text-brand-700 dark:text-blue-400 hover:underline flex items-center space-x-1 shrink-0 cursor-pointer"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>Add Another Copy</span>
-                  </button>
+                  <div className="flex items-center space-x-3 shrink-0">
+                    <button
+                      onClick={() => setShowMultiPartModal(true)}
+                      className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center space-x-1 shrink-0 cursor-pointer"
+                      title="Configure multi-part sets (e.g. 3 parts in 1 ISBN)"
+                    >
+                      <Layers className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>{activePartNumber ? `Part ${activePartNumber} of ${totalParts || 3}` : 'Multi-Part (Book Set)'}</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleProcessIsbn(activeIsbn, true)}
+                      className="text-[11px] font-bold text-brand-700 dark:text-blue-400 hover:underline flex items-center space-x-1 shrink-0 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Add Another Copy</span>
+                    </button>
+                  </div>
                 </div>
+
+                {/* Multi-Part Tab Bar */}
+                {(activePartNumber !== null || existingParts.length > 0) && (
+                  <div className="mt-2.5 pt-2 border-t border-slate-200/60 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 animate-fade-in">
+                    <div className="flex items-center space-x-1.5 overflow-x-auto py-0.5">
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 mr-1 flex items-center gap-1">
+                        <Layers className="w-3.5 h-3.5 text-indigo-500" />
+                        <span>Parts:</span>
+                      </span>
+                      {Array.from({ length: Math.max(totalParts || 3, existingParts.length) }, (_, i) => i + 1).map((pNum) => {
+                        const partData = existingParts.find(p => p.partNumber === pNum);
+                        const isActive = activePartNumber === pNum;
+                        const isPartComplete = partData?.isComplete || (isActive && totalCapturedShots >= 7);
+                        const pCount = isActive ? totalCapturedShots : (partData?.shotsCount || 0);
+
+                        return (
+                          <button
+                            key={pNum}
+                            onClick={() => {
+                              const baseIsbnOnly = activeIsbn.replace(/(_Copy\d+|_Part\d+)+$/i, '');
+                              handleProcessIsbn(baseIsbnOnly, false, `${baseIsbnOnly}_Part${pNum}`, pNum, false, totalParts);
+                            }}
+                            className={`px-3 py-1 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer border ${
+                              isActive
+                                ? 'bg-indigo-600 text-white border-indigo-700 shadow-sm ring-2 ring-indigo-300 dark:ring-indigo-800'
+                                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-750'
+                            }`}
+                          >
+                            <span>Part {pNum}</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                              isActive ? 'bg-indigo-700 text-indigo-100' : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400'
+                            }`}>
+                              {isPartComplete ? '7/7 ✓' : `${pCount}/7`}
+                            </span>
+                          </button>
+                        );
+                      })}
+
+                      <button
+                        onClick={() => {
+                          const baseIsbnOnly = activeIsbn.replace(/(_Copy\d+|_Part\d+)+$/i, '');
+                          const nextNum = Math.max(existingParts.length + 1, (totalParts || 3) + 1);
+                          setTotalParts(nextNum);
+                          handleProcessIsbn(baseIsbnOnly, false, `${baseIsbnOnly}_Part${nextNum}`, nextNum, true, nextNum);
+                        }}
+                        className="px-2 py-1 rounded-lg text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 border border-dashed border-indigo-300 dark:border-indigo-700 flex items-center space-x-1 cursor-pointer"
+                        title="Add next part to this book set"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Add Part</span>
+                      </button>
+                    </div>
+
+                    <div className="text-[11px] text-slate-500 font-mono">
+                      Set Progress: {existingParts.filter(p => p.isComplete).length} of {Math.max(totalParts || 3, existingParts.length)} Parts Complete ({existingParts.reduce((acc, p) => acc + p.shotsCount, 0)}/{(Math.max(totalParts || 3, existingParts.length)) * 7} Photos)
+                    </div>
+                  </div>
+                )}
+                </>
               )}
             </div>
+
+            {/* Next Part Prompt Banner when a part is completed */}
+            {currentStep === 'COMPLETE' && activePartNumber !== null && totalParts && activePartNumber < totalParts && (
+              <div className="p-3.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-2xl shadow-md flex items-center justify-between gap-3 animate-fade-in mb-4">
+                <div className="flex items-center space-x-3">
+                  <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-300" />
+                  </div>
+                  <div>
+                    <div className="font-bold text-sm">Part {activePartNumber} Complete (7 of 7 Shots)!</div>
+                    <div className="text-xs text-indigo-100">Ready to photograph Part {activePartNumber + 1} of {totalParts}. Box shots will be automatically inherited.</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    const baseIsbnOnly = activeIsbn.replace(/(_Copy\d+|_Part\d+)+$/i, '');
+                    const nextPart = (activePartNumber || 1) + 1;
+                    handleProcessIsbn(baseIsbnOnly, false, `${baseIsbnOnly}_Part${nextPart}`, nextPart, false, totalParts);
+                  }}
+                  className="px-4 py-2 bg-white text-indigo-700 hover:bg-indigo-50 font-bold text-xs rounded-xl shadow cursor-pointer transition-transform hover:scale-105 shrink-0 flex items-center space-x-1.5"
+                >
+                  <span>Start Part {(activePartNumber || 1) + 1} of {totalParts}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
             {/* Step Progress Bar for 7 Shots */}
             <StepProgressBar
@@ -1704,6 +1865,105 @@ export function App() {
                 Browse Lots & Boxes &rarr;
               </button>
             </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Multi-Part Book Set Modal */}
+      {showMultiPartModal && createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-md w-full shadow-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-5">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 flex items-center justify-center">
+                  <Layers className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                    Multi-Part Book Set
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    ISBN: <code className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{activeIsbn ? activeIsbn.replace(/(_Copy\d+|_Part\d+)+$/i, '') : 'N/A'}</code>
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowMultiPartModal(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-indigo-50/50 dark:bg-indigo-950/30 p-3.5 rounded-2xl border border-indigo-100 dark:border-indigo-900">
+              When an ISBN contains more than 1 physical book (like Part 1, 2, and 3), all books are photographed under this ISBN (<b>7 shots per part = 21 pictures total</b>). File names will be formatted with <code className="font-mono bg-white dark:bg-slate-800 px-1 py-0.5 rounded text-indigo-700 dark:text-indigo-300">_Part1_</code>, <code className="font-mono bg-white dark:bg-slate-800 px-1 py-0.5 rounded text-indigo-700 dark:text-indigo-300">_Part2_</code>, and <code className="font-mono bg-white dark:bg-slate-800 px-1 py-0.5 rounded text-indigo-700 dark:text-indigo-300">_Part3_</code>.
+            </div>
+
+            {/* Total Parts Selector */}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
+                Total Parts in This Book Set:
+              </label>
+              <div className="grid grid-cols-4 gap-2">
+                {[2, 3, 4, 5].map(count => (
+                  <button
+                    key={count}
+                    onClick={() => setTotalParts(count)}
+                    className={`py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                      totalParts === count
+                        ? 'bg-indigo-600 text-white border-indigo-700 shadow-sm'
+                        : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    {count} Parts ({count * 7} Photos)
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Convert or Switch Actions */}
+            <div className="space-y-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+              {!activeIsbn.includes('_Part') && (
+                <button
+                  onClick={() => handleConvertToParts(totalParts || 3)}
+                  className="w-full py-2.5 px-4 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 transition-colors shadow-sm flex items-center justify-center space-x-2 cursor-pointer"
+                >
+                  <Layers className="w-4 h-4" />
+                  <span>Convert Current Captures to Part 1 ({totalParts || 3} Parts)</span>
+                </button>
+              )}
+
+              <div className="grid grid-cols-3 gap-2">
+                {Array.from({ length: totalParts || 3 }, (_, i) => i + 1).map(pNum => {
+                  const baseIsbnOnly = activeIsbn.replace(/(_Copy\d+|_Part\d+)+$/i, '');
+                  const isActive = activePartNumber === pNum;
+                  return (
+                    <button
+                      key={pNum}
+                      onClick={() => {
+                        setShowMultiPartModal(false);
+                        handleProcessIsbn(baseIsbnOnly, false, `${baseIsbnOnly}_Part${pNum}`, pNum, false, totalParts);
+                      }}
+                      className={`py-2 px-3 rounded-xl text-xs font-bold border transition-colors cursor-pointer ${
+                        isActive
+                          ? 'bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border-indigo-300'
+                          : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {isActive ? `Part ${pNum} (Active)` : `Go to Part ${pNum}`}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <button
+              onClick={() => setShowMultiPartModal(false)}
+              className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+            >
+              Close
+            </button>
           </div>
         </div>,
         document.body
