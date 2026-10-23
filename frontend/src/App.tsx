@@ -1368,7 +1368,11 @@ export function App() {
           <div className="w-full space-y-6 animate-page-transition">
             
             {/* Card 1: Receiving & Verification Setup */}
-            <div className="white-card rounded-2xl p-6 space-y-4 transition-all duration-300 dark:border-slate-800">
+            <div className={`rounded-2xl p-6 space-y-4 transition-all duration-300 dark:border-slate-800 ${
+              (activeClient || '').toLowerCase() === 'jaguar'
+                ? 'jaguar-card'
+                : 'white-card'
+            }`}>
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 
                 {/* Left: Icon, Title & Details */}
