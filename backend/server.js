@@ -80,6 +80,22 @@ function getPartNumber(identifier) {
   return match ? parseInt(match[1], 10) : null;
 }
 
+// Determines whether a lot number, project or client denotes client Jaguar
+// Key rule: Lot number with letter 'J' or 'j' (e.g. Lot-156J, 156J) = Jaguar
+function isJaguarLot(lotNumber, project, client) {
+  if (client) {
+    if (client.toLowerCase() === 'jaguar') return true;
+    if (client.toLowerCase() === 'mustang') return false;
+  }
+  if (project) {
+    if (/jaguar/i.test(project)) return true;
+    if (/mustang/i.test(project)) return false;
+  }
+  if (!lotNumber) return false;
+  const clean = String(lotNumber).trim().toLowerCase();
+  return clean.includes('j');
+}
+
 // Helper to get folder for identifier (supports storing all parts in base ISBN folder or dedicated folder)
 function getFolderForIdentifier(identifier) {
   const cleanId = sanitizeIsbn(identifier);
@@ -358,9 +374,12 @@ function rebuildManifestHistory(data) {
     const processableCount = grp.items.filter(i => i.isProcessable).length;
     const nonProcessableCount = grp.items.length - processableCount;
 
+    const isJagLot = grp.lotNumbers.some(l => isJaguarLot(l));
+    const grpClient = isJagLot ? 'Jaguar' : 'Mustang';
     for (const item of grp.items) {
       item.manifestId = id;
       item.manifestFilename = grp.filename;
+      item.client = isJaguarLot(item.lotNumber, item.project, item.client) ? 'Jaguar' : 'Mustang';
     }
 
     manifests.push({
@@ -369,6 +388,7 @@ function rebuildManifestHistory(data) {
       sheetName: grp.sheetName,
       lotNumber: grp.lotNumber,
       lotNumbers: grp.lotNumbers,
+      client: grpClient,
       importedAt: grp.importedAt,
       itemCount: grp.items.length,
       processableCount,
@@ -387,8 +407,16 @@ if (fs.existsSync(MANIFEST_FILE)) {
   try {
     manifestData = fs.readJsonSync(MANIFEST_FILE);
     if (!Array.isArray(manifestData.items)) manifestData.items = [];
+    let modifiedClients = false;
+    for (const item of manifestData.items) {
+      const correctClient = isJaguarLot(item.lotNumber, item.project, item.client) ? 'Jaguar' : 'Mustang';
+      if (item.client !== correctClient) {
+        item.client = correctClient;
+        modifiedClients = true;
+      }
+    }
     const hasCombinedLots = Array.isArray(manifestData.manifests) && manifestData.manifests.some(m => m.lotNumbers && m.lotNumbers.length > 1);
-    if (!Array.isArray(manifestData.manifests) || manifestData.manifests.length === 0 || hasCombinedLots) {
+    if (!Array.isArray(manifestData.manifests) || manifestData.manifests.length === 0 || hasCombinedLots || modifiedClients) {
       rebuildManifestHistory(manifestData);
       try { fs.writeJsonSync(MANIFEST_FILE, manifestData, { spaces: 2 }); } catch (e) {}
     }
@@ -445,10 +473,11 @@ function findManifestItem(identifier, targetClient = config.activeClient) {
     return false;
   };
 
-  // 1. Priority match: items tagged with the active client (or unassigned client items)
+  // 1. Priority match: items tagged with the active client
   if (targetClient) {
     const clientMatch = manifestData.items.find(item => {
-      if (item.client && item.client.toLowerCase() !== targetClient.toLowerCase()) return false;
+      const itemClient = item.client || (isJaguarLot(item.lotNumber, item.project) ? 'Jaguar' : 'Mustang');
+      if (itemClient.toLowerCase() !== targetClient.toLowerCase()) return false;
       return checkMatch(item);
     });
     if (clientMatch) return clientMatch;
@@ -465,10 +494,11 @@ function findManifestItem(identifier, targetClient = config.activeClient) {
  * 2. Merged scans: multiple ISBNs in one scan -> blocked
  * 3. Invalid characters/letters: "9z157326", "x3291047", "s9917362" -> blocked
  * 4. Manifest enforcement: rejects unmanifested barcodes when manifest is loaded
+ * 5. Multi-client enforcement: blocks Jaguar ISBNs (Lot with J) in Mustang mode & vice-versa
  */
-function validateAndCleanBarcode(input, manifestItems = []) {
+function validateAndCleanBarcode(input, manifestItems = [], activeClient = config.activeClient) {
   if (!input || typeof input !== 'string') {
-    return { valid: false, cleaned: '', original: '', error: 'Barcode/ISBN is required.' };
+    return { valid: false, cleaned: '', original: '', isDoubleScan: false, isMerged: false, error: 'Barcode/ISBN is required.' };
   }
 
   let raw = input.trim();
@@ -477,9 +507,36 @@ function validateAndCleanBarcode(input, manifestItems = []) {
   // Strip accidental quotes or brackets
   raw = raw.replace(/^["'\[\(]+|["'\]\)]+$/g, '').trim();
 
-  // 1. Check direct manifest match (accepts whatever is in the uploaded manifest)
-  const directMatch = findManifestItem(raw);
+  const checkClient = (item) => {
+    if (!activeClient || !item) return { allowed: true };
+    const itemClient = item.client || (isJaguarLot(item.lotNumber, item.project) ? 'Jaguar' : 'Mustang');
+    if (itemClient.toLowerCase() !== activeClient.toLowerCase()) {
+      const lotStr = item.lotNumber ? ` (Lot: ${item.lotNumber})` : '';
+      return {
+        allowed: false,
+        itemClient,
+        error: `Client Mismatch: This book belongs to ${itemClient}${lotStr}. Switch to ${itemClient} profile to process this book.`
+      };
+    }
+    return { allowed: true, itemClient };
+  };
+
+  // 1. Check direct manifest match
+  const directMatch = findManifestItem(raw, activeClient) || findManifestItem(raw, null);
   if (directMatch) {
+    const clientValidation = checkClient(directMatch);
+    if (!clientValidation.allowed) {
+      return {
+        valid: false,
+        cleaned: raw,
+        original,
+        isDoubleScan: false,
+        isMerged: false,
+        clientMismatch: true,
+        itemClient: clientValidation.itemClient,
+        error: clientValidation.error
+      };
+    }
     return {
       valid: true,
       cleaned: String(directMatch.isbn).trim(),
@@ -496,7 +553,22 @@ function validateAndCleanBarcode(input, manifestItems = []) {
     const firstHalf = raw.substring(0, halfLen);
     const secondHalf = raw.substring(halfLen);
     if (firstHalf.toLowerCase() === secondHalf.toLowerCase()) {
-      const halfMatch = findManifestItem(firstHalf);
+      const halfMatch = findManifestItem(firstHalf, activeClient) || findManifestItem(firstHalf, null);
+      if (halfMatch) {
+        const clientValidation = checkClient(halfMatch);
+        if (!clientValidation.allowed) {
+          return {
+            valid: false,
+            cleaned: firstHalf,
+            original,
+            isDoubleScan: true,
+            isMerged: false,
+            clientMismatch: true,
+            itemClient: clientValidation.itemClient,
+            error: clientValidation.error
+          };
+        }
+      }
       return {
         valid: true,
         cleaned: halfMatch ? String(halfMatch.isbn).trim() : firstHalf,
@@ -512,7 +584,22 @@ function validateAndCleanBarcode(input, manifestItems = []) {
   if (raw.length >= 26) {
     const m = raw.match(/^(97[89]\d{10})(97[89]\d{10})$/);
     if (m && m[1] === m[2]) {
-      const halfMatch = findManifestItem(m[1]);
+      const halfMatch = findManifestItem(m[1], activeClient) || findManifestItem(m[1], null);
+      if (halfMatch) {
+        const clientValidation = checkClient(halfMatch);
+        if (!clientValidation.allowed) {
+          return {
+            valid: false,
+            cleaned: m[1],
+            original,
+            isDoubleScan: true,
+            isMerged: false,
+            clientMismatch: true,
+            itemClient: clientValidation.itemClient,
+            error: clientValidation.error
+          };
+        }
+      }
       return {
         valid: true,
         cleaned: halfMatch ? String(halfMatch.isbn).trim() : m[1],
@@ -532,12 +619,11 @@ function validateAndCleanBarcode(input, manifestItems = []) {
       original,
       isDoubleScan: false,
       isMerged: true,
-      error: `Merged barcode error: "${original}" contains multiple scans combined (${raw.length} chars). Please rescan single item.`
+      error: `Merged barcode error: "${original}" contains multiple scans combined (${raw.length} chars). Please rescan or type single item.`
     };
   }
 
   // 4. Invalid letter / corrupted character check (e.g. 9z157326, x3291047, s9917362)
-  // Standard barcodes only allow digits, hyphens, and a single trailing 'X' (for ISBN-10 or ISSN)
   const cleanChars = raw.replace(/[-\s]/g, '');
   const isValidBarcodeFormat = /^[0-9]+[0-9Xx]?$/.test(cleanChars);
 
@@ -566,7 +652,10 @@ function validateAndCleanBarcode(input, manifestItems = []) {
 
   // 6. Strict Manifest Validation (if manifest is loaded)
   if (manifestItems && manifestItems.length > 0) {
-    const match = findManifestItem(cleanChars) || findManifestItem(raw);
+    const match = findManifestItem(cleanChars, activeClient) || 
+                  findManifestItem(raw, activeClient) || 
+                  findManifestItem(cleanChars, null) || 
+                  findManifestItem(raw, null);
     if (!match) {
       return {
         valid: false,
@@ -577,6 +666,21 @@ function validateAndCleanBarcode(input, manifestItems = []) {
         error: `ISBN/Barcode "${original}" is not in the uploaded manifest.`
       };
     }
+
+    const clientValidation = checkClient(match);
+    if (!clientValidation.allowed) {
+      return {
+        valid: false,
+        cleaned: raw,
+        original,
+        isDoubleScan: false,
+        isMerged: false,
+        clientMismatch: true,
+        itemClient: clientValidation.itemClient,
+        error: clientValidation.error
+      };
+    }
+
     return {
       valid: true,
       cleaned: String(match.isbn).trim(),
@@ -1124,31 +1228,37 @@ app.post('/api/manifest/import', async (req, res) => {
       const safeTag = (grp.lotNumber || grp.sheetName || `batch_${groupCounter}`).replace(/[^a-zA-Z0-9_-]/g, '_');
       const manifestId = `m_${Date.now()}_${groupCounter}_${safeTag}`;
 
-      const cleanGroupItems = grp.rawItems.map(({ item, originalIdx }) => ({
-        sNo: item.sNo ? String(item.sNo).trim() : String(originalIdx + 1),
-        isbn: String(item.isbn || '').trim(),
-        lotNumber: item.lotNumber ? String(item.lotNumber).trim() : '',
-        boxNumber: item.boxNumber ? String(item.boxNumber).trim() : '',
-        title: item.title ? String(item.title).trim() : '',
-        author: item.author ? String(item.author).trim() : '',
-        publisher: item.publisher ? String(item.publisher).trim() : '',
-        printIssn: item.printIssn ? String(item.printIssn).trim() : '',
-        publicationYear: item.publicationYear ? String(item.publicationYear).trim() : '',
-        volume: item.volume ? String(item.volume).trim() : '',
-        issues: item.issues ? String(item.issues).trim() : '',
-        isProcessable: item.isProcessable !== false && String(item.isProcessable).toLowerCase() !== 'false' && String(item.isProcessable).toLowerCase() !== 'no',
-        reason: item.reason ? String(item.reason).trim() : '',
-        notes: item.notes ? String(item.notes).trim() : '',
-        client: item.client || req.body.client || config.activeClient || 'Mustang',
-        importedAt: importTimestamp,
-        manifestId: manifestId,
-        manifestFilename: safeFilename,
-        sheetName: grp.sheetName
-      }));
+      const cleanGroupItems = grp.rawItems.map(({ item, originalIdx }) => {
+        const lotNumber = item.lotNumber ? String(item.lotNumber).trim() : '';
+        const rawProject = item.project ? String(item.project).trim() : '';
+        const itemClient = isJaguarLot(lotNumber, rawProject, item.client) ? 'Jaguar' : 'Mustang';
+        return {
+          sNo: item.sNo ? String(item.sNo).trim() : String(originalIdx + 1),
+          isbn: String(item.isbn || '').trim(),
+          lotNumber,
+          boxNumber: item.boxNumber ? String(item.boxNumber).trim() : '',
+          title: item.title ? String(item.title).trim() : '',
+          author: item.author ? String(item.author).trim() : '',
+          publisher: item.publisher ? String(item.publisher).trim() : '',
+          printIssn: item.printIssn ? String(item.printIssn).trim() : '',
+          publicationYear: item.publicationYear ? String(item.publicationYear).trim() : '',
+          volume: item.volume ? String(item.volume).trim() : '',
+          issues: item.issues ? String(item.issues).trim() : '',
+          isProcessable: item.isProcessable !== false && String(item.isProcessable).toLowerCase() !== 'false' && String(item.isProcessable).toLowerCase() !== 'no',
+          reason: item.reason ? String(item.reason).trim() : '',
+          notes: item.notes ? String(item.notes).trim() : '',
+          client: itemClient,
+          importedAt: importTimestamp,
+          manifestId: manifestId,
+          manifestFilename: safeFilename,
+          sheetName: grp.sheetName
+        };
+      });
 
       const processableCount = cleanGroupItems.filter(i => i.isProcessable).length;
       const nonProcessableCount = cleanGroupItems.length - processableCount;
       const lotNumbers = grp.lotNumber ? [grp.lotNumber] : [];
+      const grpIsJaguar = lotNumbers.some(l => isJaguarLot(l)) || (cleanGroupItems[0] && cleanGroupItems[0].client === 'Jaguar');
 
       newManifestEntries.push({
         id: manifestId,
@@ -1156,7 +1266,7 @@ app.post('/api/manifest/import', async (req, res) => {
         sheetName: grp.sheetName,
         lotNumber: grp.lotNumber,
         lotNumbers,
-        client: req.body.client || config.activeClient || 'Mustang',
+        client: grpIsJaguar ? 'Jaguar' : 'Mustang',
         importedAt: importTimestamp,
         itemCount: cleanGroupItems.length,
         processableCount,
@@ -1208,12 +1318,16 @@ app.post('/api/manifest/import', async (req, res) => {
 
 app.get('/api/manifest/check/:isbn', (req, res) => {
   const rawIsbn = req.params.isbn;
-  const validation = validateAndCleanBarcode(rawIsbn, manifestData.items);
+  const targetClient = req.query.client || config.activeClient;
+  const validation = validateAndCleanBarcode(rawIsbn, manifestData.items, targetClient);
 
   if (!validation.valid) {
-    return res.status(400).json({
+    const statusCode = validation.clientMismatch ? 403 : 400;
+    return res.status(statusCode).json({
       valid: false,
       error: validation.error,
+      clientMismatch: Boolean(validation.clientMismatch),
+      itemClient: validation.itemClient,
       isDoubleScan: Boolean(validation.isDoubleScan),
       isMerged: Boolean(validation.isMerged),
       cleaned: validation.cleaned,
@@ -1225,7 +1339,7 @@ app.get('/api/manifest/check/:isbn', (req, res) => {
   }
 
   const effectiveIsbn = validation.cleaned;
-  const match = validation.manifestMatch || findManifestItem(effectiveIsbn) || findManifestItem(rawIsbn);
+  const match = validation.manifestMatch || findManifestItem(effectiveIsbn, targetClient) || findManifestItem(rawIsbn, targetClient);
 
   if (match) {
     return res.json({
@@ -2523,15 +2637,19 @@ async function findExistingParts(baseIsbn) {
 // Initialize ISBN verification session
 app.post('/api/capture/init-isbn', async (req, res) => {
   try {
-    const { isbn, forceNewCopy, forceNewPart, targetPartNumber, partNumber: reqPartNumber, totalParts: reqTotalParts, targetIdentifier, lotNumber, boxNumber } = req.body;
+    const { isbn, client: reqClient, forceNewCopy, forceNewPart, targetPartNumber, partNumber: reqPartNumber, totalParts: reqTotalParts, targetIdentifier, lotNumber, boxNumber } = req.body;
     if (!isbn || !isbn.trim()) {
       return res.status(400).json({ error: 'ISBN is required' });
     }
 
-    const validation = validateAndCleanBarcode(isbn, manifestData.items);
+    const targetClient = reqClient || config.activeClient;
+    const validation = validateAndCleanBarcode(isbn, manifestData.items, targetClient);
     if (!validation.valid) {
-      return res.status(400).json({
+      const statusCode = validation.clientMismatch ? 403 : 400;
+      return res.status(statusCode).json({
         error: validation.error || `Invalid barcode format: "${isbn}"`,
+        clientMismatch: Boolean(validation.clientMismatch),
+        itemClient: validation.itemClient,
         isDoubleScan: Boolean(validation.isDoubleScan),
         isMerged: Boolean(validation.isMerged)
       });
@@ -2542,7 +2660,7 @@ app.post('/api/capture/init-isbn', async (req, res) => {
     const baseIsbnOnly = getBaseIsbn(cleanBaseIsbn);
 
     // Universal manifest matching
-    const manifestMatch = validation.manifestMatch || findManifestItem(cleanBaseIsbn) || findManifestItem(effectiveIsbn) || findManifestItem(baseIsbnOnly);
+    const manifestMatch = validation.manifestMatch || findManifestItem(cleanBaseIsbn, targetClient) || findManifestItem(effectiveIsbn, targetClient) || findManifestItem(baseIsbnOnly, targetClient);
     let isProcessable = true;
     let nonProcessableReason = '';
 
@@ -3228,10 +3346,15 @@ app.post('/api/capture/undo-shot', async (req, res) => {
 // Get all Boxes from manifest with Box & Unbox status and completion stats
 app.get('/api/boxes/list', async (req, res) => {
   try {
+    const targetClient = req.query.client || config.activeClient;
     const boxesMap = new Map();
 
     if (manifestData.items && manifestData.items.length > 0) {
       for (const item of manifestData.items) {
+        const itemClient = item.client || (isJaguarLot(item.lotNumber, item.project) ? 'Jaguar' : 'Mustang');
+        if (targetClient && itemClient.toLowerCase() !== targetClient.toLowerCase()) {
+          continue;
+        }
         const lot = item.lotNumber || 'Unassigned';
         const box = item.boxNumber || 'Unassigned';
         const key = getBoxKey(lot, box);

@@ -17,6 +17,7 @@ import {
   Minimize2
 } from 'lucide-react';
 import { ManifestData, ManifestItem } from '../types';
+import { isJaguarLot } from '../utils/barcode';
 
 interface ManifestImportModalProps {
   isOpen: boolean;
@@ -94,9 +95,10 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
         });
       };
 
+      const projectIdx = getIdx(['project', 'client']);
       const sNoIdx = getIdx(['sno', 'serial', 's.no']);
       const lotIdx = getIdx(['lotno', 'lot']);
-      const boxIdx = getIdx(['boxno', 'box']);
+      const boxIdx = getIdx(['rbbox', 'boxno', 'box']);
       const isbnIdx = getIdx(['isbn', 'barcode']);
       const titleIdx = getIdx(['title', 'journaltitle', 'journal']);
       const authorIdx = getIdx(['author']);
@@ -132,6 +134,8 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
         const volume = volIdx !== -1 ? String(row[volIdx] || '').trim() : '';
         const issues = issuesIdx !== -1 ? String(row[issuesIdx] || '').trim() : '';
         const sNo = sNoIdx !== -1 ? String(row[sNoIdx] || '').trim() : '';
+        const rawProject = projectIdx !== -1 ? String(row[projectIdx] || '').trim() : '';
+        const itemClient = isJaguarLot(lotNumber, rawProject) ? 'Jaguar' : 'Mustang';
 
         let isProcessable = true;
         let reason = '';
@@ -168,6 +172,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
           publicationYear,
           volume,
           issues,
+          client: itemClient,
           isProcessable,
           reason,
           notes: reason,
@@ -178,6 +183,34 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
     }
 
     return allItems;
+  };
+
+  // Helper to parse a CSV line properly handling quoted strings with commas
+  const parseCsvLine = (line: string, delimiter: string = ','): string[] => {
+    if (delimiter === '\t') {
+      return line.split('\t').map(t => t.replace(/^["']|["']$/g, '').trim());
+    }
+    const result: string[] = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === delimiter && !inQuotes) {
+        result.push(cur.trim());
+        cur = '';
+      } else {
+        cur += char;
+      }
+    }
+    result.push(cur.trim());
+    return result;
   };
 
   // Fallback plain CSV/TSV text parser
@@ -192,37 +225,42 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
     if (lines.length === 0) return [];
 
     const delimiter = lines[0].includes('\t') ? '\t' : ',';
-    const firstRowTokens = lines[0].split(delimiter).map(t => t.replace(/^["']|["']$/g, '').trim().toLowerCase());
+    const firstRowTokens = parseCsvLine(lines[0], delimiter).map(t => t.replace(/^["']|["']$/g, '').trim().toLowerCase());
     
     let hasHeader = false;
     let isbnIdx = 0;
     let lotIdx = -1;
     let boxIdx = -1;
+    let projectIdx = -1;
     let titleIdx = -1;
     let authorIdx = -1;
     let statusIdx = -1;
     let reasonIdx = -1;
 
     firstRowTokens.forEach((header, idx) => {
-      if (header.includes('isbn') || header.includes('barcode') || header.includes('code')) {
+      const cleanH = header.replace(/[^a-z0-9]/g, '');
+      if (cleanH.includes('isbn') || cleanH.includes('barcode') || cleanH.includes('code')) {
         isbnIdx = idx;
         hasHeader = true;
-      } else if (header.includes('lot')) {
+      } else if (cleanH.includes('lot')) {
         lotIdx = idx;
         hasHeader = true;
-      } else if (header.includes('box')) {
+      } else if (cleanH.includes('box') || cleanH.includes('rbbox')) {
         boxIdx = idx;
         hasHeader = true;
-      } else if (header.includes('title') || header.includes('journal') || header.includes('book')) {
+      } else if (cleanH.includes('project') || cleanH.includes('client')) {
+        projectIdx = idx;
+        hasHeader = true;
+      } else if (cleanH.includes('title') || cleanH.includes('journal') || cleanH.includes('book')) {
         titleIdx = idx;
         hasHeader = true;
-      } else if (header.includes('author') || header.includes('creator')) {
+      } else if (cleanH.includes('author') || cleanH.includes('creator')) {
         authorIdx = idx;
         hasHeader = true;
-      } else if (header.includes('status') || header.includes('processable') || header.includes('eligible') || header.includes('allowed')) {
+      } else if (cleanH.includes('status') || cleanH.includes('processable') || cleanH.includes('eligible') || cleanH.includes('allowed')) {
         statusIdx = idx;
         hasHeader = true;
-      } else if (header.includes('reason') || header.includes('notes') || header.includes('comment') || header.includes('remarks')) {
+      } else if (cleanH.includes('reason') || cleanH.includes('notes') || cleanH.includes('comment') || cleanH.includes('remarks') || cleanH.includes('issue')) {
         reasonIdx = idx;
         hasHeader = true;
       }
@@ -232,14 +270,16 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
     const items: ManifestItem[] = [];
 
     for (const line of dataRows) {
-      const tokens = line.split(delimiter).map(t => t.replace(/^["']|["']$/g, '').trim());
+      const tokens = parseCsvLine(line, delimiter).map(t => t.replace(/^["']|["']$/g, '').trim());
       const isbn = (tokens[isbnIdx] || '').replace(/[^0-9A-Za-z_-]/g, '').trim();
       if (!isbn || isbn.toLowerCase() === 'isbn') continue;
 
       const lotNumber = lotIdx >= 0 ? (tokens[lotIdx] || '').trim() : '';
       const boxNumber = boxIdx >= 0 ? (tokens[boxIdx] || '').trim() : '';
+      const rawProject = projectIdx >= 0 ? (tokens[projectIdx] || '').trim() : '';
       const title = titleIdx >= 0 ? (tokens[titleIdx] || '').trim() : '';
       const author = authorIdx >= 0 ? (tokens[authorIdx] || '').trim() : '';
+      const itemClient = isJaguarLot(lotNumber, rawProject) ? 'Jaguar' : 'Mustang';
 
       let isProcessable = true;
       let reason = '';
@@ -267,6 +307,7 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
         boxNumber,
         title,
         author,
+        client: itemClient,
         isProcessable,
         reason,
         notes: reason,
@@ -735,9 +776,24 @@ export const ManifestImportModal: React.FC<ManifestImportModalProps> = ({
                         {item.isbn}
                       </td>
                       <td className="py-2 px-3 text-center">
-                        <span className="inline-block px-2 py-0.5 rounded bg-blue-50 text-brand-700 border border-blue-200/80 font-mono text-[11px] whitespace-nowrap font-bold">
-                          {item.lotNumber || '—'}
-                        </span>
+                        <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                          <span className={`inline-block px-2 py-0.5 rounded font-mono text-[11px] whitespace-nowrap font-bold ${
+                            isJaguarLot(item.lotNumber, undefined, item.client)
+                              ? 'bg-amber-50 text-amber-900 border border-amber-300'
+                              : 'bg-blue-50 text-brand-700 border border-blue-200/80'
+                          }`}>
+                            {item.lotNumber || '—'}
+                          </span>
+                          {isJaguarLot(item.lotNumber, undefined, item.client) ? (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-amber-100 text-amber-900 border border-amber-300 uppercase tracking-wider">
+                              🐆 Jaguar
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-blue-100 text-blue-800 border border-blue-300 uppercase tracking-wider">
+                              🐎 Mustang
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-2 px-3 font-mono text-indigo-700 font-bold text-center whitespace-nowrap">
                         {item.boxNumber || '—'}

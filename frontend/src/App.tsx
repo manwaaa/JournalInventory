@@ -32,7 +32,7 @@ import { useCamera } from './hooks/useCamera';
 import { useBarcodeScanner } from './hooks/useBarcodeScanner';
 import { useSoundEffects } from './hooks/useSoundEffects';
 import { useS3Sync } from './hooks/useS3Sync';
-import { validateAndCleanBarcode } from './utils/barcode';
+import { validateAndCleanBarcode, isJaguarLot } from './utils/barcode';
 
 import { 
   CaptureStep, 
@@ -133,6 +133,13 @@ export function App() {
   const [quickSearchText, setQuickSearchText] = useState('');
   const [manifestData, setManifestData] = useState<ManifestData | null>(null);
   const [manifestCount, setManifestCount] = useState<number>(0);
+  const clientManifestCount = React.useMemo(() => {
+    if (!manifestData?.items || manifestData.items.length === 0) return 0;
+    return manifestData.items.filter((i: ManifestItem) => {
+      const isJag = isJaguarLot(i.lotNumber, undefined, i.client);
+      return (activeClient || '').toLowerCase() === 'jaguar' ? isJag : !isJag;
+    }).length;
+  }, [manifestData, activeClient]);
 
   const [existingParts, setExistingParts] = useState<ExistingPart[]>([]);
   const [activePartNumber, setActivePartNumber] = useState<number | null>(null);
@@ -196,9 +203,10 @@ export function App() {
   const { playAudioCue } = useSoundEffects(true);
 
   // Fetch Boxes List from manifest
-  const fetchBoxesList = useCallback(async () => {
+  const fetchBoxesList = useCallback(async (clientOverride?: string) => {
     try {
-      const res = await fetch('/api/boxes/list');
+      const client = clientOverride || activeClient;
+      const res = await fetch(`/api/boxes/list?client=${encodeURIComponent(client)}`);
       if (res.ok) {
         const data = await res.json();
         setBoxesList(data.boxes || []);
@@ -206,7 +214,7 @@ export function App() {
     } catch (e) {
       console.warn('Failed to fetch boxes list:', e);
     }
-  }, []);
+  }, [activeClient]);
 
   // Fetch status & config
   const fetchStatus = useCallback(async () => {
@@ -269,7 +277,7 @@ export function App() {
           message: `Switched to ${client} profile (${data.config?.storagePath || ''})`
         });
         await fetchStatus();
-        await fetchBoxesList();
+        await fetchBoxesList(data.activeClient || client);
       } else {
         const err = await res.json();
         setToastAlert({ type: 'error', message: err.error || 'Failed to switch client' });
@@ -341,10 +349,9 @@ export function App() {
     if (isProcessingIsbnRef.current) return;
     isProcessingIsbnRef.current = true;
 
-    // Run Barcode Sanitization, Format Validation & De-duplication Guard
-    const validation = validateAndCleanBarcode(code, manifestData?.items || []);
+    // Run Barcode Sanitization, Format Validation, Multi-Client & De-duplication Guard
+    const validation = validateAndCleanBarcode(code, manifestData?.items || [], activeClient);
     if (!validation.valid) {
-      setIsbnInput('');
       setToastAlert({
         message: validation.error || `Invalid barcode: "${code}". Please rescan or verify your manifest.`,
         type: 'error'
@@ -378,11 +385,10 @@ export function App() {
     let matchedLot = '';
     let matchedBox = '';
     try {
-      const checkRes = await fetch(`/api/manifest/check/${encodeURIComponent(clean)}`);
+      const checkRes = await fetch(`/api/manifest/check/${encodeURIComponent(clean)}?client=${encodeURIComponent(activeClient)}`);
       const checkData = await checkRes.json();
 
       if (!checkRes.ok || checkData.valid === false) {
-        setIsbnInput('');
         setToastAlert({
           message: checkData.error || checkData.reason || `ISBN "${clean}" was not found in the manifest or has an invalid format.`,
           type: 'error'
@@ -418,6 +424,7 @@ export function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           isbn: clean,
+          client: activeClient,
           forceNewCopy,
           forceNewPart,
           partNumber,
@@ -1449,7 +1456,7 @@ export function App() {
                     >
                       <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                       <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                      <span>Manifest Active ({manifestCount} items)</span>
+                      <span>Manifest Active ({clientManifestCount} {activeClient} items{manifestCount !== clientManifestCount ? ` • ${manifestCount} total` : ''})</span>
                     </button>
                   )}
                 </div>
@@ -1552,24 +1559,9 @@ export function App() {
                       onClick={(e) => (e.target as HTMLInputElement).select()}
                       onChange={(e) => {
                         let val = e.target.value;
-                        // Auto-strip illegal characters in real-time unless manifest contains custom alphanumeric codes
-                        const hasCustomManifestCodes = manifestData?.items?.some((i: ManifestItem) => /[a-wyzA-WYZ]/.test(String(i.isbn || '')));
-                        if (!hasCustomManifestCodes) {
-                          val = val.replace(/[^0-9Xx\-_]/g, '');
-                        }
+                        // Clean input value without interfering with manual typing of ISBNs, ISSNs or box numbers
+                        val = val.replace(/[^0-9A-Za-z\-_/ ]/g, '');
                         setIsbnInput(val);
-                        if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
-                        if (val.trim().length >= 8) {
-                          scanTimeoutRef.current = setTimeout(() => {
-                            if (currentStep === 'SCAN_ISBN' && val.trim() === isbnInputRef.current?.value.trim()) {
-                              isbnInputRef.current?.blur();
-                              if (document.activeElement instanceof HTMLElement) {
-                                document.activeElement.blur();
-                              }
-                              handleProcessIsbn(val.trim());
-                            }
-                          }, 120);
-                        }
                       }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
