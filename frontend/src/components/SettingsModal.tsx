@@ -78,6 +78,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [selectedBoxCam, setSelectedBoxCam] = useState<string>(boxCameraDeviceId);
   const [selectedBookCam, setSelectedBookCam] = useState<string>(bookCameraDeviceId);
   const [selectedAutoSwitch, setSelectedAutoSwitch] = useState<boolean>(autoSwitchCamera);
+  const [selectedClient, setSelectedClient] = useState<string>('Mustang');
 
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
@@ -88,7 +89,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (isOpen) {
       fetch('/api/system/config')
         .then((res) => res.json())
-        .then((data) => setConfig(data))
+        .then((data) => {
+          setConfig(data);
+          if (data.activeClient) {
+            setSelectedClient(data.activeClient);
+          }
+        })
         .catch((err) => console.error('Error fetching config:', err));
       
       setSelectedBoxCam(boxCameraDeviceId || (devices[0]?.deviceId ?? ''));
@@ -97,15 +103,79 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   }, [isOpen, boxCameraDeviceId, bookCameraDeviceId, autoSwitchCamera, devices]);
 
+  const handleClientTabChange = (newClient: string) => {
+    if (newClient === selectedClient) return;
+
+    // 1. Save current form values into previous client's profile in clientProfiles
+    const currentProfiles = { ...(config.clientProfiles || {}) };
+    currentProfiles[selectedClient] = {
+      name: selectedClient,
+      storagePath: config.storagePath,
+      s3Enabled: config.s3Enabled ?? (selectedClient === 'Mustang'),
+      s3Bucket: config.s3Bucket || '',
+      s3Region: config.s3Region || 'ap-southeast-1',
+      s3AccessKeyId: config.s3AccessKeyId || '',
+      s3SecretAccessKey: config.s3SecretAccessKey || '',
+      s3Prefix: config.s3Prefix || `innoscan${selectedClient.toLowerCase()}sgp1/JournalVerificationImages/`,
+      s3CustomEndpoint: config.s3CustomEndpoint || ''
+    };
+
+    // 2. Fetch new client profile or sensible default
+    const newProfile = currentProfiles[newClient] || {
+      name: newClient,
+      storagePath: `C:\\Journal_Proofs\\${newClient}`,
+      s3Enabled: newClient === 'Mustang',
+      s3Bucket: newClient === 'Mustang' ? 'innoscanmussgp1-s3' : '',
+      s3Region: 'ap-southeast-1',
+      s3AccessKeyId: newClient === 'Mustang' ? (config.s3AccessKeyId || '') : '',
+      s3SecretAccessKey: newClient === 'Mustang' ? (config.s3SecretAccessKey || '') : '',
+      s3Prefix: `innoscan${newClient.toLowerCase()}sgp1/JournalVerificationImages/`,
+      s3CustomEndpoint: ''
+    };
+    currentProfiles[newClient] = newProfile;
+
+    // 3. Update config state with new profile values
+    setSelectedClient(newClient);
+    setConfig({
+      ...config,
+      activeClient: newClient,
+      clientProfiles: currentProfiles,
+      storagePath: newProfile.storagePath,
+      s3Enabled: newProfile.s3Enabled,
+      s3Bucket: newProfile.s3Bucket,
+      s3Region: newProfile.s3Region || 'ap-southeast-1',
+      s3AccessKeyId: newProfile.s3AccessKeyId || '',
+      s3SecretAccessKey: newProfile.s3SecretAccessKey || '',
+      s3Prefix: newProfile.s3Prefix,
+      s3CustomEndpoint: newProfile.s3CustomEndpoint || ''
+    });
+    setS3TestResult(null);
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     try {
+      const finalProfiles = { ...(config.clientProfiles || {}) };
+      finalProfiles[selectedClient] = {
+        name: selectedClient,
+        storagePath: config.storagePath,
+        s3Enabled: config.s3Enabled ?? (selectedClient === 'Mustang'),
+        s3Bucket: config.s3Bucket || '',
+        s3Region: config.s3Region || 'ap-southeast-1',
+        s3AccessKeyId: config.s3AccessKeyId || '',
+        s3SecretAccessKey: config.s3SecretAccessKey || '',
+        s3Prefix: config.s3Prefix || `innoscan${selectedClient.toLowerCase()}sgp1/JournalVerificationImages/`,
+        s3CustomEndpoint: config.s3CustomEndpoint || ''
+      };
+
       const res = await fetch('/api/system/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...config,
+          activeClient: selectedClient,
+          clientProfiles: finalProfiles,
           boxCameraDeviceId: selectedBoxCam,
           bookCameraDeviceId: selectedBookCam,
           autoSwitchCamera: selectedAutoSwitch
@@ -201,6 +271,64 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         {/* Form Body */}
         <form onSubmit={handleSave} className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
           
+          {/* Active Client Profile Selector */}
+          <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-gradient-to-r from-slate-50 to-blue-50/30 dark:from-slate-800 dark:to-slate-800/80 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="font-extrabold text-xs text-slate-800 dark:text-white uppercase tracking-wider block">
+                  Client Profile & Workflow Isolation
+                </span>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Select which client is currently active to isolate folder paths and cloud storage
+                </p>
+              </div>
+              <span className={`px-2 py-0.5 rounded-full text-[11px] font-extrabold ${
+                selectedClient === 'Mustang' 
+                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 border border-amber-300' 
+                  : 'bg-purple-100 text-purple-800 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-300'
+              }`}>
+                Active: {selectedClient}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleClientTabChange('Mustang')}
+                className={`flex items-center justify-center space-x-2 py-2.5 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                  selectedClient === 'Mustang'
+                    ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-md shadow-amber-500/25 border-amber-600 scale-[1.01]'
+                    : 'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-600 hover:bg-amber-50/50'
+                }`}
+              >
+                <span className="text-sm">🐎</span>
+                <span>Mustang Profile</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleClientTabChange('Jaguar')}
+                className={`flex items-center justify-center space-x-2 py-2.5 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                  selectedClient === 'Jaguar'
+                    ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md shadow-indigo-500/25 border-purple-600 scale-[1.01]'
+                    : 'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-600 hover:bg-purple-50/50'
+                }`}
+              >
+                <span className="text-sm">🐆</span>
+                <span>Jaguar Profile</span>
+              </button>
+            </div>
+
+            {selectedClient === 'Jaguar' && !config.s3Bucket && (
+              <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-200 flex items-start space-x-2">
+                <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold">Jaguar S3 Uploads Paused:</span> S3 bucket for Jaguar is pending creation/approval. Captured journal proofs will be safely stored in <code className="font-mono bg-white dark:bg-slate-800 px-1 py-0.5 rounded font-bold">C:\Journal_Proofs\Jaguar\</code> without uploading to Mustang's S3 bucket.
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Storage Path */}
           <div>
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
@@ -574,17 +702,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="flex items-center justify-between pb-1 border-b border-blue-100">
                 <div className="flex items-center space-x-2">
                   <CloudUpload className="w-4 h-4 text-brand-700" />
-                  <span className="font-bold text-slate-800 text-xs">AWS S3 / Client Cloud Storage</span>
+                  <span className="font-bold text-slate-800 text-xs">AWS S3 / Client Cloud Storage ({selectedClient})</span>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleTestS3}
-                  disabled={testingS3 || !config.s3Bucket || !config.s3AccessKeyId}
-                  className="px-2.5 py-1 text-[11px] font-bold text-brand-700 bg-white border border-brand-200 rounded-lg hover:bg-blue-50 disabled:opacity-50 flex items-center space-x-1 transition-colors cursor-pointer"
-                >
-                  {testingS3 ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
-                  <span>Test S3</span>
-                </button>
+                <div className="flex items-center space-x-3">
+                  <label className="relative inline-flex items-center cursor-pointer" title="Enable or disable S3 uploads for this client">
+                    <input
+                      type="checkbox"
+                      checked={config.s3Enabled ?? (selectedClient === 'Mustang')}
+                      onChange={(e) => setConfig({ ...config, s3Enabled: e.target.checked })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-brand-600"></div>
+                    <span className="ml-1.5 text-[11px] font-bold text-slate-700">
+                      {config.s3Enabled ? 'Enabled' : 'Disabled'}
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleTestS3}
+                    disabled={testingS3 || !config.s3Bucket || !config.s3AccessKeyId}
+                    className="px-2.5 py-1 text-[11px] font-bold text-brand-700 bg-white border border-brand-200 rounded-lg hover:bg-blue-50 disabled:opacity-50 flex items-center space-x-1 transition-colors cursor-pointer"
+                  >
+                    {testingS3 ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
+                    <span>Test S3</span>
+                  </button>
+                </div>
               </div>
 
               {s3TestResult && (

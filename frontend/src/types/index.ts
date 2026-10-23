@@ -153,6 +153,7 @@ export interface ManifestItem {
   manifestId?: string;
   manifestFilename?: string;
   sheetName?: string;
+  client?: string;
 }
 
 export interface ManifestData {
@@ -185,6 +186,18 @@ export interface CameraDevice {
   label: string;
 }
 
+export interface ClientProfile {
+  name: string;
+  storagePath: string;
+  s3Enabled: boolean;
+  s3Bucket: string;
+  s3Region: string;
+  s3AccessKeyId: string;
+  s3SecretAccessKey: string;
+  s3Prefix: string;
+  s3CustomEndpoint?: string;
+}
+
 export interface SystemStatus {
   status: string;
   appName?: string;
@@ -196,9 +209,13 @@ export interface SystemStatus {
   mobileHttpsUrl: string | null;
   activeSession: CaptureSession;
   proofCount: number;
+  activeClient?: string;
+  clientProfiles?: Record<string, ClientProfile>;
 }
 
 export interface SystemConfig {
+  activeClient?: string;
+  clientProfiles?: Record<string, ClientProfile>;
   storagePath: string;
   autoOpenExplorer: boolean;
   soundEnabled: boolean;

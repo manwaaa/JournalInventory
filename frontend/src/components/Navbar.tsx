@@ -22,6 +22,8 @@ interface NavbarProps {
   setStationRole: (r: StationRole) => void;
   systemStatus: SystemStatus | null;
   manifestItemCount: number;
+  activeClient?: string;
+  onSelectClient?: (client: string) => void;
   darkMode?: boolean;
   onToggleDarkMode?: () => void;
   onOpenQuickSearch?: () => void;
@@ -38,6 +40,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   setStationRole,
   systemStatus,
   manifestItemCount,
+  activeClient = 'Mustang',
+  onSelectClient,
   darkMode = false,
   onToggleDarkMode,
   onOpenManifestModal,
@@ -179,6 +183,38 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Far Right: View Toggle, Manifest, Live Sync & Tools */}
         <div className="flex items-center space-x-2 sm:space-x-3 shrink-0 z-10">
+
+          {/* Client Profile Switcher */}
+          {onSelectClient && (
+            <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-xs shrink-0" title="Active Client Profile">
+              <button
+                type="button"
+                onClick={() => onSelectClient('Mustang')}
+                className={`flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-200 cursor-pointer ${
+                  (activeClient || 'Mustang').toLowerCase() === 'mustang'
+                    ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-sm shadow-amber-500/30'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white dark:hover:bg-slate-700/60'
+                }`}
+                title="Client: Mustang (Folder: C:\Journal_Proofs\Mustang | S3: innoscanmussgp1-s3)"
+              >
+                <span>🐎</span>
+                <span className="hidden sm:inline">Mustang</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onSelectClient('Jaguar')}
+                className={`flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-200 cursor-pointer ${
+                  (activeClient || '').toLowerCase() === 'jaguar'
+                    ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-sm shadow-indigo-500/30'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white dark:hover:bg-slate-700/60'
+                }`}
+                title="Client: Jaguar (Folder: C:\Journal_Proofs\Jaguar | S3 uploads disabled pending approval)"
+              >
+                <span>🐆</span>
+                <span className="hidden sm:inline">Jaguar</span>
+              </button>
+            </div>
+          )}
 
           {/* View Mode Toggle: Capture vs Search & View */}
           <div className="flex items-center bg-gradient-to-r from-blue-50/80 to-indigo-50/60 dark:from-slate-800 dark:to-slate-800/80 p-1 rounded-xl border border-blue-100 dark:border-slate-700 shadow-xs">

@@ -78,6 +78,7 @@ export function App() {
 
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
+  const [activeClient, setActiveClient] = useState<string>('Mustang');
   
   // Dynamic Lot and Box numbers automatically populated from manifest
   const [lotNumber, setLotNumber] = useState<string>('');
@@ -218,10 +219,16 @@ export function App() {
       if (resStatus.ok) {
         const data = await resStatus.json();
         setSystemStatus(data);
+        if (data.activeClient) {
+          setActiveClient(data.activeClient);
+        }
       }
       if (resConfig.ok) {
         const cfg = await resConfig.json();
         setSystemConfig(cfg);
+        if (cfg.activeClient) {
+          setActiveClient(cfg.activeClient);
+        }
       }
       if (resManifest.ok) {
         const m = await resManifest.json();
@@ -233,6 +240,45 @@ export function App() {
       console.error('Failed to fetch system status:', err);
     }
   }, [fetchBoxesList]);
+
+  // One-Click Client Profile Switcher
+  const handleSelectClient = async (client: string) => {
+    if (client === activeClient) return;
+    try {
+      const res = await fetch('/api/system/client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setActiveClient(data.activeClient || client);
+        if (data.config) {
+          setSystemConfig(data.config);
+        }
+        // Reset current capture state in UI to avoid cross-client data contamination
+        setActiveIsbn('');
+        setIsbnInput('');
+        setShots({ 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
+        setCurrentStep('SCAN_ISBN');
+        setMetadata(null);
+        setBookDetails(null);
+        setUndoHistory([]);
+        setToastAlert({
+          type: 'success',
+          message: `Switched to ${client} profile (${data.config?.storagePath || ''})`
+        });
+        await fetchStatus();
+        await fetchBoxesList();
+      } else {
+        const err = await res.json();
+        setToastAlert({ type: 'error', message: err.error || 'Failed to switch client' });
+      }
+    } catch (err: any) {
+      console.error('Client switch error:', err);
+      setToastAlert({ type: 'error', message: err.message || 'Network error switching client' });
+    }
+  };
 
 
 
@@ -1263,6 +1309,8 @@ export function App() {
         setStationRole={setStationRole}
         systemStatus={systemStatus}
         manifestItemCount={manifestCount}
+        activeClient={activeClient}
+        onSelectClient={handleSelectClient}
         onOpenQuickSearch={() => setQuickSearchOpen(true)}
         onOpenManifestModal={() => setManifestModalOpen(true)}
         onOpenSettings={() => setSettingsModalOpen(true)}
@@ -1312,6 +1360,7 @@ export function App() {
               }}
               onOpenExplorer={handleOpenExplorer}
               onDownloadZip={handleDownloadZip}
+              activeClient={activeClient}
             />
           </div>
         ) : (
@@ -1339,6 +1388,13 @@ export function App() {
                     <div className="flex items-center space-x-2">
                       <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-blue-400">
                         RECEIVING & VERIFICATION
+                      </span>
+                      <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border shadow-xs transition-all duration-300 ${
+                        activeClient.toLowerCase() === 'jaguar'
+                          ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-800 dark:text-purple-300 border-purple-300 dark:border-purple-800 ring-2 ring-purple-500/10'
+                          : 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-800 ring-2 ring-amber-500/10'
+                      }`}>
+                        {activeClient.toLowerCase() === 'jaguar' ? '🐆 Client: Jaguar' : '🐎 Client: Mustang'}
                       </span>
                       <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border shadow-xs transition-all duration-300 ${
                         stationRole === 'box_level' 

@@ -59,12 +59,14 @@ interface SearchViewCatalogProps {
   onSelectIsbnForCapture: (isbn: string) => void;
   onOpenExplorer: (isbn: string) => void;
   onDownloadZip: (isbn: string) => void;
+  activeClient?: string;
 }
 
 export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
   onSelectIsbnForCapture,
   onOpenExplorer,
-  onDownloadZip
+  onDownloadZip,
+  activeClient
 }) => {
   const [items, setItems] = useState<ProofItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -376,9 +378,20 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
               <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700">
                 INVENTORY OVERVIEW
               </span>
-              <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">
-                Lots & Boxes
-              </h2>
+              <div className="flex items-center space-x-2">
+                <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">
+                  Lots & Boxes
+                </h2>
+                {activeClient && (
+                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                    activeClient.toLowerCase() === 'jaguar'
+                      ? 'bg-purple-100 text-purple-800 border border-purple-200'
+                      : 'bg-amber-100 text-amber-800 border border-amber-200'
+                  }`}>
+                    {activeClient.toLowerCase() === 'jaguar' ? '🐆 Jaguar' : '🐎 Mustang'}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500">
                 Received inventory and verification session status with instant picture preview
               </p>

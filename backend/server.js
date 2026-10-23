@@ -94,6 +94,15 @@ function getFolderForIdentifier(identifier) {
   const basePath = path.join(config.storagePath, base);
   if (fs.existsSync(basePath)) return basePath;
 
+  // Backward compatibility: If active client is Mustang, check legacy C:\Journal_Proofs
+  const parentStorage = path.dirname(config.storagePath);
+  if (path.basename(config.storagePath).toLowerCase() === 'mustang') {
+    const legacyPath = path.join(parentStorage, cleanId);
+    if (fs.existsSync(legacyPath)) return legacyPath;
+    const legacyBasePath = path.join(parentStorage, base);
+    if (fs.existsSync(legacyBasePath)) return legacyBasePath;
+  }
+
   // If this identifier has a Part number, default to base ISBN folder so all parts stay together in 1 folder
   if (getPartNumber(cleanId) !== null) {
     return basePath;
@@ -194,9 +203,37 @@ function findShotFileInFolder(folderPath, shotNumber, identifier) {
   return null;
 }
 
+// Multi-client default profiles
+const DEFAULT_CLIENT_PROFILES = {
+  Mustang: {
+    name: 'Mustang',
+    storagePath: process.platform === 'win32' ? 'C:\\Journal_Proofs\\Mustang' : path.resolve(__dirname, 'storage/journal_proofs/Mustang'),
+    s3Enabled: true,
+    s3Bucket: process.env.AWS_S3_BUCKET || 'innoscanmussgp1-s3',
+    s3Region: process.env.AWS_REGION || 'ap-southeast-1',
+    s3AccessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    s3SecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+    s3Prefix: 'innoscanmussgp1/JournalVerificationImages/',
+    s3CustomEndpoint: process.env.AWS_S3_ENDPOINT || ''
+  },
+  Jaguar: {
+    name: 'Jaguar',
+    storagePath: process.platform === 'win32' ? 'C:\\Journal_Proofs\\Jaguar' : path.resolve(__dirname, 'storage/journal_proofs/Jaguar'),
+    s3Enabled: false,
+    s3Bucket: '',
+    s3Region: 'ap-southeast-1',
+    s3AccessKeyId: '',
+    s3SecretAccessKey: '',
+    s3Prefix: 'innoscanjagsgp1/JournalVerificationImages/',
+    s3CustomEndpoint: ''
+  }
+};
+
 // Load or initialize config
 let config = {
-  storagePath: DEFAULT_STORAGE_PATH,
+  activeClient: 'Mustang',
+  clientProfiles: JSON.parse(JSON.stringify(DEFAULT_CLIENT_PROFILES)),
+  storagePath: DEFAULT_CLIENT_PROFILES.Mustang.storagePath,
   autoOpenExplorer: false,
   soundEnabled: true,
   imageQuality: 0.95,
@@ -217,21 +254,59 @@ let config = {
   s3CustomEndpoint: process.env.AWS_S3_ENDPOINT || ''
 };
 
+function syncConfigWithActiveClient(targetClient) {
+  if (!config.clientProfiles) {
+    config.clientProfiles = JSON.parse(JSON.stringify(DEFAULT_CLIENT_PROFILES));
+  }
+  const clientKey = targetClient || config.activeClient || 'Mustang';
+  if (!config.clientProfiles[clientKey]) {
+    config.clientProfiles[clientKey] = {
+      name: clientKey,
+      storagePath: path.join(process.platform === 'win32' ? 'C:\\Journal_Proofs' : path.resolve(__dirname, 'storage/journal_proofs'), clientKey),
+      s3Enabled: false,
+      s3Bucket: '',
+      s3Region: 'ap-southeast-1',
+      s3AccessKeyId: '',
+      s3SecretAccessKey: '',
+      s3Prefix: `innoscan${clientKey.toLowerCase()}sgp1/JournalVerificationImages/`,
+      s3CustomEndpoint: ''
+    };
+  }
+
+  const profile = config.clientProfiles[clientKey];
+  config.activeClient = clientKey;
+  config.storagePath = profile.storagePath;
+  config.s3Enabled = profile.s3Enabled !== false;
+  config.s3Bucket = profile.s3Bucket || '';
+  config.s3Region = profile.s3Region || 'ap-southeast-1';
+  config.s3AccessKeyId = profile.s3AccessKeyId || '';
+  config.s3SecretAccessKey = profile.s3SecretAccessKey || '';
+  config.s3Prefix = profile.s3Prefix || `innoscan${clientKey.toLowerCase()}sgp1/JournalVerificationImages/`;
+  config.s3CustomEndpoint = profile.s3CustomEndpoint || '';
+
+  try {
+    fs.ensureDirSync(config.storagePath);
+  } catch (e) {
+    console.warn(`[Client Profile] Note: Could not create folder ${config.storagePath}:`, e.message);
+  }
+}
+
 if (fs.existsSync(CONFIG_FILE)) {
   try {
     const saved = fs.readJsonSync(CONFIG_FILE);
     config = { ...config, ...saved };
-    // Ensure working S3 defaults if missing in existing config.json
-    if (!config.s3Bucket) config.s3Bucket = process.env.AWS_S3_BUCKET || 'innoscanmussgp1-s3';
-    if (!config.s3Region) config.s3Region = process.env.AWS_REGION || 'ap-southeast-1';
-    if (!config.s3AccessKeyId && process.env.AWS_ACCESS_KEY_ID) config.s3AccessKeyId = process.env.AWS_ACCESS_KEY_ID;
-    if (!config.s3SecretAccessKey && process.env.AWS_SECRET_ACCESS_KEY) config.s3SecretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
-    if (!config.s3Prefix || config.s3Prefix === 'journal-proofs/') config.s3Prefix = 'innoscanmussgp1/JournalVerificationImages/';
-    if (config.s3Enabled === undefined || config.s3Enabled === null) config.s3Enabled = true;
+    if (!config.clientProfiles) {
+      config.clientProfiles = JSON.parse(JSON.stringify(DEFAULT_CLIENT_PROFILES));
+    }
+    if (!config.activeClient) {
+      config.activeClient = 'Mustang';
+    }
+    syncConfigWithActiveClient(config.activeClient);
   } catch (err) {
     console.error('Failed to parse config.json, using defaults:', err);
   }
 } else {
+  syncConfigWithActiveClient('Mustang');
   fs.writeJsonSync(CONFIG_FILE, config, { spaces: 2 });
 }
 
@@ -331,14 +406,14 @@ function saveManifest() {
 }
 
 // Universal manifest lookup helper: handles ISBN, sanitized, digits-only, ISSN, and copy names
-function findManifestItem(identifier) {
+function findManifestItem(identifier, targetClient = config.activeClient) {
   if (!identifier || !manifestData.items || manifestData.items.length === 0) return null;
   const raw = String(identifier).trim();
   const clean = sanitizeIsbn(raw);
   const base = getBaseIsbn(clean);
   const digitsOnly = raw.replace(/[^0-9Xx]/g, '');
 
-  return manifestData.items.find(item => {
+  const checkMatch = (item) => {
     if (!item) return false;
     const itemIsbnRaw = String(item.isbn || '').trim();
     const itemClean = sanitizeIsbn(itemIsbnRaw);
@@ -368,7 +443,19 @@ function findManifestItem(identifier) {
     if (item.sNo && String(item.sNo).trim() === raw) return true;
 
     return false;
-  }) || null;
+  };
+
+  // 1. Priority match: items tagged with the active client (or unassigned client items)
+  if (targetClient) {
+    const clientMatch = manifestData.items.find(item => {
+      if (item.client && item.client.toLowerCase() !== targetClient.toLowerCase()) return false;
+      return checkMatch(item);
+    });
+    if (clientMatch) return clientMatch;
+  }
+
+  // 2. Fallback: match any item
+  return manifestData.items.find(checkMatch) || null;
 }
 
 /**
@@ -853,6 +940,25 @@ app.use('/proofs', (req, res, next) => {
       }
     }
 
+    // Fallback for legacy root folder (e.g. C:\Journal_Proofs) when active client is Mustang
+    const parentDir = path.dirname(config.storagePath);
+    if (path.basename(config.storagePath).toLowerCase() === 'mustang') {
+      const legacyPath = path.join(parentDir, cleanReqPath);
+      if (isValidImageFile(legacyPath)) {
+        return res.sendFile(legacyPath);
+      }
+      if (pathParts.length >= 2) {
+        const [idPart, ...rest] = pathParts;
+        const baseId = getBaseIsbn(idPart);
+        if (baseId && baseId !== idPart) {
+          const legacyBaseFallback = path.join(parentDir, baseId, rest.join(path.sep));
+          if (isValidImageFile(legacyBaseFallback)) {
+            return res.sendFile(legacyBaseFallback);
+          }
+        }
+      }
+    }
+
     // If not found locally, attempt to fetch from peer PC (e.g. PC 1) over LAN
     if (config.peerIp) {
       try {
@@ -1033,6 +1139,7 @@ app.post('/api/manifest/import', async (req, res) => {
         isProcessable: item.isProcessable !== false && String(item.isProcessable).toLowerCase() !== 'false' && String(item.isProcessable).toLowerCase() !== 'no',
         reason: item.reason ? String(item.reason).trim() : '',
         notes: item.notes ? String(item.notes).trim() : '',
+        client: item.client || req.body.client || config.activeClient || 'Mustang',
         importedAt: importTimestamp,
         manifestId: manifestId,
         manifestFilename: safeFilename,
@@ -1049,6 +1156,7 @@ app.post('/api/manifest/import', async (req, res) => {
         sheetName: grp.sheetName,
         lotNumber: grp.lotNumber,
         lotNumbers,
+        client: req.body.client || config.activeClient || 'Mustang',
         importedAt: importTimestamp,
         itemCount: cleanGroupItems.length,
         processableCount,
@@ -1231,7 +1339,73 @@ app.get('/api/system/status', (req, res) => {
     peerSyncEnabled: Boolean(config.peerSyncEnabled),
     peerIp: config.peerIp || '',
     peerPort: config.peerPort || 3001,
-    manifestItemCount: manifestData.totalCount || 0
+    manifestItemCount: manifestData.totalCount || 0,
+    activeClient: config.activeClient || 'Mustang',
+    clientProfiles: config.clientProfiles || DEFAULT_CLIENT_PROFILES
+  });
+});
+
+app.get('/api/system/client', (req, res) => {
+  res.json({
+    activeClient: config.activeClient || 'Mustang',
+    clientProfiles: config.clientProfiles || DEFAULT_CLIENT_PROFILES
+  });
+});
+
+app.post('/api/system/client', (req, res) => {
+  const { client } = req.body;
+  if (!client || typeof client !== 'string') {
+    return res.status(400).json({ error: 'Client name is required (e.g. Mustang, Jaguar)' });
+  }
+
+  const clientName = client.trim();
+
+  // Preserve any modified config on the previous profile before switching
+  if (config.activeClient && config.clientProfiles && config.clientProfiles[config.activeClient]) {
+    config.clientProfiles[config.activeClient] = {
+      ...config.clientProfiles[config.activeClient],
+      storagePath: config.storagePath,
+      s3Enabled: config.s3Enabled !== false,
+      s3Bucket: config.s3Bucket || '',
+      s3Region: config.s3Region || 'ap-southeast-1',
+      s3AccessKeyId: config.s3AccessKeyId || '',
+      s3SecretAccessKey: config.s3SecretAccessKey || '',
+      s3Prefix: config.s3Prefix || '',
+      s3CustomEndpoint: config.s3CustomEndpoint || ''
+    };
+  }
+
+  syncConfigWithActiveClient(clientName);
+  saveConfig();
+
+  // Reset active session state on client switch to guarantee isolation
+  currentSession = {
+    activeIsbn: '',
+    baseIsbn: '',
+    lotNumber: '',
+    boxNumber: '',
+    currentStep: 'SCAN_ISBN',
+    shots: { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null },
+    metadata: null,
+    bookDetails: null,
+    copyNumber: 1,
+    isProcessable: true
+  };
+
+  broadcastSession('CLIENT_SWITCHED', {
+    activeClient: config.activeClient,
+    storagePath: config.storagePath
+  });
+
+  if (config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
+    scanAllPendingJournalsForS3().catch(() => {});
+  }
+
+  res.json({
+    success: true,
+    activeClient: config.activeClient,
+    config,
+    session: currentSession
   });
 });
 
@@ -1252,9 +1426,25 @@ app.post('/api/system/config', (req, res) => {
     peerSyncEnabled,
     peerIp,
     peerPort,
-    enforceManifest
+    enforceManifest,
+    activeClient,
+    clientProfiles
   } = req.body;
   
+  if (activeClient && typeof activeClient === 'string') {
+    const newClient = activeClient.trim();
+    if (newClient !== config.activeClient) {
+      syncConfigWithActiveClient(newClient);
+    }
+  }
+
+  if (clientProfiles && typeof clientProfiles === 'object') {
+    config.clientProfiles = {
+      ...config.clientProfiles,
+      ...clientProfiles
+    };
+  }
+
   if (storagePath && typeof storagePath === 'string') {
     try {
       fs.ensureDirSync(storagePath);
@@ -1284,6 +1474,21 @@ app.post('/api/system/config', (req, res) => {
   }
   if (req.body.s3Prefix !== undefined) config.s3Prefix = String(req.body.s3Prefix).trim();
   if (req.body.s3CustomEndpoint !== undefined) config.s3CustomEndpoint = String(req.body.s3CustomEndpoint).trim();
+
+  // Sync active profile back to config.clientProfiles
+  if (config.activeClient && config.clientProfiles && config.clientProfiles[config.activeClient]) {
+    config.clientProfiles[config.activeClient] = {
+      ...config.clientProfiles[config.activeClient],
+      storagePath: config.storagePath,
+      s3Enabled: config.s3Enabled !== false,
+      s3Bucket: config.s3Bucket,
+      s3Region: config.s3Region,
+      s3AccessKeyId: config.s3AccessKeyId,
+      s3SecretAccessKey: config.s3SecretAccessKey,
+      s3Prefix: config.s3Prefix,
+      s3CustomEndpoint: config.s3CustomEndpoint
+    };
+  }
 
   saveConfig();
   if (config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
@@ -1826,29 +2031,11 @@ function dirHasBoxShots(dirPath) {
          Boolean(findShotFileInFolder(dirPath, 2, 'shot_2'));
 }
 
-// Multi-tier resolver to locate the Box storage directory on disk across Lots and formats
-function findBoxStorageDir(lotNumber, boxNumber) {
-  if (!boxNumber) return null;
-  const boxesBaseDir = path.join(config.storagePath, '_boxes');
+// Helper to scan a _boxes directory for matching folder
+function scanBoxesDirForMatch(boxesBaseDir, normLot, normBox) {
   if (!fs.existsSync(boxesBaseDir)) return null;
-
-  // 1. Direct match with exact key
-  const directKey = getBoxKey(lotNumber, boxNumber);
-  if (directKey) {
-    const directPath = path.join(boxesBaseDir, directKey);
-    if (fs.existsSync(directPath) && dirHasBoxShots(directPath)) {
-      return directPath;
-    }
-  }
-
-  // 2. Scan _boxes directory for matching folder that actively contains verified shots
-  const normBox = normalizeBoxString(boxNumber);
-  const normLot = normalizeLotString(lotNumber);
-
   try {
     const entries = fs.readdirSync(boxesBaseDir);
-
-    // Look for matching lot + box ONLY
     for (const entry of entries) {
       const parts = entry.split('__');
       if (parts.length >= 2) {
@@ -1862,6 +2049,41 @@ function findBoxStorageDir(lotNumber, boxNumber) {
     }
   } catch (err) {
     console.warn('[Box Storage] Error searching _boxes directory:', err.message);
+  }
+  return null;
+}
+
+// Multi-tier resolver to locate the Box storage directory on disk across Lots and formats
+function findBoxStorageDir(lotNumber, boxNumber) {
+  if (!boxNumber) return null;
+  const boxesBaseDir = path.join(config.storagePath, '_boxes');
+
+  // 1. Direct match with exact key in current storagePath
+  const directKey = getBoxKey(lotNumber, boxNumber);
+  if (directKey && fs.existsSync(boxesBaseDir)) {
+    const directPath = path.join(boxesBaseDir, directKey);
+    if (fs.existsSync(directPath) && dirHasBoxShots(directPath)) {
+      return directPath;
+    }
+  }
+
+  // 2. Scan current _boxes directory for matching folder
+  const normBox = normalizeBoxString(boxNumber);
+  const normLot = normalizeLotString(lotNumber);
+  const currentMatch = scanBoxesDirForMatch(boxesBaseDir, normLot, normBox);
+  if (currentMatch) return currentMatch;
+
+  // 3. Fallback: If Mustang, check parent legacy _boxes (e.g. C:\Journal_Proofs\_boxes)
+  const parentBoxesDir = path.join(path.dirname(config.storagePath), '_boxes');
+  if (path.basename(config.storagePath).toLowerCase() === 'mustang' && fs.existsSync(parentBoxesDir)) {
+    if (directKey) {
+      const parentDirect = path.join(parentBoxesDir, directKey);
+      if (fs.existsSync(parentDirect) && dirHasBoxShots(parentDirect)) {
+        return parentDirect;
+      }
+    }
+    const legacyMatch = scanBoxesDirForMatch(parentBoxesDir, normLot, normBox);
+    if (legacyMatch) return legacyMatch;
   }
 
   return null;
