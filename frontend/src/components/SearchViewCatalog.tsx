@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   Search, 
@@ -147,7 +147,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
       const res = await fetch('/api/s3/upload-isbn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isbn })
+        body: JSON.stringify({ isbn, forceUpload: true })
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -169,14 +169,23 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     completedCount: number;
     failedCount: number;
     currentIsbn: string | null;
+    lastError?: string | null;
   } | null>(null);
+  const wasSyncingRef = useRef(false);
 
   const checkSyncStatus = async () => {
     try {
       const res = await fetch('/api/s3/sync-status');
       if (res.ok) {
         const data = await res.json();
-        setSyncStatus(data.progress);
+        const prog = data.progress;
+        setSyncStatus(prog);
+        if (wasSyncingRef.current && prog && !prog.isSyncing) {
+          wasSyncingRef.current = false;
+          fetchItems();
+        } else if (prog?.isSyncing) {
+          wasSyncingRef.current = true;
+        }
       }
     } catch (e) {}
   };
@@ -189,11 +198,42 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
         body: JSON.stringify({ force: false })
       });
       const data = await res.json();
-      if (res.ok) {
-        alert(`✓ Automatic S3 Sync active! Detected ${data.queued || 0} unuploaded journal(s). Uploading in the background.`);
-        fetchItems();
-        checkSyncStatus();
+      if (!res.ok || data.eligible === false || data.success === false) {
+        alert(`S3 Sync Notice: ${data.message || data.error || 'S3 credentials not configured in Settings.'}`);
+        return;
       }
+
+      if ((data.queued || 0) === 0 && (data.totalOnDisk || 0) > 0) {
+        const forceResync = window.confirm(
+          `All ${data.totalOnDisk} journal(s) on disk are already marked as synced to S3.\n\nWould you like to force re-upload all ${data.totalOnDisk} journal(s) to AWS S3?`
+        );
+        if (forceResync) {
+          const forceRes = await fetch('/api/s3/sync-all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force: true })
+          });
+          const forceData = await forceRes.json();
+          if (forceRes.ok && forceData.eligible !== false) {
+            wasSyncingRef.current = true;
+            alert(`✓ Force S3 Sync started! Uploading ${forceData.queued || 0} journal(s) in the background.`);
+            checkSyncStatus();
+            fetchItems();
+          } else {
+            alert(`S3 Sync Error: ${forceData.message || forceData.error || 'Failed to force sync'}`);
+          }
+        }
+        return;
+      }
+
+      if ((data.queued || 0) > 0) {
+        wasSyncingRef.current = true;
+        alert(`✓ Automatic S3 Sync active! Queued ${data.queued} journal(s) for background S3 upload.`);
+      } else {
+        alert(`✓ No pending journals found on disk to upload to S3.`);
+      }
+      fetchItems();
+      checkSyncStatus();
     } catch (err: any) {
       alert(`Sync Error: ${err.message}`);
     }
@@ -217,7 +257,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     checkSyncStatus();
     const interval = setInterval(() => {
       checkSyncStatus();
-    }, 8000);
+    }, 3000);
     return () => clearInterval(interval);
   }, []);
 

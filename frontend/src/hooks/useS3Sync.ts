@@ -68,10 +68,10 @@ export function useS3Sync(pollIntervalMs = 5000) {
         body: JSON.stringify({ force }),
       });
       const data = await res.json();
-      if (data.success) {
+      if (data.success && data.eligible !== false) {
         setSyncFeedback(data.queued > 0 ? `Queued ${data.queued} journals for S3 upload` : 'All journals already synced to S3');
       } else {
-        setSyncFeedback(data.error || 'Failed to start S3 sync');
+        setSyncFeedback(data.message || data.error || 'Failed to start S3 sync');
       }
       // Re-fetch status immediately
       await fetchStatus();

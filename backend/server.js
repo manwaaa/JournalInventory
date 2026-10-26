@@ -12,7 +12,7 @@ import sharp from 'sharp';
 import http from 'http';
 import https from 'https';
 import selfsigned from 'selfsigned';
-import { S3Client, PutObjectCommand, HeadBucketCommand, ListObjectsV2Command, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, HeadBucketCommand, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 dotenv.config();
@@ -101,30 +101,51 @@ function getFolderForIdentifier(identifier) {
   const cleanId = sanitizeIsbn(identifier);
   if (!cleanId) return config.storagePath;
 
-  // Dedicated directory check (e.g. if 9788120309869_Part1 directory explicitly exists)
-  const dedicatedPath = path.join(config.storagePath, cleanId);
-  if (fs.existsSync(dedicatedPath)) return dedicatedPath;
-
-  // Base ISBN directory check (stores all 21 pictures in 1 ISBN directory)
   const base = getBaseIsbn(cleanId);
-  const basePath = path.join(config.storagePath, base);
-  if (fs.existsSync(basePath)) return basePath;
 
-  // Backward compatibility: If active client is Mustang, check legacy C:\Journal_Proofs
-  const parentStorage = path.dirname(config.storagePath);
-  if (path.basename(config.storagePath).toLowerCase() === 'mustang') {
-    const legacyPath = path.join(parentStorage, cleanId);
-    if (fs.existsSync(legacyPath)) return legacyPath;
-    const legacyBasePath = path.join(parentStorage, base);
-    if (fs.existsSync(legacyBasePath)) return legacyBasePath;
+  // 1. Check active storagePath
+  if (config.storagePath) {
+    const dedicatedPath = path.join(config.storagePath, cleanId);
+    if (fs.existsSync(dedicatedPath)) return dedicatedPath;
+    const basePath = path.join(config.storagePath, base);
+    if (fs.existsSync(basePath)) return basePath;
   }
+
+  // 2. Check all client profiles storage paths (e.g. Jaguar and Mustang)
+  if (config.clientProfiles) {
+    for (const p of Object.values(config.clientProfiles)) {
+      if (p.storagePath && p.storagePath !== config.storagePath) {
+        const dedicatedAlt = path.join(p.storagePath, cleanId);
+        if (fs.existsSync(dedicatedAlt)) return dedicatedAlt;
+        const baseAlt = path.join(p.storagePath, base);
+        if (fs.existsSync(baseAlt)) return baseAlt;
+      }
+    }
+  }
+
+  // 3. Backward compatibility: check legacy root C:\Journal_Proofs
+  if (config.storagePath) {
+    const parentStorage = path.dirname(config.storagePath);
+    if (fs.existsSync(parentStorage)) {
+      const legacyPath = path.join(parentStorage, cleanId);
+      if (fs.existsSync(legacyPath)) return legacyPath;
+      const legacyBasePath = path.join(parentStorage, base);
+      if (fs.existsSync(legacyBasePath)) return legacyBasePath;
+    }
+  }
+
+  // 4. Default target: route to client storage if identifier/manifest matches Jaguar or Mustang
+  const manifestMatch = findManifestItem ? (findManifestItem(base) || findManifestItem(cleanId)) : null;
+  const isJag = manifestMatch ? isJaguarLot(manifestMatch.lotNumber, manifestMatch.project, manifestMatch.client) : false;
+  const targetClient = isJag ? 'Jaguar' : (config.activeClient || 'Mustang');
+  const targetStorage = config.clientProfiles?.[targetClient]?.storagePath || config.storagePath;
 
   // If this identifier has a Part number, default to base ISBN folder so all parts stay together in 1 folder
   if (getPartNumber(cleanId) !== null) {
-    return basePath;
+    return path.join(targetStorage, base);
   }
 
-  return dedicatedPath;
+  return path.join(targetStorage, cleanId);
 }
 
 // Helper to extract copy number from identifier (e.g. 9780198826545_Copy2 -> 2, otherwise 1)
@@ -235,13 +256,13 @@ const DEFAULT_CLIENT_PROFILES = {
   Jaguar: {
     name: 'Jaguar',
     storagePath: process.platform === 'win32' ? 'C:\\Journal_Proofs\\Jaguar' : path.resolve(__dirname, 'storage/journal_proofs/Jaguar'),
-    s3Enabled: false,
-    s3Bucket: '',
-    s3Region: 'ap-southeast-1',
-    s3AccessKeyId: '',
-    s3SecretAccessKey: '',
+    s3Enabled: true,
+    s3Bucket: process.env.AWS_S3_BUCKET || 'innoscanmussgp1-s3',
+    s3Region: process.env.AWS_REGION || 'ap-southeast-1',
+    s3AccessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    s3SecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
     s3Prefix: 'innoscanjagsgp1/JournalVerificationImages/',
-    s3CustomEndpoint: ''
+    s3CustomEndpoint: process.env.AWS_S3_ENDPOINT || ''
   }
 };
 
@@ -290,13 +311,14 @@ function syncConfigWithActiveClient(targetClient) {
   }
 
   const profile = config.clientProfiles[clientKey];
+  const mustangProfile = config.clientProfiles?.Mustang || {};
   config.activeClient = clientKey;
   config.storagePath = profile.storagePath;
-  config.s3Enabled = profile.s3Enabled !== false;
-  config.s3Bucket = profile.s3Bucket || '';
-  config.s3Region = profile.s3Region || 'ap-southeast-1';
-  config.s3AccessKeyId = profile.s3AccessKeyId || '';
-  config.s3SecretAccessKey = profile.s3SecretAccessKey || '';
+  config.s3Enabled = profile.s3Enabled !== undefined ? profile.s3Enabled : (config.s3Enabled !== false);
+  config.s3Bucket = profile.s3Bucket || mustangProfile.s3Bucket || config.s3Bucket || 'innoscanmussgp1-s3';
+  config.s3Region = profile.s3Region || mustangProfile.s3Region || config.s3Region || 'ap-southeast-1';
+  config.s3AccessKeyId = profile.s3AccessKeyId || mustangProfile.s3AccessKeyId || config.s3AccessKeyId || '';
+  config.s3SecretAccessKey = profile.s3SecretAccessKey || mustangProfile.s3SecretAccessKey || config.s3SecretAccessKey || '';
   config.s3Prefix = profile.s3Prefix || `innoscan${clientKey.toLowerCase()}sgp1/JournalVerificationImages/`;
   config.s3CustomEndpoint = profile.s3CustomEndpoint || '';
 
@@ -839,8 +861,28 @@ function readIsbnMetadata(cleanIsbn) {
     try { return fs.readJsonSync(newPath); } catch (e) {}
   }
 
+  // Check all client profiles .metadata directories (e.g. Jaguar, Mustang)
+  if (config.clientProfiles) {
+    for (const p of Object.values(config.clientProfiles)) {
+      if (p.storagePath) {
+        const altMeta = path.join(p.storagePath, '.metadata', `${cleanIsbn}.json`);
+        if (fs.existsSync(altMeta)) {
+          try { return fs.readJsonSync(altMeta); } catch (e) {}
+        }
+      }
+    }
+  }
+
+  // Check parent legacy .metadata directory (e.g. C:\Journal_Proofs\.metadata)
+  if (config.storagePath) {
+    const parentMetaPath = path.join(path.dirname(config.storagePath), '.metadata', `${cleanIsbn}.json`);
+    if (fs.existsSync(parentMetaPath)) {
+      try { return fs.readJsonSync(parentMetaPath); } catch (e) {}
+    }
+  }
+
   // Backwards-compatible check: legacy metadata.json inside photo folder
-  const folderPath = path.join(config.storagePath, cleanIsbn);
+  const folderPath = getFolderForIdentifier(cleanIsbn);
   const legacyPath = path.join(folderPath, 'metadata.json');
   if (fs.existsSync(legacyPath)) {
     try {
@@ -859,11 +901,25 @@ function readIsbnMetadata(cleanIsbn) {
 
 async function saveIsbnMetadata(cleanIsbn, metadata) {
   if (!cleanIsbn || !metadata) return metadata;
-  const newPath = getMetadataPath(cleanIsbn);
-  await fs.writeJson(newPath, metadata, { spaces: 2 });
+  const isJag = metadata?.client === 'Jaguar' || isJaguarLot(metadata?.lotNumber);
+  const targetClient = isJag ? 'Jaguar' : (config.activeClient || 'Mustang');
+  const targetStorage = config.clientProfiles?.[targetClient]?.storagePath || config.storagePath;
+  const targetMetaDir = path.join(targetStorage, '.metadata');
+  await fs.ensureDir(targetMetaDir);
+  const primaryPath = path.join(targetMetaDir, `${cleanIsbn}.json`);
+  await fs.writeJson(primaryPath, metadata, { spaces: 2 });
+
+  // Mirror to active config.storagePath if different
+  if (config.storagePath && config.storagePath !== targetStorage) {
+    try {
+      const mirrorDir = path.join(config.storagePath, '.metadata');
+      await fs.ensureDir(mirrorDir);
+      await fs.writeJson(path.join(mirrorDir, `${cleanIsbn}.json`), metadata, { spaces: 2 });
+    } catch (e) {}
+  }
 
   // Clean up any legacy metadata.json from photo folder so only pictures remain
-  const folderPath = path.join(config.storagePath, cleanIsbn);
+  const folderPath = getFolderForIdentifier(cleanIsbn);
   const legacyPath = path.join(folderPath, 'metadata.json');
   if (fs.existsSync(legacyPath)) {
     try { await fs.remove(legacyPath); } catch (e) {}
@@ -1649,27 +1705,51 @@ app.post('/api/system/config', (req, res) => {
 // AWS S3 Cloud Upload & Client Proof Sharing Endpoints
 // -------------------------------------------------------------
 
+// Resolve effective S3 configuration with fallback across client profiles & environment
+function getEffectiveS3Config(customConfig = {}) {
+  const mustangProfile = config.clientProfiles?.Mustang || {};
+  const activeProfile = (config.activeClient && config.clientProfiles?.[config.activeClient]) || {};
+  const bucket = (customConfig.s3Bucket || activeProfile.s3Bucket || config.s3Bucket || mustangProfile.s3Bucket || process.env.AWS_S3_BUCKET || '').trim();
+  const region = (customConfig.s3Region || activeProfile.s3Region || config.s3Region || mustangProfile.s3Region || process.env.AWS_REGION || 'ap-southeast-1').trim();
+  const accessKeyId = (customConfig.s3AccessKeyId || activeProfile.s3AccessKeyId || config.s3AccessKeyId || mustangProfile.s3AccessKeyId || process.env.AWS_ACCESS_KEY_ID || '').trim();
+  const secretAccessKey = (customConfig.s3SecretAccessKey || activeProfile.s3SecretAccessKey || config.s3SecretAccessKey || mustangProfile.s3SecretAccessKey || process.env.AWS_SECRET_ACCESS_KEY || '').trim();
+  let prefix = (customConfig.s3Prefix || activeProfile.s3Prefix || config.s3Prefix || mustangProfile.s3Prefix || 'innoscanmussgp1/JournalVerificationImages/').trim();
+  if (prefix && !prefix.endsWith('/')) prefix += '/';
+  const customEndpoint = (customConfig.s3CustomEndpoint || activeProfile.s3CustomEndpoint || config.s3CustomEndpoint || mustangProfile.s3CustomEndpoint || process.env.AWS_S3_ENDPOINT || '').trim();
+  const profileEnabled = activeProfile.s3Enabled !== undefined ? activeProfile.s3Enabled : config.s3Enabled;
+  const enabled = customConfig.s3Enabled !== undefined
+    ? Boolean(customConfig.s3Enabled)
+    : (profileEnabled !== false || Boolean(customConfig.forceUpload) || Boolean(customConfig.manualTrigger));
+
+  return {
+    s3Enabled: enabled,
+    s3Bucket: bucket,
+    s3Region: region,
+    s3AccessKeyId: accessKeyId,
+    s3SecretAccessKey: secretAccessKey,
+    s3Prefix: prefix,
+    s3CustomEndpoint: customEndpoint,
+    isConfigured: Boolean(bucket && accessKeyId && secretAccessKey)
+  };
+}
+
 // S3 Client factory helper
 function getS3Client(customConfig = {}) {
-  const region = (customConfig.s3Region || config.s3Region || 'us-east-1').trim();
-  const accessKeyId = (customConfig.s3AccessKeyId || config.s3AccessKeyId || '').trim();
-  const secretAccessKey = (customConfig.s3SecretAccessKey || config.s3SecretAccessKey || '').trim();
-  const endpoint = (customConfig.s3CustomEndpoint || config.s3CustomEndpoint || '').trim();
-
-  if (!accessKeyId || !secretAccessKey) {
+  const eff = getEffectiveS3Config(customConfig);
+  if (!eff.s3AccessKeyId || !eff.s3SecretAccessKey) {
     return null;
   }
 
   const clientOptions = {
-    region,
+    region: eff.s3Region,
     credentials: {
-      accessKeyId,
-      secretAccessKey
+      accessKeyId: eff.s3AccessKeyId,
+      secretAccessKey: eff.s3SecretAccessKey
     }
   };
 
-  if (endpoint) {
-    clientOptions.endpoint = endpoint;
+  if (eff.s3CustomEndpoint) {
+    clientOptions.endpoint = eff.s3CustomEndpoint;
     clientOptions.forcePathStyle = true;
   }
 
@@ -1679,11 +1759,12 @@ function getS3Client(customConfig = {}) {
 // S3 Test Connection
 app.post('/api/s3/test-connection', async (req, res) => {
   try {
-    const targetBucket = (req.body.s3Bucket || config.s3Bucket || '').trim();
-    const targetRegion = (req.body.s3Region || config.s3Region || 'us-east-1').trim();
-    const accessKeyId = (req.body.s3AccessKeyId || config.s3AccessKeyId || '').trim();
-    const secretAccessKey = (req.body.s3SecretAccessKey || config.s3SecretAccessKey || '').trim();
-    const customEndpoint = (req.body.s3CustomEndpoint || config.s3CustomEndpoint || '').trim();
+    const eff = getEffectiveS3Config(req.body || {});
+    const targetBucket = eff.s3Bucket;
+    const targetRegion = eff.s3Region;
+    const accessKeyId = eff.s3AccessKeyId;
+    const secretAccessKey = eff.s3SecretAccessKey;
+    const customEndpoint = eff.s3CustomEndpoint;
 
     if (!accessKeyId || !secretAccessKey) {
       return res.status(400).json({ success: false, error: 'AWS Access Key ID and Secret Access Key are required' });
@@ -1731,17 +1812,27 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     throw new Error(`No local folder found for ISBN ${cleanIsbn}`);
   }
 
-  const targetBucket = (customConfig.s3Bucket || config.s3Bucket || '').trim();
-  const targetRegion = (customConfig.s3Region || config.s3Region || 'us-east-1').trim();
-  let prefix = (customConfig.s3Prefix || config.s3Prefix || 'journal-proofs/').trim();
+  // Ensure box shots (Shot 1 & Shot 2) are inherited before checking completeness or uploading
+  let meta = readIsbnMetadata(cleanIsbn);
+  const baseIsbn = getBaseIsbn(cleanIsbn);
+  const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(cleanIsbn);
+  const resolvedLot = meta?.lotNumber || manifestMatch?.lotNumber || '';
+  const resolvedBox = meta?.boxNumber || manifestMatch?.boxNumber || '';
+  if (resolvedBox && (!findShotFileInFolder(folderPath, 1, cleanIsbn) || !findShotFileInFolder(folderPath, 2, cleanIsbn))) {
+    await applyBoxShotsToIsbn(cleanIsbn, resolvedLot, resolvedBox, folderPath).catch(() => {});
+    meta = readIsbnMetadata(cleanIsbn) || meta;
+  }
+
+  const itemClient = meta?.client || manifestMatch?.client || (isJaguarLot(resolvedLot, manifestMatch?.project) ? 'Jaguar' : 'Mustang');
+  const clientProfile = config.clientProfiles?.[itemClient] || {};
+
+  const eff = getEffectiveS3Config(customConfig);
+  const targetBucket = eff.s3Bucket;
+  const targetRegion = eff.s3Region;
+  let prefix = (customConfig.s3Prefix || clientProfile.s3Prefix || eff.s3Prefix || 'innoscanmussgp1/JournalVerificationImages/').trim();
   if (prefix && !prefix.endsWith('/')) prefix += '/';
 
-  const s3 = getS3Client({
-    s3Region: targetRegion,
-    s3AccessKeyId: customConfig.s3AccessKeyId || config.s3AccessKeyId,
-    s3SecretAccessKey: customConfig.s3SecretAccessKey || config.s3SecretAccessKey,
-    s3CustomEndpoint: customConfig.s3CustomEndpoint || config.s3CustomEndpoint
-  });
+  const s3 = getS3Client(eff);
 
   if (!s3 || !targetBucket) {
     throw new Error('S3 is not configured. Please enter your AWS Bucket and Access Keys in Settings.');
@@ -1757,19 +1848,39 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     } catch (e) {}
   }
 
-  // Only upload valid photo image files (exclude json/zip/hidden files)
+  // Only upload valid photo image files (exclude json/zip/hidden/backup files like bak.* or .bak_*)
   const allFilesInFolder = await fs.readdir(folderPath);
-  const imageFiles = allFilesInFolder.filter(filename => filename.match(/\.(jpg|jpeg|png)$/i));
+  const partNum = getPartNumber(cleanIsbn);
+  const partTag = partNum !== null ? `_part${partNum}`.toLowerCase() : null;
+
+  let imageFiles = allFilesInFolder.filter(filename => {
+    if (!filename.match(/\.(jpg|jpeg|png)$/i)) return false;
+    if (filename.startsWith('.')) return false;
+    const lower = filename.toLowerCase();
+    if (lower.startsWith('bak') || lower.includes('.bak') || lower.includes('_bak') || lower.includes('bak.') || lower.includes('backup')) {
+      return false;
+    }
+    if (partTag) {
+      return lower.includes(partTag);
+    }
+    return true;
+  });
 
   if (imageFiles.length === 0) {
     throw new Error(`Folder for ISBN ${cleanIsbn} contains no captured picture files.`);
   }
 
-  // Strictly enforce that the journal verification is complete before uploading to S3
-  const meta = readIsbnMetadata(cleanIsbn);
+  // Check if journal verification is complete before uploading to S3
   let shotsCount = 0;
   for (let s = 1; s <= 7; s++) {
     if (findShotFileInFolder(folderPath, s, cleanIsbn)) shotsCount++;
+  }
+  // Also check if this is a base folder containing complete multi-part captures
+  if (shotsCount < 7 && !partTag) {
+    const parts = await findExistingParts(baseIsbn);
+    if (parts.some(p => p.isComplete || p.shotsCount >= 7)) {
+      shotsCount = 7;
+    }
   }
   const isComplete = Boolean(meta && meta.isComplete) || shotsCount >= 7;
   if (!isComplete && !customConfig.forceUpload) {
@@ -1778,6 +1889,32 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
 
   const uploadedFiles = [];
   const s3BaseFolderKey = `${prefix}${cleanIsbn}`;
+
+  // Clean up any stale retake photos or backup files on S3 so S3 only holds the active photos
+  try {
+    const listRes = await s3.send(new ListObjectsV2Command({
+      Bucket: targetBucket,
+      Prefix: `${s3BaseFolderKey}/`
+    }));
+
+    if (listRes.Contents && listRes.Contents.length > 0) {
+      const allowedS3Keys = new Set(imageFiles.map(f => `${s3BaseFolderKey}/${f}`));
+      for (const obj of listRes.Contents) {
+        const objKey = obj.Key;
+        const baseName = path.basename(objKey).toLowerCase();
+        // If this object is a backup file or not in the current imageFiles list, remove it from S3
+        if (baseName.includes('bak') || baseName.startsWith('.') || !allowedS3Keys.has(objKey)) {
+          console.log(`[S3 Cleanup] Removing stale/backup file from S3: ${objKey}`);
+          await s3.send(new DeleteObjectCommand({
+            Bucket: targetBucket,
+            Key: objKey
+          })).catch(() => {});
+        }
+      }
+    }
+  } catch (cleanErr) {
+    console.warn('[S3 Cleanup] Non-critical warning listing existing S3 files:', cleanErr.message);
+  }
 
   for (const filename of imageFiles) {
     const filePath = path.join(folderPath, filename);
@@ -1867,6 +2004,7 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
 // Background S3 Auto-Sync Queue & Periodic Scanner Engine
 // -------------------------------------------------------------
 let isSyncingS3 = false;
+let s3QueueForceUpload = false;
 const s3SyncQueue = new Set();
 let s3SyncProgress = {
   isSyncing: false,
@@ -1878,20 +2016,25 @@ let s3SyncProgress = {
   lastError: null
 };
 
-function enqueueS3Upload(cleanIsbn) {
+function enqueueS3Upload(cleanIsbn, forceUpload = false) {
   if (!cleanIsbn || cleanIsbn.startsWith('.') || cleanIsbn.startsWith('_')) return;
+  if (forceUpload) s3QueueForceUpload = true;
   s3SyncQueue.add(cleanIsbn);
-  processS3Queue().catch(err => console.error('[S3 Queue Error]', err));
+  processS3Queue(s3QueueForceUpload).catch(err => console.error('[S3 Queue Error]', err));
 }
 
-async function processS3Queue() {
+async function processS3Queue(forceUpload = false) {
   if (isSyncingS3 || s3SyncQueue.size === 0) return;
-  if (config.s3Enabled === false || !config.s3Bucket || !config.s3AccessKeyId || !config.s3SecretAccessKey) {
+  const eff = getEffectiveS3Config({ forceUpload, manualTrigger: true });
+  if (!eff.isConfigured) {
     return;
   }
 
   isSyncingS3 = true;
   s3SyncProgress.isSyncing = true;
+  s3SyncProgress.completedCount = 0;
+  s3SyncProgress.failedCount = 0;
+  s3SyncProgress.lastError = null;
   s3SyncProgress.totalPending = s3SyncQueue.size;
 
   try {
@@ -1901,7 +2044,7 @@ async function processS3Queue() {
       s3SyncProgress.currentIsbn = nextIsbn;
 
       try {
-        await uploadIsbnToS3(nextIsbn);
+        await uploadIsbnToS3(nextIsbn, { forceUpload: forceUpload || s3QueueForceUpload });
         s3SyncProgress.completedCount++;
       } catch (err) {
         console.error(`[S3 Auto-Sync] Error uploading ${nextIsbn}:`, err.message);
@@ -1911,32 +2054,82 @@ async function processS3Queue() {
     }
   } finally {
     isSyncingS3 = false;
+    s3QueueForceUpload = false;
     s3SyncProgress.isSyncing = false;
     s3SyncProgress.currentIsbn = null;
     s3SyncProgress.lastSyncAt = new Date().toISOString();
   }
 }
 
-async function scanAllPendingJournalsForS3(forceAll = false) {
+// Helper: Get all journal folders across active storage path, all client profiles, and legacy root directory
+async function getAllCandidateJournalFolders() {
+  const folderMap = new Map(); // entryName -> fullFolderPath
+  const reservedNames = new Set(['mustang', 'jaguar', '_boxes', '.metadata', 'storage', '.backups']);
+
+  const scanRoot = async (rootDir) => {
+    if (!rootDir || !fs.existsSync(rootDir)) return;
+    try {
+      const entries = await fs.readdir(rootDir);
+      for (const entry of entries) {
+        if (entry.startsWith('.') || entry.startsWith('_')) continue;
+        if (reservedNames.has(entry.toLowerCase())) continue;
+        if (folderMap.has(entry)) continue;
+        const fullPath = path.join(rootDir, entry);
+        const stat = await fs.stat(fullPath).catch(() => null);
+        if (stat && stat.isDirectory()) {
+          folderMap.set(entry, fullPath);
+        }
+      }
+    } catch (e) {}
+  };
+
+  await scanRoot(config.storagePath);
+
+  if (config.clientProfiles) {
+    for (const p of Object.values(config.clientProfiles)) {
+      if (p.storagePath && p.storagePath !== config.storagePath) {
+        await scanRoot(p.storagePath);
+      }
+    }
+  }
+
+  if (config.storagePath) {
+    const parentDir = path.dirname(config.storagePath);
+    if (parentDir && parentDir !== config.storagePath) {
+      await scanRoot(parentDir);
+    }
+  }
+
+  if (process.platform === 'win32') {
+    await scanRoot('C:\\Journal_Proofs\\Mustang');
+    await scanRoot('C:\\Journal_Proofs\\Jaguar');
+    await scanRoot('C:\\Journal_Proofs');
+  }
+
+  return folderMap;
+}
+
+async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = false) {
   try {
-    if (config.s3Enabled === false || !config.s3Bucket || !config.s3AccessKeyId || !config.s3SecretAccessKey) {
-      return { eligible: false, message: 'S3 credentials not configured' };
+    const eff = getEffectiveS3Config({ forceUpload: forceAll, manualTrigger });
+    if (!eff.isConfigured) {
+      return { eligible: false, message: 'S3 credentials not configured. Please check AWS Bucket and Access Keys in Settings.' };
     }
-    if (!fs.existsSync(config.storagePath)) {
-      return { eligible: true, queued: 0 };
+    if (!eff.s3Enabled && !manualTrigger && !forceAll) {
+      return { eligible: false, message: `S3 Auto-Sync is currently disabled for ${config.activeClient || 'this client'}.` };
     }
 
-    const entries = await fs.readdir(config.storagePath);
+    const folderMap = await getAllCandidateJournalFolders();
+    if (folderMap.size === 0) {
+      return { eligible: true, queued: 0, totalQueueSize: s3SyncQueue.size };
+    }
+
     let queuedCount = 0;
+    const incompleteCandidates = [];
 
-    for (const entry of entries) {
-      if (entry.startsWith('.') || entry.startsWith('_')) continue;
-      const folderPath = path.join(config.storagePath, entry);
-      const stat = await fs.stat(folderPath).catch(() => null);
-      if (!stat || !stat.isDirectory()) continue;
-
+    for (const [entry, folderPath] of folderMap.entries()) {
       const allFiles = await fs.readdir(folderPath).catch(() => []);
-      const imageFiles = allFiles.filter(f => f.match(/\.(jpg|jpeg|png)$/i));
+      let imageFiles = allFiles.filter(f => f.match(/\.(jpg|jpeg|png)$/i) && !f.startsWith('.'));
       if (imageFiles.length === 0) continue;
 
       // Clean up legacy metadata.json from photo folder
@@ -1949,18 +2142,69 @@ async function scanAllPendingJournalsForS3(forceAll = false) {
         } catch (e) {}
       }
 
-      const meta = readIsbnMetadata(entry);
+      // Check if this folder has multi-part journals (e.g. Part 1, Part 2, Part 3)
+      const existingParts = await findExistingParts(entry);
+      if (existingParts.length > 0) {
+        for (const p of existingParts) {
+          let pMeta = readIsbnMetadata(p.identifier);
+          const manifestMatch = findManifestItem(entry) || findManifestItem(p.identifier);
+          const resolvedLot = pMeta?.lotNumber || manifestMatch?.lotNumber || '';
+          const resolvedBox = pMeta?.boxNumber || manifestMatch?.boxNumber || '';
+          if (resolvedBox && (!findShotFileInFolder(folderPath, 1, p.identifier) || !findShotFileInFolder(folderPath, 2, p.identifier))) {
+            await applyBoxShotsToIsbn(p.identifier, resolvedLot, resolvedBox, folderPath).catch(() => {});
+            pMeta = readIsbnMetadata(p.identifier) || pMeta;
+          }
 
-      // ONLY upload to S3 if the journal verification is 100% COMPLETE (all 7 shots verified)
+          let pShotsFound = 0;
+          for (let s = 1; s <= 7; s++) {
+            if (findShotFileInFolder(folderPath, s, p.identifier)) pShotsFound++;
+          }
+          const pComplete = Boolean(pMeta && pMeta.isComplete) || pShotsFound >= 7;
+          const pHasUploaded = Boolean(pMeta?.s3Upload?.uploadedAt);
+          const partTag = `_part${p.partNumber}`.toLowerCase();
+          const partImageCount = imageFiles.filter(f => f.toLowerCase().includes(partTag)).length;
+          const pUploadedCount = pMeta?.s3Upload?.fileCount || 0;
+
+          if (pComplete || forceAll) {
+            if (!pHasUploaded || partImageCount > pUploadedCount || forceAll) {
+              s3SyncQueue.add(p.identifier);
+              queuedCount++;
+            }
+          } else if (manualTrigger && !pHasUploaded && pShotsFound > 0) {
+            incompleteCandidates.push(p.identifier);
+          }
+        }
+        continue;
+      }
+
+      let meta = readIsbnMetadata(entry);
+      const baseIsbn = getBaseIsbn(entry);
+      const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(entry);
+      const resolvedLot = meta?.lotNumber || manifestMatch?.lotNumber || '';
+      const resolvedBox = meta?.boxNumber || manifestMatch?.boxNumber || '';
+
+      // Inherit Shot 1 (Box A) & Shot 2 (Box B) if captured in _boxes before checking completeness
+      if (resolvedBox && (!findShotFileInFolder(folderPath, 1, entry) || !findShotFileInFolder(folderPath, 2, entry))) {
+        await applyBoxShotsToIsbn(entry, resolvedLot, resolvedBox, folderPath).catch(() => {});
+        meta = readIsbnMetadata(entry) || meta;
+        const refreshedFiles = await fs.readdir(folderPath).catch(() => []);
+        imageFiles = refreshedFiles.filter(f => f.match(/\.(jpg|jpeg|png)$/i) && !f.startsWith('.'));
+      }
+
       let shotsFound = 0;
       for (let s = 1; s <= 7; s++) {
         if (findShotFileInFolder(folderPath, s, entry)) shotsFound++;
       }
       const isComplete = (meta && meta.isComplete) || shotsFound >= 7;
-      if (!isComplete && !forceAll) continue;
-
       const hasUploaded = Boolean(meta?.s3Upload?.uploadedAt);
       const uploadedFileCount = meta?.s3Upload?.fileCount || 0;
+
+      if (!isComplete && !forceAll) {
+        if (manualTrigger && !hasUploaded && shotsFound > 0) {
+          incompleteCandidates.push(entry);
+        }
+        continue;
+      }
 
       // Queue for S3 upload if complete and not yet uploaded, or if forced
       if (!hasUploaded || imageFiles.length > uploadedFileCount || forceAll) {
@@ -1969,12 +2213,28 @@ async function scanAllPendingJournalsForS3(forceAll = false) {
       }
     }
 
-    if (queuedCount > 0) {
-      console.log(`[S3 Auto-Sync Daemon] Detected ${queuedCount} unuploaded journal(s). Automatically uploading in background...`);
-      processS3Queue().catch(err => console.error('[S3 Queue Error]', err));
+    // If user manually clicked "Auto-Sync All to S3" and only incomplete unuploaded journals exist, sync them too
+    let usedForceUpload = forceAll;
+    if (manualTrigger && queuedCount === 0 && incompleteCandidates.length > 0) {
+      usedForceUpload = true;
+      for (const id of incompleteCandidates) {
+        s3SyncQueue.add(id);
+        queuedCount++;
+      }
     }
 
-    return { eligible: true, queued: queuedCount, totalQueueSize: s3SyncQueue.size };
+    if (queuedCount > 0) {
+      if (usedForceUpload) s3QueueForceUpload = true;
+      console.log(`[S3 Auto-Sync Daemon] Detected ${queuedCount} unuploaded journal(s). Automatically uploading in background...`);
+      processS3Queue(usedForceUpload).catch(err => console.error('[S3 Queue Error]', err));
+    }
+
+    return {
+      eligible: true,
+      queued: queuedCount,
+      totalOnDisk: folderMap.size,
+      totalQueueSize: s3SyncQueue.size
+    };
   } catch (err) {
     console.error('[S3 Scanner Error]', err);
     return { eligible: false, error: err.message };
@@ -1986,8 +2246,8 @@ app.post('/api/s3/sync-all', async (req, res) => {
   try {
     const force = Boolean(req.body?.force);
     await migrateAllLegacyMetadata();
-    const result = await scanAllPendingJournalsForS3(force);
-    res.json({ success: true, ...result, progress: s3SyncProgress });
+    const result = await scanAllPendingJournalsForS3(force, true);
+    res.json({ success: result.eligible !== false, ...result, progress: s3SyncProgress });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1995,11 +2255,12 @@ app.post('/api/s3/sync-all', async (req, res) => {
 
 // Endpoint: Get current S3 background auto-sync status
 app.get('/api/s3/sync-status', (req, res) => {
+  const eff = getEffectiveS3Config();
   res.json({
     success: true,
     queueSize: s3SyncQueue.size,
     progress: s3SyncProgress,
-    s3Configured: Boolean(config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId)
+    s3Configured: Boolean(eff.s3Enabled && eff.isConfigured)
   });
 });
 
@@ -2326,12 +2587,24 @@ async function saveBoxShotToFile(lotNumber, boxNumber, shotNumber, buffer, blurS
   const filename = shotNumber === 1 ? 'shot_1_box_a.jpg' : 'shot_2_box_b.jpg';
   const filePath = path.join(primaryBoxDir, filename);
 
-  // Backup existing file before overwrite for undo capability
+  // Backup existing file before overwrite for undo capability (stored cleanly in .metadata/backups)
   if (fs.existsSync(filePath) && isValidImageFile(filePath)) {
     try {
-      await fs.copy(filePath, path.join(primaryBoxDir, `.bak_${filename}`));
+      const backupBoxDir = path.join(getMetadataDir(), 'backups', '_boxes', key);
+      await fs.ensureDir(backupBoxDir);
+      await fs.copy(filePath, path.join(backupBoxDir, filename));
     } catch (e) {}
   }
+
+  // Clean up any stray legacy .bak files in primaryBoxDir
+  try {
+    const boxFiles = await fs.readdir(primaryBoxDir);
+    for (const f of boxFiles) {
+      if (f.toLowerCase().includes('bak')) {
+        await fs.remove(path.join(primaryBoxDir, f)).catch(() => {});
+      }
+    }
+  } catch (e) {}
 
   await fs.writeFile(filePath, buffer);
 
@@ -3105,9 +3378,28 @@ app.post('/api/capture/save-shot', async (req, res) => {
     if (existingFilename && isValidImageFile(path.join(folderPath, existingFilename))) {
       wasRetake = true;
       try {
-        await fs.copy(path.join(folderPath, existingFilename), path.join(folderPath, `.bak_${filename}`));
+        // Store backup cleanly outside the photo folder in .metadata/backups
+        const backupDir = path.join(getMetadataDir(), 'backups', cleanIsbn);
+        await fs.ensureDir(backupDir);
+        await fs.copy(path.join(folderPath, existingFilename), path.join(backupDir, `${sNum}_${filename}`));
       } catch (e) {}
+
+      // If existing filename differs from the standard target filename, clean it up so no duplicate or previous file remains
+      if (existingFilename !== filename) {
+        try { await fs.remove(path.join(folderPath, existingFilename)); } catch (e) {}
+      }
     }
+
+    // Clean up any stray backup or bak files inside folderPath to keep directory 100% clean
+    try {
+      const folderFiles = await fs.readdir(folderPath);
+      for (const f of folderFiles) {
+        const lower = f.toLowerCase();
+        if (lower.startsWith('.bak') || lower.startsWith('bak') || lower.includes('.bak') || lower.includes('bak.') || lower.includes('_bak')) {
+          await fs.remove(path.join(folderPath, f)).catch(() => {});
+        }
+      }
+    } catch (e) {}
 
     // Save image buffer to disk
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
@@ -3345,8 +3637,9 @@ app.post('/api/capture/undo-shot', async (req, res) => {
     const shotDef = SHOT_DEFINITIONS[sNum];
     const shotFilename = getShotFilename(sNum, cleanIsbn);
     const targetFilePath = path.join(folderPath, shotFilename);
-    const backupName = `.bak_${shotFilename}`;
-    const backupPath = path.join(folderPath, backupName);
+    const extBackupPath = path.join(getMetadataDir(), 'backups', cleanIsbn, `${sNum}_${shotFilename}`);
+    const legacyBackupPath = path.join(folderPath, `.bak_${shotFilename}`);
+    const backupPath = fs.existsSync(extBackupPath) ? extBackupPath : legacyBackupPath;
 
     let wasRetake = false;
     let restoredShotInfo = null;
@@ -3892,11 +4185,12 @@ app.post('/api/boxes/undo-shot', async (req, res) => {
 
     const key = getBoxKey(lotNumber, boxNumber);
     if (!key) return res.status(400).json({ error: 'Invalid lot and box' });
-    const boxDir = path.join(config.storagePath, '_boxes', key);
-
+    const targetBoxDir = findBoxStorageDir(lotNumber, boxNumber) || path.join(config.storagePath, '_boxes', key);
     const filename = sNum === 1 ? 'shot_1_box_a.jpg' : 'shot_2_box_b.jpg';
-    const filePath = path.join(boxDir, filename);
-    const backupPath = path.join(boxDir, `.bak_${filename}`);
+    const filePath = path.join(targetBoxDir, filename);
+    const extBackupPath = path.join(getMetadataDir(), 'backups', '_boxes', key, filename);
+    const legacyBackupPath = path.join(targetBoxDir, `.bak_${filename}`);
+    const backupPath = fs.existsSync(extBackupPath) ? extBackupPath : legacyBackupPath;
 
     const metaPath = path.join(boxDir, 'box_meta.json');
     let meta = fs.existsSync(metaPath) ? fs.readJsonSync(metaPath) : null;
@@ -4215,7 +4509,13 @@ app.get('/api/capture/zip/:isbn', async (req, res) => {
   archive.pipe(res);
   try {
     const allFiles = await fs.readdir(folderPath);
-    const imageFiles = allFiles.filter(f => f.match(/\.(jpg|jpeg|png)$/i));
+    const imageFiles = allFiles.filter(f => {
+      if (!f.match(/\.(jpg|jpeg|png)$/i)) return false;
+      if (f.startsWith('.')) return false;
+      const lower = f.toLowerCase();
+      if (lower.startsWith('bak') || lower.includes('.bak') || lower.includes('bak.') || lower.includes('_bak') || lower.includes('backup')) return false;
+      return true;
+    });
     for (const file of imageFiles) {
       archive.file(path.join(folderPath, file), { name: file });
     }
@@ -4365,16 +4665,16 @@ app.get('/api/gallery/export-csv', async (req, res) => {
 
 app.get('/api/gallery/list', async (req, res) => {
   try {
-    if (!fs.existsSync(config.storagePath)) {
+    const folderMap = await getAllCandidateJournalFolders();
+    if (folderMap.size === 0) {
       return res.json({ items: [] });
     }
 
-    const entries = await fs.readdir(config.storagePath, { withFileTypes: true });
-    const dirEntries = entries.filter(e => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('_'));
+    const dirEntries = Array.from(folderMap.entries()).map(([name, fullPath]) => ({ name, fullPath }));
 
     const items = [];
     for (const dir of dirEntries) {
-      const folderPath = path.join(config.storagePath, dir.name);
+      const folderPath = dir.fullPath;
       let metadata = readIsbnMetadata(dir.name);
 
       let stat = null;

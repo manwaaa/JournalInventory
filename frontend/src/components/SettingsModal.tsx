@@ -124,11 +124,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const newProfile = currentProfiles[newClient] || {
       name: newClient,
       storagePath: `C:\\Journal_Proofs\\${newClient}`,
-      s3Enabled: newClient === 'Mustang',
-      s3Bucket: newClient === 'Mustang' ? 'innoscanmussgp1-s3' : '',
+      s3Enabled: true,
+      s3Bucket: 'innoscanmussgp1-s3',
       s3Region: 'ap-southeast-1',
-      s3AccessKeyId: newClient === 'Mustang' ? (config.s3AccessKeyId || '') : '',
-      s3SecretAccessKey: newClient === 'Mustang' ? (config.s3SecretAccessKey || '') : '',
+      s3AccessKeyId: config.s3AccessKeyId || '',
+      s3SecretAccessKey: config.s3SecretAccessKey || '',
       s3Prefix: `innoscan${newClient.toLowerCase()}sgp1/JournalVerificationImages/`,
       s3CustomEndpoint: ''
     };
@@ -141,11 +141,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       activeClient: newClient,
       clientProfiles: currentProfiles,
       storagePath: newProfile.storagePath,
-      s3Enabled: newProfile.s3Enabled,
-      s3Bucket: newProfile.s3Bucket,
+      s3Enabled: newProfile.s3Enabled !== false,
+      s3Bucket: newProfile.s3Bucket || 'innoscanmussgp1-s3',
       s3Region: newProfile.s3Region || 'ap-southeast-1',
-      s3AccessKeyId: newProfile.s3AccessKeyId || '',
-      s3SecretAccessKey: newProfile.s3SecretAccessKey || '',
+      s3AccessKeyId: newProfile.s3AccessKeyId || config.s3AccessKeyId || '',
+      s3SecretAccessKey: newProfile.s3SecretAccessKey || config.s3SecretAccessKey || '',
       s3Prefix: newProfile.s3Prefix,
       s3CustomEndpoint: newProfile.s3CustomEndpoint || ''
     });
@@ -160,7 +160,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       finalProfiles[selectedClient] = {
         name: selectedClient,
         storagePath: config.storagePath,
-        s3Enabled: config.s3Enabled ?? (selectedClient === 'Mustang'),
+        s3Enabled: config.s3Enabled !== false,
         s3Bucket: config.s3Bucket || '',
         s3Region: config.s3Region || 'ap-southeast-1',
         s3AccessKeyId: config.s3AccessKeyId || '',
