@@ -31,6 +31,31 @@ export function isJaguarLot(lotNumber?: string, project?: string, client?: strin
 }
 
 /**
+ * Normalizes a box number by removing non-alphanumeric characters and converting to lowercase.
+ */
+export function normalizeBoxString(boxNumber?: string): string {
+  if (!boxNumber) return '';
+  return String(boxNumber).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Compares two box numbers with lenient matching:
+ * - "RB-0005" == "rb0005" == "0005" == "5" == "RB5"
+ */
+export function isMatchingBoxNumber(boxA?: string, boxB?: string): boolean {
+  if (!boxA || !boxB) return false;
+  const normA = normalizeBoxString(boxA);
+  const normB = normalizeBoxString(boxB);
+  if (normA === normB) return true;
+  const noRbA = normA.replace(/^rb/, '');
+  const noRbB = normB.replace(/^rb/, '');
+  if (noRbA && noRbB && noRbA === noRbB) return true;
+  const strippedA = noRbA.replace(/^0+/, '') || '0';
+  const strippedB = noRbB.replace(/^0+/, '') || '0';
+  return strippedA === strippedB;
+}
+
+/**
  * Comprehensive manifest lookup helper: handles exact ISBN, sanitized, numeric,
  * 10/13-digit conversions, ISSN, and sNo.
  */

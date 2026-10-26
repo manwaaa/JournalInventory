@@ -32,7 +32,7 @@ import { useCamera } from './hooks/useCamera';
 import { useBarcodeScanner } from './hooks/useBarcodeScanner';
 import { useSoundEffects } from './hooks/useSoundEffects';
 import { useS3Sync } from './hooks/useS3Sync';
-import { validateAndCleanBarcode, isJaguarLot } from './utils/barcode';
+import { validateAndCleanBarcode, isJaguarLot, isMatchingBoxNumber } from './utils/barcode';
 
 import { 
   CaptureStep, 
@@ -349,6 +349,26 @@ export function App() {
     if (isProcessingIsbnRef.current) return;
     isProcessingIsbnRef.current = true;
 
+    // Station 1 (Box Level) Direct Box Number / Box Barcode Match:
+    // If the operator typed a Box number (e.g. RB-0005, 0005, 5) or box key, select that box directly
+    if (stationRole === 'box_level') {
+      const trimmedCode = code.trim();
+      const matchedBox = boxesList.find(b => 
+        isMatchingBoxNumber(b.boxNumber, trimmedCode) ||
+        b.boxKey.toLowerCase() === trimmedCode.toLowerCase()
+      );
+      if (matchedBox) {
+        isbnInputRef.current?.blur();
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+        setIsbnInput('');
+        await handleSelectBox(matchedBox.lotNumber, matchedBox.boxNumber);
+        isProcessingIsbnRef.current = false;
+        return;
+      }
+    }
+
     // Run Barcode Sanitization, Format Validation, Multi-Client & De-duplication Guard
     const validation = validateAndCleanBarcode(code, manifestData?.items || [], activeClient);
     if (!validation.valid) {
@@ -357,6 +377,18 @@ export function App() {
         type: 'error'
       });
       playAudioCue('error');
+      isProcessingIsbnRef.current = false;
+      return;
+    }
+
+    // Station 1 (Box Level) Scanned ISBN: Automatically select the box that contains this ISBN
+    if (stationRole === 'box_level' && validation.manifestMatch?.boxNumber) {
+      isbnInputRef.current?.blur();
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+      setIsbnInput('');
+      await handleSelectBox(validation.manifestMatch.lotNumber || '', validation.manifestMatch.boxNumber);
       isProcessingIsbnRef.current = false;
       return;
     }
@@ -449,7 +481,7 @@ export function App() {
       if (resolvedBox && boxesList.length > 0) {
         const foundBox = boxesList.find(b => 
           (b.lotNumber || 'Unassigned').toLowerCase() === (resolvedLot || 'Unassigned').toLowerCase() &&
-          (b.boxNumber || '').toLowerCase() === resolvedBox.toLowerCase()
+          isMatchingBoxNumber(b.boxNumber, resolvedBox)
         );
         if (foundBox) {
           setActiveBoxSummary(foundBox);
@@ -623,7 +655,7 @@ export function App() {
       const res = await fetch('/api/capture/init-box', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lotNumber: targetLot, boxNumber: targetBox })
+        body: JSON.stringify({ lotNumber: targetLot, boxNumber: targetBox, client: activeClient })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -692,7 +724,8 @@ export function App() {
           blurScore,
           lotNumber,
           boxNumber,
-          totalParts
+          totalParts,
+          client: activeClient
         })
       });
 
