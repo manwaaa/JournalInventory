@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   X, 
@@ -50,6 +50,32 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
   const [s3AccessKeyId, setS3AccessKeyId] = useState('');
   const [s3SecretAccessKey, setS3SecretAccessKey] = useState('');
   const [s3CustomEndpoint, setS3CustomEndpoint] = useState('');
+
+  const effectiveDate = useMemo(() => {
+    if (item?.modifiedAt) {
+      try {
+        const d = new Date(item.modifiedAt);
+        if (!isNaN(d.getTime())) {
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        }
+      } catch (e) {}
+    }
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }, [item?.modifiedAt]);
+
+  const previewS3Folder = useMemo(() => {
+    let p = (s3Prefix || '').trim();
+    if (p && !p.endsWith('/')) p += '/';
+    if (/\{date\}/i.test(p)) {
+      p = p.replace(/\{date\}/gi, effectiveDate);
+    } else if (/\/\d{4}-\d{2}-\d{2}\/$/.test(p)) {
+      p = p.replace(/\/\d{4}-\d{2}-\d{2}\/$/, `/${effectiveDate}/`);
+    } else if (p) {
+      p = `${p}${effectiveDate}/`;
+    }
+    return `s3://${s3Bucket || '...'}/${p}${isbn}/`;
+  }, [s3Bucket, s3Prefix, effectiveDate, isbn]);
 
   useEffect(() => {
     if (isOpen) {
@@ -352,7 +378,7 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
 
                 <div className="text-xs font-mono bg-white p-2.5 rounded-lg border border-slate-200 text-slate-800 truncate">
                   {s3Bucket ? (
-                    <span>s3://{s3Bucket}/{s3Prefix}{isbn}/</span>
+                    <span title={previewS3Folder}>{previewS3Folder}</span>
                   ) : (
                     <span className="text-amber-600 italic">No S3 Bucket configured yet. Click 'Configure S3' below.</span>
                   )}

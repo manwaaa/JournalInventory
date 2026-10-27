@@ -791,9 +791,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     type="text"
                     value={config.s3Prefix || 'journal-proofs/'}
                     onChange={(e) => setConfig({ ...config, s3Prefix: e.target.value })}
-                    placeholder="journal-proofs/"
+                    placeholder="e.g. Phase-09/Lot-156J/"
                     className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg font-mono text-xs outline-none focus:ring-1 focus:ring-brand-500"
                   />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Capture date (e.g. <code className="font-mono bg-slate-100 px-1 rounded">2026-10-27/</code>) is automatically created for each journal.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 mb-1">Custom S3 Endpoint (Optional)</label>

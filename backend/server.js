@@ -257,11 +257,11 @@ const DEFAULT_CLIENT_PROFILES = {
     name: 'Jaguar',
     storagePath: process.platform === 'win32' ? 'C:\\Journal_Proofs\\Jaguar' : path.resolve(__dirname, 'storage/journal_proofs/Jaguar'),
     s3Enabled: true,
-    s3Bucket: process.env.AWS_S3_BUCKET || 'innoscanmussgp1-s3',
+    s3Bucket: process.env.AWS_S3_BUCKET || 'innoscanjagjx1-s3',
     s3Region: process.env.AWS_REGION || 'ap-southeast-1',
     s3AccessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
     s3SecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-    s3Prefix: 'innoscanjagsgp1/JournalVerificationImages/',
+    s3Prefix: 'Phase-09/Lot-156J/',
     s3CustomEndpoint: process.env.AWS_S3_ENDPOINT || ''
   }
 };
@@ -1805,6 +1805,67 @@ app.post('/api/s3/test-connection', async (req, res) => {
   }
 });
 
+// Helper: Format date as YYYY-MM-DD in local time
+function formatLocalDate(dateInput) {
+  if (!dateInput) return formatLocalDate(new Date());
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (isNaN(d.getTime())) return formatLocalDate(new Date());
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// Helper: Determine the capture date for an ISBN from metadata or local filesystem timestamps
+function getIsbnCaptureDate(cleanIsbn, folderPath, metadata) {
+  if (!metadata) {
+    metadata = readIsbnMetadata(cleanIsbn);
+  }
+
+  // 1. Check metadata shots: prioritize journal-specific shots (3..7) then box shots (1..2)
+  if (metadata?.shots) {
+    for (let s = 3; s <= 7; s++) {
+      const shot = metadata.shots[s];
+      if (shot && (shot.savedAt || shot.capturedAt)) {
+        return formatLocalDate(shot.savedAt || shot.capturedAt);
+      }
+    }
+    for (let s = 1; s <= 2; s++) {
+      const shot = metadata.shots[s];
+      if (shot && (shot.savedAt || shot.capturedAt)) {
+        return formatLocalDate(shot.savedAt || shot.capturedAt);
+      }
+    }
+  }
+
+  // 2. Check metadata level timestamps
+  if (metadata?.capturedAt) return formatLocalDate(metadata.capturedAt);
+  if (metadata?.completedAt) return formatLocalDate(metadata.completedAt);
+  if (metadata?.createdAt) return formatLocalDate(metadata.createdAt);
+  if (metadata?.updatedAt) return formatLocalDate(metadata.updatedAt);
+
+  // 3. Check actual files in local folderPath
+  if (folderPath && fs.existsSync(folderPath)) {
+    try {
+      const files = fs.readdirSync(folderPath);
+      const imgFiles = files.filter(f => f.match(/\.(jpg|jpeg|png)$/i) && !f.startsWith('.'));
+      const journalImgs = imgFiles.filter(f => !f.toLowerCase().includes('box'));
+      const candidates = journalImgs.length > 0 ? journalImgs : imgFiles;
+
+      for (const f of candidates) {
+        const stat = fs.statSync(path.join(folderPath, f));
+        const fileTime = stat.mtime || stat.birthtime;
+        if (fileTime) {
+          return formatLocalDate(fileTime);
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 4. Default to current local date
+  return formatLocalDate(new Date());
+}
+
 // Core helper: Upload proof folder for a specific ISBN to S3 (Pictures ONLY, no metadata.json)
 async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
   const folderPath = getFolderForIdentifier(cleanIsbn);
@@ -1888,7 +1949,35 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
   }
 
   const uploadedFiles = [];
-  const s3BaseFolderKey = `${prefix}${cleanIsbn}`;
+
+  // Determine capture date for this specific ISBN
+  const captureDate = getIsbnCaptureDate(cleanIsbn, folderPath, meta);
+
+  // Build S3 folder key incorporating the capture date
+  let s3FolderPrefix = prefix;
+
+  // Support placeholders {lot} / {lotNumber} and {project}
+  if (/\{lot(?:number)?\}/i.test(s3FolderPrefix) && resolvedLot) {
+    s3FolderPrefix = s3FolderPrefix.replace(/\{lot(?:number)?\}/gi, resolvedLot);
+  }
+  if (/\{project\}/i.test(s3FolderPrefix) && manifestMatch?.project) {
+    s3FolderPrefix = s3FolderPrefix.replace(/\{project\}/gi, manifestMatch.project);
+  }
+
+  // Incorporate capture date
+  if (/\{date\}/i.test(s3FolderPrefix)) {
+    s3FolderPrefix = s3FolderPrefix.replace(/\{date\}/gi, captureDate);
+  } else if (/\/\d{4}-\d{2}-\d{2}\/$/.test(s3FolderPrefix)) {
+    // If prefix already ends with an explicit date folder, substitute with the ISBN's actual capture date
+    s3FolderPrefix = s3FolderPrefix.replace(/\/\d{4}-\d{2}-\d{2}\/$/, `/${captureDate}/`);
+  } else {
+    // Otherwise automatically append the capture date subfolder
+    s3FolderPrefix = `${s3FolderPrefix}${captureDate}/`;
+  }
+
+  if (!s3FolderPrefix.endsWith('/')) s3FolderPrefix += '/';
+
+  const s3BaseFolderKey = `${s3FolderPrefix}${cleanIsbn}`;
 
   // Clean up any stale retake photos or backup files on S3 so S3 only holds the active photos
   try {
@@ -1970,6 +2059,7 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     uploadedAt: new Date().toISOString(),
     bucket: targetBucket,
     region: targetRegion,
+    captureDate,
     s3FolderUri,
     shareableLink,
     fileCount: uploadedFiles.length
@@ -1985,14 +2075,15 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     s3Upload: metadata.s3Upload
   });
 
-  console.log(`[S3 Auto-Upload] Successfully uploaded ${uploadedFiles.length} photo(s) for ${cleanIsbn} to ${s3FolderUri}`);
+  console.log(`[S3 Auto-Upload] Successfully uploaded ${uploadedFiles.length} photo(s) for ${cleanIsbn} to ${s3FolderUri} (Capture Date: ${captureDate})`);
 
   return {
     success: true,
     isbn: cleanIsbn,
     bucket: targetBucket,
     region: targetRegion,
-    prefix,
+    captureDate,
+    prefix: s3FolderPrefix,
     s3FolderUri,
     shareableLink,
     uploadedAt: metadata.s3Upload.uploadedAt,
