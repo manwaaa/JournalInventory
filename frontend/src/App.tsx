@@ -1982,7 +1982,7 @@ export function App() {
             </div>
 
             <div className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-indigo-50/50 dark:bg-indigo-950/30 p-3.5 rounded-2xl border border-indigo-100 dark:border-indigo-900">
-              When an ISBN contains more than 1 physical book (like Part 1, 2, and 3), all books are photographed under this ISBN (<b>7 shots per part = 21 pictures total</b>). File names will be formatted with <code className="font-mono bg-white dark:bg-slate-800 px-1 py-0.5 rounded text-indigo-700 dark:text-indigo-300">_Part1_</code>, <code className="font-mono bg-white dark:bg-slate-800 px-1 py-0.5 rounded text-indigo-700 dark:text-indigo-300">_Part2_</code>, and <code className="font-mono bg-white dark:bg-slate-800 px-1 py-0.5 rounded text-indigo-700 dark:text-indigo-300">_Part3_</code>.
+              When an ISBN contains more than 1 physical book (like Part 1, 2, and 3), all books are photographed under this ISBN (<b>7 shots per part = 21 pictures total</b>). File names will be formatted as <code className="font-mono bg-white dark:bg-slate-800 px-1 py-0.5 rounded text-indigo-700 dark:text-indigo-300">ISBN_front cover_Part1.jpg</code>, <code className="font-mono bg-white dark:bg-slate-800 px-1 py-0.5 rounded text-indigo-700 dark:text-indigo-300">_Part2</code>, etc.
             </div>
 
             {/* Total Parts Selector */}

@@ -170,8 +170,18 @@ function getShotFilename(shotNumber, identifier) {
   const def = SHOT_DEFINITIONS[shotNumber];
   if (!def) return `shot_${shotNumber}.jpg`;
   const cleanId = sanitizeIsbn(identifier || '');
-  const prefix = cleanId || 'journal';
-  return `${prefix}${def.suffix}`;
+  if (!cleanId) return `journal${def.suffix}`;
+
+  const partNum = getPartNumber(cleanId);
+  if (partNum !== null) {
+    // Client naming format for parts: ISBN_front cover_Part1.jpg
+    const prefixWithoutPart = cleanId.replace(/_Part\d+/i, '');
+    const ext = path.extname(def.suffix) || '.jpg';
+    const shotBase = def.suffix.replace(/\.[^.]+$/, '');
+    return `${prefixWithoutPart}${shotBase}_Part${partNum}${ext}`;
+  }
+
+  return `${cleanId}${def.suffix}`;
 }
 
 function isValidImageFile(filePath) {
@@ -188,14 +198,14 @@ function findShotFileInFolder(folderPath, shotNumber, identifier) {
   const def = SHOT_DEFINITIONS[shotNumber];
   if (!def || !fs.existsSync(folderPath)) return null;
 
-  // 1. Direct match with identifier prefix (e.g. 9780198826545_box a.jpg)
+  // 1. Direct match with identifier prefix (e.g. 2006348420_front cover_Part1.jpg or 2006348420_front cover.jpg)
   const targetName = getShotFilename(shotNumber, identifier);
   const targetPath = path.join(folderPath, targetName);
   if (isValidImageFile(targetPath)) {
     return targetName;
   }
 
-  // 1b. Check underscore variant (e.g. 9780198826545_box_a.jpg)
+  // 1b. Check underscore variant (e.g. 2006348420_front_cover_Part1.jpg)
   if (targetName.includes(' ')) {
     const underscoreName = targetName.replace(/ /g, '_');
     const underscorePath = path.join(folderPath, underscoreName);
@@ -204,24 +214,48 @@ function findShotFileInFolder(folderPath, shotNumber, identifier) {
     }
   }
 
+  // 1c. Check legacy part format for backward compatibility (e.g. 2006348420_Part1_front cover.jpg)
+  const partNum = getPartNumber(identifier);
+  if (partNum !== null) {
+    const cleanId = sanitizeIsbn(identifier || '');
+    const legacyPartName = `${cleanId}${def.suffix}`;
+    const legacyPartPath = path.join(folderPath, legacyPartName);
+    if (isValidImageFile(legacyPartPath)) {
+      return legacyPartName;
+    }
+    if (legacyPartName.includes(' ')) {
+      const legacyPartUnderscore = legacyPartName.replace(/ /g, '_');
+      const legacyPartUnderscorePath = path.join(folderPath, legacyPartUnderscore);
+      if (isValidImageFile(legacyPartUnderscorePath)) {
+        return legacyPartUnderscore;
+      }
+    }
+  }
+
   // 2. Scan directory for matching suffix or legacy names
   try {
     const files = fs.readdirSync(folderPath);
     const suffix = def.suffix.toLowerCase();
     const underscoreSuffix = suffix.replace(/ /g, '_');
+    const shotBase = def.suffix.replace(/\.[^.]+$/, '').toLowerCase();
+    const shotBaseUnderscore = shotBase.replace(/ /g, '_');
 
-    const partNum = getPartNumber(identifier);
     const partTag = partNum !== null ? `_part${partNum}`.toLowerCase() : null;
 
-    // Check files ending with this shot's suffix (e.g. any *_box a.jpg or *_box_a.jpg)
     for (const f of files) {
       const lower = f.toLowerCase();
-      if (partTag && !lower.includes(partTag)) continue;
-      if (!partTag && /_part\d+/i.test(lower)) continue;
-
-      if (lower.endsWith(suffix) || (underscoreSuffix !== suffix && lower.endsWith(underscoreSuffix))) {
-        const fullP = path.join(folderPath, f);
-        if (isValidImageFile(fullP)) return f;
+      if (partTag) {
+        if (!lower.includes(partTag)) continue;
+        if (lower.includes(shotBase) || lower.includes(shotBaseUnderscore)) {
+          const fullP = path.join(folderPath, f);
+          if (isValidImageFile(fullP)) return f;
+        }
+      } else {
+        if (/_part\d+/i.test(lower)) continue;
+        if (lower.endsWith(suffix) || (underscoreSuffix !== suffix && lower.endsWith(underscoreSuffix))) {
+          const fullP = path.join(folderPath, f);
+          if (isValidImageFile(fullP)) return f;
+        }
       }
     }
 
@@ -3038,7 +3072,7 @@ async function findExistingParts(baseIsbn) {
     try {
       const files = await fs.readdir(baseFolder);
       for (const f of files) {
-        const m = f.match(/_Part(\d+)_/i);
+        const m = f.match(/_Part(\d+)(?:_|\.|$)/i);
         if (m) {
           const pNum = parseInt(m[1], 10);
           if (!partsMap.has(pNum)) {
@@ -3387,13 +3421,22 @@ app.post('/api/capture/convert-to-parts', async (req, res) => {
       const files = await fs.readdir(folderPath);
       for (const f of files) {
         if (f.startsWith(`${baseIsbn}_`) && !/_Part\d+/i.test(f) && !/_Copy\d+/i.test(f) && /\.(jpe?g|png)$/i.test(f)) {
-          const suffix = f.substring(baseIsbn.length);
-          const newName = `${baseIsbn}_Part1${suffix}`;
+          const ext = path.extname(f);
+          const baseWithoutExt = f.slice(0, -ext.length);
+          const newName = `${baseWithoutExt}_Part1${ext}`;
           try {
             await fs.rename(path.join(folderPath, f), path.join(folderPath, newName));
           } catch (e) {
             console.warn('[convertToParts] Rename failed:', e.message);
           }
+        } else if (f.startsWith(`${baseIsbn}_Part1_`)) {
+          // Backward compatibility: Rename legacy ISBN_Part1_front cover.jpg -> ISBN_front cover_Part1.jpg
+          const ext = path.extname(f);
+          const remainder = f.substring(`${baseIsbn}_Part1_`.length).slice(0, -ext.length);
+          const newName = `${baseIsbn}_${remainder}_Part1${ext}`;
+          try {
+            await fs.rename(path.join(folderPath, f), path.join(folderPath, newName));
+          } catch (e) {}
         }
       }
     }
@@ -3407,7 +3450,15 @@ app.post('/api/capture/convert-to-parts', async (req, res) => {
     if (part1Meta.shots) {
       for (const s of Object.keys(part1Meta.shots)) {
         if (part1Meta.shots[s]?.filename) {
-          part1Meta.shots[s].filename = part1Meta.shots[s].filename.replace(new RegExp(`^${baseIsbn}_(?!Part)`, 'i'), `${baseIsbn}_Part1_`);
+          const fn = part1Meta.shots[s].filename;
+          const ext = path.extname(fn);
+          if (fn.includes('_Part1_')) {
+            const remainder = fn.substring(`${baseIsbn}_Part1_`.length).slice(0, -ext.length);
+            part1Meta.shots[s].filename = `${baseIsbn}_${remainder}_Part1${ext}`;
+          } else if (!fn.includes('_Part')) {
+            const baseWithoutExt = fn.slice(0, -ext.length);
+            part1Meta.shots[s].filename = `${baseWithoutExt}_Part1${ext}`;
+          }
         }
       }
     }
