@@ -96,13 +96,71 @@ function isJaguarLot(lotNumber, project, client) {
   return clean.includes('j');
 }
 
-// Helper to get folder for identifier (supports storing all parts in base ISBN folder or dedicated folder)
+// Helper to get folder for identifier (supports storing all parts in 1 base ISBN folder)
 function getFolderForIdentifier(identifier) {
   const cleanId = sanitizeIsbn(identifier);
   if (!cleanId) return config.storagePath;
 
   const base = getBaseIsbn(cleanId);
+  const partNum = getPartNumber(cleanId);
 
+  // If this identifier has a Part number, ALWAYS use base ISBN folder so all parts stay together in 1 single folder
+  if (partNum !== null) {
+    let targetBaseFolder = null;
+
+    if (config.storagePath) {
+      const basePath = path.join(config.storagePath, base);
+      if (fs.existsSync(basePath)) targetBaseFolder = basePath;
+    }
+
+    if (!targetBaseFolder && config.clientProfiles) {
+      for (const p of Object.values(config.clientProfiles)) {
+        if (p.storagePath) {
+          const baseAlt = path.join(p.storagePath, base);
+          if (fs.existsSync(baseAlt)) {
+            targetBaseFolder = baseAlt;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!targetBaseFolder && config.storagePath) {
+      const parentStorage = path.dirname(config.storagePath);
+      if (fs.existsSync(parentStorage)) {
+        const legacyBasePath = path.join(parentStorage, base);
+        if (fs.existsSync(legacyBasePath)) targetBaseFolder = legacyBasePath;
+      }
+    }
+
+    if (!targetBaseFolder) {
+      const manifestMatch = findManifestItem ? (findManifestItem(base) || findManifestItem(cleanId)) : null;
+      const isJag = manifestMatch ? isJaguarLot(manifestMatch.lotNumber, manifestMatch.project, manifestMatch.client) : false;
+      const targetClient = isJag ? 'Jaguar' : (config.activeClient || 'Mustang');
+      const targetStorage = config.clientProfiles?.[targetClient]?.storagePath || config.storagePath;
+      targetBaseFolder = path.join(targetStorage, base);
+    }
+
+    // Auto-migrate any stray legacy separated part folders into the single base ISBN folder
+    if (config.storagePath) {
+      const separatedPath = path.join(config.storagePath, cleanId);
+      if (fs.existsSync(separatedPath) && separatedPath !== targetBaseFolder) {
+        try {
+          fs.ensureDirSync(targetBaseFolder);
+          const strayFiles = fs.readdirSync(separatedPath);
+          for (const sf of strayFiles) {
+            fs.moveSync(path.join(separatedPath, sf), path.join(targetBaseFolder, sf), { overwrite: true });
+          }
+          fs.removeSync(separatedPath);
+          console.log(`[Storage] Auto-merged separated part folder into single base folder: ${cleanId} -> ${base}`);
+        } catch (e) {}
+      }
+    }
+
+    return targetBaseFolder;
+  }
+
+  // Normal non-part single book identifier:
   // 1. Check active storagePath
   if (config.storagePath) {
     const dedicatedPath = path.join(config.storagePath, cleanId);
@@ -139,11 +197,6 @@ function getFolderForIdentifier(identifier) {
   const isJag = manifestMatch ? isJaguarLot(manifestMatch.lotNumber, manifestMatch.project, manifestMatch.client) : false;
   const targetClient = isJag ? 'Jaguar' : (config.activeClient || 'Mustang');
   const targetStorage = config.clientProfiles?.[targetClient]?.storagePath || config.storagePath;
-
-  // If this identifier has a Part number, default to base ISBN folder so all parts stay together in 1 folder
-  if (getPartNumber(cleanId) !== null) {
-    return path.join(targetStorage, base);
-  }
 
   return path.join(targetStorage, cleanId);
 }
@@ -970,6 +1023,23 @@ async function cleanupEmptyProofFolders() {
       if (entry.isDirectory()) {
         if (entry.name.startsWith('_') || entry.name.startsWith('.')) continue;
         const folder = path.join(config.storagePath, entry.name);
+
+        // If this is a separated part directory (e.g. 2006348420_Part1), auto-merge into single base ISBN folder
+        if (/_Part\d+$/i.test(entry.name)) {
+          const baseName = getBaseIsbn(entry.name);
+          const baseFolder = path.join(config.storagePath, baseName);
+          try {
+            await fs.ensureDir(baseFolder);
+            const partFiles = await fs.readdir(folder);
+            for (const pf of partFiles) {
+              await fs.move(path.join(folder, pf), path.join(baseFolder, pf), { overwrite: true });
+            }
+            await fs.remove(folder);
+            console.log(`[Storage] Auto-merged separated part folder into base ISBN folder: ${entry.name} -> ${baseName}`);
+            continue;
+          } catch (e) {}
+        }
+
         const files = await fs.readdir(folder);
         const imageFiles = files.filter(f => /\.(jpe?g|png|webp)$/i.test(f));
         if (imageFiles.length === 0) {
@@ -2245,7 +2315,8 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
 
   if (!s3FolderPrefix.endsWith('/')) s3FolderPrefix += '/';
 
-  const s3BaseFolderKey = `${s3FolderPrefix}${cleanIsbn}`;
+  // In multi-part sets, all parts are stored in 1 single base ISBN folder, not separated folders
+  const s3BaseFolderKey = `${s3FolderPrefix}${baseIsbn}`;
 
   // Clean up any stale retake photos or backup files on S3 so S3 only holds the active photos
   try {
@@ -2259,9 +2330,24 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
       for (const obj of listRes.Contents) {
         const objKey = obj.Key;
         const baseName = path.basename(objKey).toLowerCase();
-        // If this object is a backup file or not in the current imageFiles list, remove it from S3
-        if (baseName.includes('bak') || baseName.startsWith('.') || !allowedS3Keys.has(objKey)) {
+        // If this object is a backup file, remove it
+        if (baseName.includes('bak') || baseName.startsWith('.')) {
           console.log(`[S3 Cleanup] Removing stale/backup file from S3: ${objKey}`);
+          await s3.send(new DeleteObjectCommand({
+            Bucket: targetBucket,
+            Key: objKey
+          })).catch(() => {});
+        } else if (partTag) {
+          // In multi-part, only clean up stale retakes for THIS specific part tag
+          if (baseName.includes(partTag) && !allowedS3Keys.has(objKey)) {
+            console.log(`[S3 Cleanup] Removing stale ${partTag} file from S3: ${objKey}`);
+            await s3.send(new DeleteObjectCommand({
+              Bucket: targetBucket,
+              Key: objKey
+            })).catch(() => {});
+          }
+        } else if (!allowedS3Keys.has(objKey) && !/_part\d+/i.test(baseName)) {
+          console.log(`[S3 Cleanup] Removing stale file from S3: ${objKey}`);
           await s3.send(new DeleteObjectCommand({
             Bucket: targetBucket,
             Key: objKey
@@ -2333,6 +2419,23 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     fileCount: uploadedFiles.length
   };
   await saveIsbnMetadata(cleanIsbn, metadata);
+
+  // If this was a multi-part upload, also update the base ISBN metadata so it reflects the shared S3 folder
+  if (cleanIsbn !== baseIsbn) {
+    let baseMeta = readIsbnMetadata(baseIsbn);
+    if (baseMeta) {
+      baseMeta.s3Upload = {
+        ...(baseMeta.s3Upload || {}),
+        uploadedAt: metadata.s3Upload.uploadedAt,
+        bucket: targetBucket,
+        region: targetRegion,
+        captureDate,
+        s3FolderUri,
+        shareableLink
+      };
+      await saveIsbnMetadata(baseIsbn, baseMeta);
+    }
+  }
 
   if (currentSession.activeIsbn === cleanIsbn && currentSession.metadata) {
     currentSession.metadata.s3Upload = metadata.s3Upload;

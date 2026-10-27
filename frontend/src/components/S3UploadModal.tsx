@@ -74,8 +74,9 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
     } else if (p) {
       p = `${p}${effectiveDate}/`;
     }
-    return `s3://${s3Bucket || '...'}/${p}${isbn}/`;
-  }, [s3Bucket, s3Prefix, effectiveDate, isbn]);
+    const baseIsbnOnly = (item?.baseIsbn || isbn || '').replace(/(_Copy\d+|_Part\d+)+$/i, '');
+    return `s3://${s3Bucket || '...'}/${p}${baseIsbnOnly}/`;
+  }, [s3Bucket, s3Prefix, effectiveDate, isbn, item?.baseIsbn]);
 
   useEffect(() => {
     if (isOpen) {
