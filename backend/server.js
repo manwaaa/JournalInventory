@@ -96,6 +96,31 @@ function isJaguarLot(lotNumber, project, client) {
   return clean.includes('j');
 }
 
+// Helper: Resolve which client (Jaguar vs Mustang) an ISBN belongs to
+function getItemClient(identifier, metadata = null) {
+  const cleanId = sanitizeIsbn(identifier);
+  const base = getBaseIsbn(cleanId);
+  const meta = metadata || (typeof readIsbnMetadata === 'function' ? (readIsbnMetadata(cleanId) || (base !== cleanId ? readIsbnMetadata(base) : null)) : null);
+  const manifestMatch = typeof findManifestItem === 'function' ? (findManifestItem(base) || findManifestItem(cleanId)) : null;
+  const resolvedLot = meta?.lotNumber || manifestMatch?.lotNumber || '';
+  const resolvedProject = meta?.project || manifestMatch?.project || '';
+  const resolvedClient = meta?.client || manifestMatch?.client || '';
+
+  if (isJaguarLot(resolvedLot, resolvedProject, resolvedClient)) {
+    return 'Jaguar';
+  }
+  if (resolvedClient && /mustang/i.test(resolvedClient)) {
+    return 'Mustang';
+  }
+  if (resolvedProject && /mustang/i.test(resolvedProject)) {
+    return 'Mustang';
+  }
+  if (resolvedClient && config?.clientProfiles && config.clientProfiles[resolvedClient]) {
+    return resolvedClient;
+  }
+  return config?.activeClient || 'Mustang';
+}
+
 // Helper to get folder for identifier (supports storing all parts in 1 base ISBN folder)
 function getFolderForIdentifier(identifier) {
   const cleanId = sanitizeIsbn(identifier);
@@ -134,9 +159,7 @@ function getFolderForIdentifier(identifier) {
     }
 
     if (!targetBaseFolder) {
-      const manifestMatch = findManifestItem ? (findManifestItem(base) || findManifestItem(cleanId)) : null;
-      const isJag = manifestMatch ? isJaguarLot(manifestMatch.lotNumber, manifestMatch.project, manifestMatch.client) : false;
-      const targetClient = isJag ? 'Jaguar' : (config.activeClient || 'Mustang');
+      const targetClient = getItemClient(cleanId);
       const targetStorage = config.clientProfiles?.[targetClient]?.storagePath || config.storagePath;
       targetBaseFolder = path.join(targetStorage, base);
     }
@@ -193,9 +216,7 @@ function getFolderForIdentifier(identifier) {
   }
 
   // 4. Default target: route to client storage if identifier/manifest matches Jaguar or Mustang
-  const manifestMatch = findManifestItem ? (findManifestItem(base) || findManifestItem(cleanId)) : null;
-  const isJag = manifestMatch ? isJaguarLot(manifestMatch.lotNumber, manifestMatch.project, manifestMatch.client) : false;
-  const targetClient = isJag ? 'Jaguar' : (config.activeClient || 'Mustang');
+  const targetClient = getItemClient(cleanId);
   const targetStorage = config.clientProfiles?.[targetClient]?.storagePath || config.storagePath;
 
   return path.join(targetStorage, cleanId);
@@ -2004,35 +2025,35 @@ app.post('/api/system/config', (req, res) => {
   if (peerIp !== undefined) config.peerIp = String(peerIp).trim();
   if (peerPort !== undefined) config.peerPort = Number(peerPort);
   if (enforceManifest !== undefined) config.enforceManifest = Boolean(enforceManifest);
-  if (req.body.s3Enabled !== undefined) config.s3Enabled = Boolean(req.body.s3Enabled);
-  if (req.body.s3Bucket !== undefined) config.s3Bucket = String(req.body.s3Bucket).trim();
-  if (req.body.s3Region !== undefined) config.s3Region = String(req.body.s3Region).trim();
-  if (req.body.s3AccessKeyId !== undefined) config.s3AccessKeyId = String(req.body.s3AccessKeyId).trim();
-  if (req.body.s3SecretAccessKey !== undefined && !req.body.s3SecretAccessKey.includes('••••')) {
-    config.s3SecretAccessKey = String(req.body.s3SecretAccessKey).trim();
-  }
-  if (req.body.s3Prefix !== undefined) config.s3Prefix = String(req.body.s3Prefix).trim();
-  if (req.body.s3CustomEndpoint !== undefined) config.s3CustomEndpoint = String(req.body.s3CustomEndpoint).trim();
+  const targetClient = (req.body.client && config.clientProfiles?.[req.body.client]) ? req.body.client : (config.activeClient || 'Mustang');
 
-  // Sync active profile back to config.clientProfiles
-  if (config.activeClient && config.clientProfiles && config.clientProfiles[config.activeClient]) {
-    config.clientProfiles[config.activeClient] = {
-      ...config.clientProfiles[config.activeClient],
-      storagePath: config.storagePath,
-      s3Enabled: config.s3Enabled !== false,
-      s3Bucket: config.s3Bucket,
-      s3Region: config.s3Region,
-      s3AccessKeyId: config.s3AccessKeyId,
-      s3SecretAccessKey: config.s3SecretAccessKey,
-      s3Prefix: config.s3Prefix,
-      s3CustomEndpoint: config.s3CustomEndpoint
-    };
+  if (config.clientProfiles && config.clientProfiles[targetClient]) {
+    const cp = config.clientProfiles[targetClient];
+    if (req.body.s3Enabled !== undefined) cp.s3Enabled = Boolean(req.body.s3Enabled);
+    if (req.body.s3Bucket !== undefined) cp.s3Bucket = String(req.body.s3Bucket).trim();
+    if (req.body.s3Region !== undefined) cp.s3Region = String(req.body.s3Region).trim();
+    if (req.body.s3AccessKeyId !== undefined) cp.s3AccessKeyId = String(req.body.s3AccessKeyId).trim();
+    if (req.body.s3SecretAccessKey !== undefined && !req.body.s3SecretAccessKey.includes('••••')) {
+      cp.s3SecretAccessKey = String(req.body.s3SecretAccessKey).trim();
+    }
+    if (req.body.s3Prefix !== undefined) cp.s3Prefix = String(req.body.s3Prefix).trim();
+    if (req.body.s3CustomEndpoint !== undefined) cp.s3CustomEndpoint = String(req.body.s3CustomEndpoint).trim();
+  }
+
+  if (targetClient === config.activeClient) {
+    if (req.body.s3Enabled !== undefined) config.s3Enabled = Boolean(req.body.s3Enabled);
+    if (req.body.s3Bucket !== undefined) config.s3Bucket = String(req.body.s3Bucket).trim();
+    if (req.body.s3Region !== undefined) config.s3Region = String(req.body.s3Region).trim();
+    if (req.body.s3AccessKeyId !== undefined) config.s3AccessKeyId = String(req.body.s3AccessKeyId).trim();
+    if (req.body.s3SecretAccessKey !== undefined && !req.body.s3SecretAccessKey.includes('••••')) {
+      config.s3SecretAccessKey = String(req.body.s3SecretAccessKey).trim();
+    }
+    if (req.body.s3Prefix !== undefined) config.s3Prefix = String(req.body.s3Prefix).trim();
+    if (req.body.s3CustomEndpoint !== undefined) config.s3CustomEndpoint = String(req.body.s3CustomEndpoint).trim();
   }
 
   saveConfig();
-  if (config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
-    scanAllPendingJournalsForS3().catch(() => {});
-  }
+  scanAllPendingJournalsForS3().catch(() => {});
   if (config.peerSyncEnabled && config.peerIp) {
     syncAllBoxShotsFromPeer().catch(() => {});
   }
@@ -2043,23 +2064,26 @@ app.post('/api/system/config', (req, res) => {
 // AWS S3 Cloud Upload & Client Proof Sharing Endpoints
 // -------------------------------------------------------------
 
-// Resolve effective S3 configuration with fallback across client profiles & environment
-function getEffectiveS3Config(customConfig = {}) {
-  const mustangProfile = config.clientProfiles?.Mustang || {};
-  const activeProfile = (config.activeClient && config.clientProfiles?.[config.activeClient]) || {};
-  const bucket = (customConfig.s3Bucket || activeProfile.s3Bucket || config.s3Bucket || mustangProfile.s3Bucket || process.env.AWS_S3_BUCKET || '').trim();
-  const region = (customConfig.s3Region || activeProfile.s3Region || config.s3Region || mustangProfile.s3Region || process.env.AWS_REGION || 'ap-southeast-1').trim();
-  const accessKeyId = (customConfig.s3AccessKeyId || activeProfile.s3AccessKeyId || config.s3AccessKeyId || mustangProfile.s3AccessKeyId || process.env.AWS_ACCESS_KEY_ID || '').trim();
-  const secretAccessKey = (customConfig.s3SecretAccessKey || activeProfile.s3SecretAccessKey || config.s3SecretAccessKey || mustangProfile.s3SecretAccessKey || process.env.AWS_SECRET_ACCESS_KEY || '').trim();
-  let prefix = (customConfig.s3Prefix || activeProfile.s3Prefix || config.s3Prefix || mustangProfile.s3Prefix || 'innoscanmussgp1/JournalVerificationImages/').trim();
+// Resolve effective S3 configuration for a specific client (Jaguar vs Mustang)
+function getEffectiveS3Config(customConfig = {}, clientName = null) {
+  const targetClient = clientName || customConfig.client || config.activeClient || 'Mustang';
+  const targetProfile = config.clientProfiles?.[targetClient] || {};
+
+  const bucket = (customConfig.s3Bucket || targetProfile.s3Bucket || (targetClient === config.activeClient ? config.s3Bucket : '') || process.env.AWS_S3_BUCKET || '').trim();
+  const region = (customConfig.s3Region || targetProfile.s3Region || (targetClient === config.activeClient ? config.s3Region : '') || process.env.AWS_REGION || 'ap-southeast-1').trim();
+  const accessKeyId = (customConfig.s3AccessKeyId || targetProfile.s3AccessKeyId || (targetClient === config.activeClient ? config.s3AccessKeyId : '') || process.env.AWS_ACCESS_KEY_ID || '').trim();
+  const secretAccessKey = (customConfig.s3SecretAccessKey || targetProfile.s3SecretAccessKey || (targetClient === config.activeClient ? config.s3SecretAccessKey : '') || process.env.AWS_SECRET_ACCESS_KEY || '').trim();
+  let prefix = (customConfig.s3Prefix || targetProfile.s3Prefix || (targetClient === config.activeClient ? config.s3Prefix : '') || (targetClient === 'Jaguar' ? 'Phase-09/Lot-156J/' : 'journal-proofs/')).trim();
   if (prefix && !prefix.endsWith('/')) prefix += '/';
-  const customEndpoint = (customConfig.s3CustomEndpoint || activeProfile.s3CustomEndpoint || config.s3CustomEndpoint || mustangProfile.s3CustomEndpoint || process.env.AWS_S3_ENDPOINT || '').trim();
-  const profileEnabled = activeProfile.s3Enabled !== undefined ? activeProfile.s3Enabled : config.s3Enabled;
+  const customEndpoint = (customConfig.s3CustomEndpoint || targetProfile.s3CustomEndpoint || (targetClient === config.activeClient ? config.s3CustomEndpoint : '') || process.env.AWS_S3_ENDPOINT || '').trim();
+
+  const profileEnabled = targetProfile.s3Enabled !== undefined ? targetProfile.s3Enabled : (targetClient === config.activeClient ? config.s3Enabled : false);
   const enabled = customConfig.s3Enabled !== undefined
     ? Boolean(customConfig.s3Enabled)
     : (profileEnabled !== false || Boolean(customConfig.forceUpload) || Boolean(customConfig.manualTrigger));
 
   return {
+    client: targetClient,
     s3Enabled: enabled,
     s3Bucket: bucket,
     s3Region: region,
@@ -2072,8 +2096,10 @@ function getEffectiveS3Config(customConfig = {}) {
 }
 
 // S3 Client factory helper
-function getS3Client(customConfig = {}) {
-  const eff = getEffectiveS3Config(customConfig);
+function getS3Client(effOrConfig = {}, clientName = null) {
+  const eff = (effOrConfig && effOrConfig.isConfigured !== undefined)
+    ? effOrConfig
+    : getEffectiveS3Config(effOrConfig, clientName);
   if (!eff.s3AccessKeyId || !eff.s3SecretAccessKey) {
     return null;
   }
@@ -2214,19 +2240,17 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     meta = readIsbnMetadata(cleanIsbn) || meta;
   }
 
-  const itemClient = meta?.client || manifestMatch?.client || (isJaguarLot(resolvedLot, manifestMatch?.project) ? 'Jaguar' : 'Mustang');
-  const clientProfile = config.clientProfiles?.[itemClient] || {};
-
-  const eff = getEffectiveS3Config(customConfig);
+  const itemClient = getItemClient(cleanIsbn, meta);
+  const eff = getEffectiveS3Config(customConfig, itemClient);
   const targetBucket = eff.s3Bucket;
   const targetRegion = eff.s3Region;
-  let prefix = (customConfig.s3Prefix || clientProfile.s3Prefix || eff.s3Prefix || 'innoscanmussgp1/JournalVerificationImages/').trim();
+  let prefix = (customConfig.s3Prefix || eff.s3Prefix || (itemClient === 'Jaguar' ? 'Phase-09/Lot-156J/' : 'innoscanmussgp1/JournalVerificationImages/')).trim();
   if (prefix && !prefix.endsWith('/')) prefix += '/';
 
   const s3 = getS3Client(eff);
 
   if (!s3 || !targetBucket) {
-    throw new Error('S3 is not configured. Please enter your AWS Bucket and Access Keys in Settings.');
+    throw new Error(`S3 is not configured for ${itemClient}. Please enter AWS Bucket and Access Keys for ${itemClient} in Settings.`);
   }
 
   // Clean up any stray legacy metadata.json from photo folder
@@ -2479,8 +2503,11 @@ function enqueueS3Upload(cleanIsbn, forceUpload = false) {
 
 async function processS3Queue(forceUpload = false) {
   if (isSyncingS3 || s3SyncQueue.size === 0) return;
-  const eff = getEffectiveS3Config({ forceUpload, manualTrigger: true });
-  if (!eff.isConfigured) {
+  const anyConfigured = Object.keys(config.clientProfiles || { Mustang: 1, Jaguar: 1 }).some(c => {
+    const cEff = getEffectiveS3Config({ forceUpload, manualTrigger: true }, c);
+    return cEff.isConfigured;
+  });
+  if (!anyConfigured) {
     return;
   }
 
@@ -2571,12 +2598,14 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
   }
   isScanningS3 = true;
   try {
-    const eff = getEffectiveS3Config({ forceUpload: forceAll, manualTrigger });
-    if (!eff.isConfigured) {
-      return { eligible: false, message: 'S3 credentials not configured. Please check AWS Bucket and Access Keys in Settings.' };
-    }
-    if (!eff.s3Enabled && !manualTrigger && !forceAll) {
-      return { eligible: false, message: `S3 Auto-Sync is currently disabled for ${config.activeClient || 'this client'}.` };
+    const clientKeys = config.clientProfiles ? Object.keys(config.clientProfiles) : ['Jaguar', 'Mustang'];
+    const anyClientConfigured = clientKeys.some(c => {
+      const cEff = getEffectiveS3Config({ forceUpload: forceAll, manualTrigger }, c);
+      return cEff.isConfigured && (cEff.s3Enabled || manualTrigger || forceAll);
+    });
+
+    if (!anyClientConfigured) {
+      return { eligible: false, message: 'S3 credentials not configured for any client. Please check AWS Bucket and Access Keys in Settings.' };
     }
 
     const folderMap = await getAllCandidateJournalFolders();
@@ -2638,6 +2667,11 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
             const partImageCount = imageFiles.filter(f => f.toLowerCase().includes(partTag)).length;
             const pUploadedCount = pMeta?.s3Upload?.fileCount || 0;
 
+            const pClient = getItemClient(p.identifier, pMeta);
+            const pEff = getEffectiveS3Config({ forceUpload: forceAll, manualTrigger }, pClient);
+            if (!pEff.isConfigured) continue;
+            if (!pEff.s3Enabled && !manualTrigger && !forceAll) continue;
+
             // Pictures are directed to S3 when completed only
             if (pComplete) {
               if (!pHasUploaded || partImageCount > pUploadedCount || forceAll) {
@@ -2653,6 +2687,15 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
       const hasUploaded = Boolean(meta?.s3Upload?.uploadedAt);
       const uploadedFileCount = meta?.s3Upload?.fileCount || 0;
       if (!forceAll && hasUploaded && imageFiles.length <= uploadedFileCount) {
+        continue;
+      }
+
+      const itemClient = getItemClient(entry, meta);
+      const itemEff = getEffectiveS3Config({ forceUpload: forceAll, manualTrigger }, itemClient);
+      if (!itemEff.isConfigured) {
+        continue;
+      }
+      if (!itemEff.s3Enabled && !manualTrigger && !forceAll) {
         continue;
       }
 
@@ -2723,12 +2766,17 @@ app.post('/api/s3/sync-all', async (req, res) => {
 
 // Endpoint: Get current S3 background auto-sync status
 app.get('/api/s3/sync-status', (req, res) => {
+  const clientKeys = config.clientProfiles ? Object.keys(config.clientProfiles) : ['Jaguar', 'Mustang'];
+  const anyConfigured = clientKeys.some(c => {
+    const cEff = getEffectiveS3Config({}, c);
+    return cEff.isConfigured && cEff.s3Enabled;
+  });
   const eff = getEffectiveS3Config();
   res.json({
     success: true,
     queueSize: s3SyncQueue.size,
     progress: s3SyncProgress,
-    s3Configured: Boolean(eff.s3Enabled && eff.isConfigured)
+    s3Configured: Boolean((eff.s3Enabled && eff.isConfigured) || anyConfigured)
   });
 });
 
@@ -4123,9 +4171,11 @@ app.post('/api/capture/save-shot', async (req, res) => {
 
     // Automatic S3 Upload ONLY upon 100% full verification completion (all 7 shots saved & verified)
     const isReadyForS3 = (totalShots >= 7) || Boolean(metadata && metadata.isComplete);
+    const itemClient = getItemClient(cleanIsbn, metadata);
+    const itemEff = getEffectiveS3Config({}, itemClient);
 
-    if (isReadyForS3 && config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
-      console.log(`[S3 Auto-Upload] Verification capture 100% complete for ${cleanIsbn} (${totalShots} shots saved). Enqueuing background upload...`);
+    if (isReadyForS3 && itemEff.isConfigured && itemEff.s3Enabled) {
+      console.log(`[S3 Auto-Upload] Verification capture 100% complete for ${cleanIsbn} [${itemClient}] (${totalShots} shots saved). Enqueuing background upload to ${itemEff.s3Bucket}...`);
       enqueueS3Upload(cleanIsbn);
     }
 
@@ -5038,7 +5088,9 @@ app.post('/api/sync/receive-shot', async (req, res) => {
       currentStep: nextStep
     });
 
-    if (totalShots >= 7 && config.s3Enabled !== false && config.s3Bucket && config.s3AccessKeyId) {
+    const repItemClient = getItemClient(cleanIsbn, metadata);
+    const repItemEff = getEffectiveS3Config({}, repItemClient);
+    if (totalShots >= 7 && repItemEff.isConfigured && repItemEff.s3Enabled) {
       enqueueS3Upload(cleanIsbn);
     }
 

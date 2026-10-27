@@ -79,6 +79,12 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
   }, [s3Bucket, s3Prefix, effectiveDate, isbn, item?.baseIsbn]);
 
   const isComplete = item ? (Boolean(item.isComplete) || item.shotsCount >= 7) : true;
+  const metaAny = item?.metadata as any;
+  const itemLot = item?.lotNumber || metaAny?.lotNumber || '';
+  const itemProject = metaAny?.project || '';
+  const itemClientMeta = metaAny?.client || '';
+  const isJaguarItem = /j/i.test(itemLot) || /jaguar/i.test(itemProject) || /jaguar/i.test(itemClientMeta);
+  const itemClient = isJaguarItem ? 'Jaguar' : (itemClientMeta || 'Mustang');
 
   useEffect(() => {
     if (isOpen) {
@@ -93,15 +99,17 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
         .then(r => r.json())
         .then(cfg => {
           if (cfg) {
-            setS3Bucket(cfg.s3Bucket || '');
-            setS3Region(cfg.s3Region || 'us-east-1');
-            setS3Prefix(cfg.s3Prefix || 'journal-proofs/');
-            setS3AccessKeyId(cfg.s3AccessKeyId || '');
-            setS3SecretAccessKey(cfg.s3SecretAccessKey ? '••••••••••••••••' : '');
-            setS3CustomEndpoint(cfg.s3CustomEndpoint || '');
+            const profile = cfg.clientProfiles?.[itemClient] || cfg;
+
+            setS3Bucket(profile.s3Bucket || (itemClient === 'Jaguar' ? 'innoscanjagjx1-s3' : cfg.s3Bucket) || '');
+            setS3Region(profile.s3Region || (itemClient === 'Jaguar' ? 'ap-southeast-1' : cfg.s3Region) || 'ap-southeast-1');
+            setS3Prefix(profile.s3Prefix || (itemClient === 'Jaguar' ? 'Phase-09/Lot-156J/' : cfg.s3Prefix) || 'journal-proofs/');
+            setS3AccessKeyId(profile.s3AccessKeyId || (itemClient === 'Jaguar' ? '' : cfg.s3AccessKeyId) || '');
+            setS3SecretAccessKey(profile.s3SecretAccessKey ? '••••••••••••••••' : '');
+            setS3CustomEndpoint(profile.s3CustomEndpoint || '');
             
             // Auto open settings if bucket is not configured yet
-            if (!cfg.s3Bucket || !cfg.s3AccessKeyId) {
+            if (!profile.s3Bucket || !profile.s3AccessKeyId) {
               setShowConfigSettings(true);
             } else {
               setShowConfigSettings(false);
@@ -110,7 +118,7 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
         })
         .catch(e => console.error('Failed to load S3 config:', e));
     }
-  }, [isOpen, isbn]);
+  }, [isOpen, isbn, itemClient]);
 
   if (!isOpen) return null;
 
@@ -124,6 +132,7 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          client: itemClient,
           s3Bucket,
           s3Region,
           s3AccessKeyId,
@@ -161,6 +170,7 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          client: itemClient,
           s3Enabled: true,
           s3Bucket,
           s3Region,
@@ -177,6 +187,7 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           isbn,
+          client: itemClient,
           s3Bucket,
           s3Region,
           s3Prefix,
