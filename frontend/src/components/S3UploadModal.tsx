@@ -78,6 +78,8 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
     return `s3://${s3Bucket || '...'}/${p}${baseIsbnOnly}/`;
   }, [s3Bucket, s3Prefix, effectiveDate, isbn, item?.baseIsbn]);
 
+  const isComplete = item ? (Boolean(item.isComplete) || item.shotsCount >= 7) : true;
+
   useEffect(() => {
     if (isOpen) {
       setUploadResult(null);
@@ -260,9 +262,15 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
                   {lot} {box ? `• Box ${box}` : ''}
                 </span>
               </div>
-              <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                {item?.shotsCount ?? 7}/7 Photos Ready
-              </span>
+              {isComplete ? (
+                <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                  {item?.shotsCount ?? 7}/7 Photos Ready
+                </span>
+              ) : (
+                <span className="text-[11px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                  {item?.shotsCount ?? 0}/7 Incomplete
+                </span>
+              )}
             </div>
             {title && (
               <p className="text-xs font-semibold text-slate-800 truncate">
@@ -270,6 +278,14 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
               </p>
             )}
           </div>
+
+          {/* Incomplete Warning */}
+          {item && !isComplete && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs flex items-center space-x-2">
+              <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+              <span>Capture incomplete ({item.shotsCount}/7 shots). Pictures are directed to S3 when completed only.</span>
+            </div>
+          )}
 
           {/* Error Banner if any */}
           {errorMessage && (
@@ -501,7 +517,7 @@ export const S3UploadModal: React.FC<S3UploadModalProps> = ({
             <button
               type="button"
               onClick={handleSaveAndUpload}
-              disabled={uploading || !s3Bucket}
+              disabled={uploading || !s3Bucket || !isComplete}
               className="px-5 py-2.5 rounded-xl font-bold text-xs text-white btn-primary-gradient shadow-md shadow-brand-500/20 disabled:opacity-50 flex items-center space-x-2 transition-all cursor-pointer"
             >
               {uploading ? (

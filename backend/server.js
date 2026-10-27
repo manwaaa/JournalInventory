@@ -2160,15 +2160,9 @@ function getIsbnCaptureDate(cleanIsbn, folderPath, metadata) {
     metadata = readIsbnMetadata(cleanIsbn);
   }
 
-  // 1. Check metadata shots: prioritize journal-specific shots (3..7) then box shots (1..2)
+  // 1. Check metadata shots: prioritize journal-specific shots (3..7)
   if (metadata?.shots) {
     for (let s = 3; s <= 7; s++) {
-      const shot = metadata.shots[s];
-      if (shot && (shot.savedAt || shot.capturedAt)) {
-        return formatLocalDate(shot.savedAt || shot.capturedAt);
-      }
-    }
-    for (let s = 1; s <= 2; s++) {
       const shot = metadata.shots[s];
       if (shot && (shot.savedAt || shot.capturedAt)) {
         return formatLocalDate(shot.savedAt || shot.capturedAt);
@@ -2177,20 +2171,18 @@ function getIsbnCaptureDate(cleanIsbn, folderPath, metadata) {
   }
 
   // 2. Check metadata level timestamps
-  if (metadata?.capturedAt) return formatLocalDate(metadata.capturedAt);
   if (metadata?.completedAt) return formatLocalDate(metadata.completedAt);
-  if (metadata?.createdAt) return formatLocalDate(metadata.createdAt);
+  if (metadata?.capturedAt) return formatLocalDate(metadata.capturedAt);
   if (metadata?.updatedAt) return formatLocalDate(metadata.updatedAt);
 
-  // 3. Check actual files in local folderPath
+  // 3. Check actual journal picture files in local folderPath (excluding box shots)
   if (folderPath && fs.existsSync(folderPath)) {
     try {
       const files = fs.readdirSync(folderPath);
       const imgFiles = files.filter(f => f.match(/\.(jpg|jpeg|png)$/i) && !f.startsWith('.'));
       const journalImgs = imgFiles.filter(f => !f.toLowerCase().includes('box'));
-      const candidates = journalImgs.length > 0 ? journalImgs : imgFiles;
 
-      for (const f of candidates) {
+      for (const f of journalImgs) {
         const stat = fs.statSync(path.join(folderPath, f));
         const fileTime = stat.mtime || stat.birthtime;
         if (fileTime) {
@@ -2277,13 +2269,13 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
   // Also check if this is a base folder containing complete multi-part captures
   if (shotsCount < 7 && !partTag) {
     const parts = await findExistingParts(baseIsbn);
-    if (parts.some(p => p.isComplete || p.shotsCount >= 7)) {
+    if (parts.length > 0 && parts.every(p => p.isComplete || p.shotsCount >= 7)) {
       shotsCount = 7;
     }
   }
-  const isComplete = Boolean(meta && meta.isComplete) || shotsCount >= 7;
-  if (!isComplete && !customConfig.forceUpload) {
-    throw new Error(`Journal verification for ISBN ${cleanIsbn} is incomplete (${shotsCount}/7 shots). Incomplete captures are not uploaded to S3.`);
+  const isComplete = shotsCount >= 7 || Boolean(meta && meta.isComplete && shotsCount >= 5);
+  if (!isComplete) {
+    throw new Error(`Journal verification for ISBN ${cleanIsbn} is incomplete (${shotsCount}/7 shots). Pictures should be directed to S3 when completed only.`);
   }
 
   const uploadedFiles = [];
@@ -2593,7 +2585,6 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
     }
 
     let queuedCount = 0;
-    const incompleteCandidates = [];
     let processedIdx = 0;
 
     for (const [entry, folderPath] of folderMap.entries()) {
@@ -2641,19 +2632,18 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
             for (let s = 1; s <= 7; s++) {
               if (findShotFileInFolder(folderPath, s, p.identifier)) pShotsFound++;
             }
-            const pComplete = Boolean(pMeta && pMeta.isComplete) || pShotsFound >= 7;
+            const pComplete = pShotsFound >= 7 || Boolean(pMeta && pMeta.isComplete && pShotsFound >= 5);
             const pHasUploaded = Boolean(pMeta?.s3Upload?.uploadedAt);
             const partTag = `_part${p.partNumber}`.toLowerCase();
             const partImageCount = imageFiles.filter(f => f.toLowerCase().includes(partTag)).length;
             const pUploadedCount = pMeta?.s3Upload?.fileCount || 0;
 
-            if (pComplete || forceAll) {
+            // Pictures are directed to S3 when completed only
+            if (pComplete) {
               if (!pHasUploaded || partImageCount > pUploadedCount || forceAll) {
                 s3SyncQueue.add(p.identifier);
                 queuedCount++;
               }
-            } else if (manualTrigger && !pHasUploaded && pShotsFound > 0) {
-              incompleteCandidates.push(p.identifier);
             }
           }
           continue;
@@ -2685,36 +2675,24 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
       for (let s = 1; s <= 7; s++) {
         if (findShotFileInFolder(folderPath, s, entry, imageFiles)) shotsFound++;
       }
-      const isComplete = (meta && meta.isComplete) || shotsFound >= 7;
+      const isComplete = shotsFound >= 7 || Boolean(meta && meta.isComplete && shotsFound >= 5);
 
-      if (!isComplete && !forceAll) {
-        if (manualTrigger && !hasUploaded && shotsFound > 0) {
-          incompleteCandidates.push(entry);
-        }
+      // Pictures are directed to S3 when completed only
+      if (!isComplete) {
         continue;
       }
 
-      // Queue for S3 upload if complete and not yet uploaded, or if forced
+      // Queue for S3 upload ONLY if 100% complete and not yet uploaded, or if forced
       if (!hasUploaded || imageFiles.length > uploadedFileCount || forceAll) {
         s3SyncQueue.add(entry);
         queuedCount++;
       }
     }
 
-    // If user manually clicked "Auto-Sync All to S3" and only incomplete unuploaded journals exist, sync them too
-    let usedForceUpload = forceAll;
-    if (manualTrigger && queuedCount === 0 && incompleteCandidates.length > 0) {
-      usedForceUpload = true;
-      for (const id of incompleteCandidates) {
-        s3SyncQueue.add(id);
-        queuedCount++;
-      }
-    }
-
     if (queuedCount > 0) {
-      if (usedForceUpload) s3QueueForceUpload = true;
-      console.log(`[S3 Auto-Sync Daemon] Detected ${queuedCount} unuploaded journal(s). Automatically uploading in background...`);
-      processS3Queue(usedForceUpload).catch(err => console.error('[S3 Queue Error]', err));
+      if (forceAll) s3QueueForceUpload = true;
+      console.log(`[S3 Auto-Sync Daemon] Detected ${queuedCount} complete unuploaded journal(s). Automatically uploading in background...`);
+      processS3Queue(forceAll).catch(err => console.error('[S3 Queue Error]', err));
     }
 
     return {
