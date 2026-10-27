@@ -59,43 +59,58 @@ export function isMatchingBoxNumber(boxA?: string, boxB?: string): boolean {
  * Comprehensive manifest lookup helper: handles exact ISBN, sanitized, numeric,
  * 10/13-digit conversions, ISSN, and sNo.
  */
-export function findManifestMatch(rawInput: string, manifestItems: ManifestItem[] = []): ManifestItem | null {
+export function findManifestMatch(rawInput: string, manifestItems: ManifestItem[] = [], activeClient?: string): ManifestItem | null {
   if (!rawInput || !manifestItems || manifestItems.length === 0) return null;
   const raw = String(rawInput).trim();
-  const rawClean = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const rawLower = raw.toLowerCase();
+  const rawClean = rawLower.replace(/[^a-z0-9]/g, '');
   const digitsOnly = raw.replace(/[^0-9Xx]/g, '');
+  const targetClientLower = activeClient ? activeClient.toLowerCase() : null;
 
-  return manifestItems.find(item => {
-    if (!item) return false;
+  let fallbackMatch: ManifestItem | null = null;
+
+  for (let i = 0; i < manifestItems.length; i++) {
+    const item = manifestItems[i];
+    if (!item) continue;
     const itemIsbnRaw = String(item.isbn || '').trim();
-    const itemClean = itemIsbnRaw.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const itemLower = itemIsbnRaw.toLowerCase();
+    const itemClean = itemLower.replace(/[^a-z0-9]/g, '');
     const itemDigits = itemIsbnRaw.replace(/[^0-9Xx]/g, '');
 
-    // 1. Direct or sanitized match
-    if (itemIsbnRaw.toLowerCase() === raw.toLowerCase()) return true;
-    if (rawClean.length > 0 && itemClean === rawClean) return true;
+    let isMatch = false;
 
+    // 1. Direct or sanitized match
+    if (itemLower === rawLower) isMatch = true;
+    else if (rawClean.length > 0 && itemClean === rawClean) isMatch = true;
     // 2. Numeric / digits-only match
-    if (digitsOnly.length > 0 && itemDigits.length > 0) {
-      if (itemDigits === digitsOnly) return true;
-      // 13-digit to 10-digit ISBN conversion (e.g. 978... to 10-digit)
-      if (digitsOnly.length === 13 && digitsOnly.startsWith('978') && digitsOnly.slice(3, 12) === itemDigits.slice(0, 9)) return true;
-      if (itemDigits.length === 13 && itemDigits.startsWith('978') && itemDigits.slice(3, 12) === digitsOnly.slice(0, 9)) return true;
+    else if (digitsOnly.length > 0 && itemDigits.length > 0) {
+      if (itemDigits === digitsOnly) isMatch = true;
+      else if (digitsOnly.length === 13 && digitsOnly.startsWith('978') && digitsOnly.slice(3, 12) === itemDigits.slice(0, 9)) isMatch = true;
+      else if (itemDigits.length === 13 && itemDigits.startsWith('978') && itemDigits.slice(3, 12) === digitsOnly.slice(0, 9)) isMatch = true;
     }
 
     // 3. Print ISSN match
-    if (item.printIssn) {
+    if (!isMatch && item.printIssn) {
       const issnRaw = String(item.printIssn).trim().toLowerCase();
       const issnDigits = issnRaw.replace(/[^0-9Xx]/g, '');
-      if (issnRaw === raw.toLowerCase()) return true;
-      if (digitsOnly.length > 0 && issnDigits === digitsOnly) return true;
+      if (issnRaw === rawLower) isMatch = true;
+      else if (digitsOnly.length > 0 && issnDigits === digitsOnly) isMatch = true;
     }
 
     // 4. sNo match
-    if (item.sNo && String(item.sNo).trim() === raw) return true;
+    if (!isMatch && item.sNo && String(item.sNo).trim() === raw) isMatch = true;
 
-    return false;
-  }) || null;
+    if (isMatch) {
+      if (!targetClientLower) return item;
+      const itemClient = (item.client || (isJaguarLot(item.lotNumber, (item as any).project, item.client) ? 'Jaguar' : 'Mustang')).toLowerCase();
+      if (itemClient === targetClientLower) {
+        return item;
+      }
+      if (!fallbackMatch) fallbackMatch = item;
+    }
+  }
+
+  return fallbackMatch;
 }
 
 /**
@@ -141,7 +156,7 @@ export function validateAndCleanBarcode(
 
   // 1. Direct manifest match check (with full ISBN-10/13, ISSN, and sNo support)
   if (manifestItems && manifestItems.length > 0) {
-    const directMatch = findManifestMatch(raw, manifestItems);
+    const directMatch = findManifestMatch(raw, manifestItems, activeClient);
     if (directMatch) {
       const clientCheck = checkClientMatch(directMatch);
       if (!clientCheck.allowed) {
@@ -174,7 +189,7 @@ export function validateAndCleanBarcode(
     const secondHalf = raw.substring(halfLen);
     if (firstHalf.toLowerCase() === secondHalf.toLowerCase()) {
       if (manifestItems && manifestItems.length > 0) {
-        const match = findManifestMatch(firstHalf, manifestItems);
+        const match = findManifestMatch(firstHalf, manifestItems, activeClient);
         if (match) {
           const clientCheck = checkClientMatch(match);
           if (!clientCheck.allowed) {
@@ -214,7 +229,7 @@ export function validateAndCleanBarcode(
     const m = raw.match(/^(97[89]\d{10})(97[89]\d{10})$/);
     if (m && m[1] === m[2]) {
       const half = m[1];
-      const match = findManifestMatch(half, manifestItems);
+      const match = findManifestMatch(half, manifestItems, activeClient);
       if (match) {
         const clientCheck = checkClientMatch(match);
         if (!clientCheck.allowed) {
@@ -282,7 +297,7 @@ export function validateAndCleanBarcode(
 
   // 6. Strict Manifest Validation (if manifest is loaded)
   if (manifestItems && manifestItems.length > 0) {
-    const match = findManifestMatch(raw, manifestItems);
+    const match = findManifestMatch(raw, manifestItems, activeClient);
     if (!match) {
       return {
         valid: false,

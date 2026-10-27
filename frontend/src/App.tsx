@@ -216,32 +216,46 @@ export function App() {
     }
   }, [activeClient]);
 
-  // Fetch status & config
-  const fetchStatus = useCallback(async () => {
+  // Fetch status & optionally config/manifest
+  const fetchStatus = useCallback(async (includeManifest: boolean = false) => {
     try {
-      const [resStatus, resConfig, resManifest] = await Promise.all([
-        fetch('/api/system/status'),
-        fetch('/api/system/config'),
-        fetch('/api/manifest')
-      ]);
-      if (resStatus.ok) {
-        const data = await resStatus.json();
-        setSystemStatus(data);
-        if (data.activeClient) {
-          setActiveClient(data.activeClient);
+      if (includeManifest) {
+        const [resStatus, resConfig, resManifest] = await Promise.all([
+          fetch('/api/system/status'),
+          fetch('/api/system/config'),
+          fetch('/api/manifest')
+        ]);
+        if (resStatus.ok) {
+          const data = await resStatus.json();
+          setSystemStatus(data);
+          if (data.activeClient) {
+            setActiveClient(data.activeClient);
+          }
         }
-      }
-      if (resConfig.ok) {
-        const cfg = await resConfig.json();
-        setSystemConfig(cfg);
-        if (cfg.activeClient) {
-          setActiveClient(cfg.activeClient);
+        if (resConfig.ok) {
+          const cfg = await resConfig.json();
+          setSystemConfig(cfg);
+          if (cfg.activeClient) {
+            setActiveClient(cfg.activeClient);
+          }
         }
-      }
-      if (resManifest.ok) {
-        const m = await resManifest.json();
-        setManifestData(m);
-        setManifestCount(m.totalCount || 0);
+        if (resManifest.ok) {
+          const m = await resManifest.json();
+          setManifestData(m);
+          setManifestCount(m.totalCount || 0);
+        }
+      } else {
+        const resStatus = await fetch('/api/system/status');
+        if (resStatus.ok) {
+          const data = await resStatus.json();
+          setSystemStatus(data);
+          if (data.activeClient) {
+            setActiveClient(data.activeClient);
+          }
+          if (typeof data.manifestCount === 'number') {
+            setManifestCount(data.manifestCount);
+          }
+        }
       }
       fetchBoxesList();
     } catch (err) {
@@ -298,10 +312,81 @@ export function App() {
     triggerSyncAll: triggerS3SyncAll,
   } = useS3Sync(5000);
 
+  const boxNumberLiveRef = useRef(boxNumber);
+  boxNumberLiveRef.current = boxNumber;
+
   useEffect(() => {
-    fetchStatus();
-    fetchBoxesList();
-  }, [fetchStatus, fetchBoxesList]);
+    fetchStatus(true);
+  }, []);
+
+  // Real-time Server-Sent Events (SSE) listener for instant Multi-PC & UI Synchronization
+  useEffect(() => {
+    const es = new EventSource('/api/session/stream');
+    es.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === 'BOX_SHOT_SAVED') {
+          fetchBoxesList();
+          const currentBox = boxNumberLiveRef.current;
+          if (currentBox && msg.boxNumber && isMatchingBoxNumber(currentBox, msg.boxNumber) && msg.boxShots) {
+            setActiveBoxSummary(prev => prev ? {
+              ...prev,
+              hasBoxShot: msg.boxShots.hasBoxShot,
+              hasUnboxShot: msg.boxShots.hasUnboxShot,
+              boxShotUrl: msg.boxShots.boxShotUrl,
+              unboxShotUrl: msg.boxShots.unboxShotUrl
+            } : prev);
+            setShots(prev => {
+              const next = { ...prev };
+              if (msg.boxShots.hasBoxShot && msg.boxShots.boxShotUrl) {
+                next[1] = {
+                  filename: 'shot_1_box_a.jpg',
+                  savedAt: new Date().toISOString(),
+                  type: 'Box A',
+                  scope: 'box_level',
+                  previewDataUrl: `${msg.boxShots.boxShotUrl}?t=${Date.now()}`,
+                  inheritedFromBox: true
+                };
+              } else if (!msg.boxShots.hasBoxShot && next[1]?.inheritedFromBox) {
+                next[1] = null;
+              }
+              if (msg.boxShots.hasUnboxShot && msg.boxShots.unboxShotUrl) {
+                next[2] = {
+                  filename: 'shot_2_box_b.jpg',
+                  savedAt: new Date().toISOString(),
+                  type: 'Box B',
+                  scope: 'box_level',
+                  previewDataUrl: `${msg.boxShots.unboxShotUrl}?t=${Date.now()}`,
+                  inheritedFromBox: true
+                };
+              } else if (!msg.boxShots.hasUnboxShot && next[2]?.inheritedFromBox) {
+                next[2] = null;
+              }
+              return next;
+            });
+          }
+        } else if (msg.type === 'PEER_BOXES_SYNCED') {
+          fetchBoxesList();
+        } else if (msg.type === 'SHOT_SAVED') {
+          if (msg.isbn && msg.isbn === activeIsbnRef.current && msg.shotNumber && msg.shotInfo) {
+            setShots(prev => ({
+              ...prev,
+              [msg.shotNumber]: prev[msg.shotNumber] || msg.shotInfo
+            }));
+          }
+        } else if (msg.type === 'MANIFEST_UPDATED') {
+          fetchStatus(true);
+        } else if (msg.type === 'CLIENT_SWITCHED' && msg.activeClient) {
+          setActiveClient(msg.activeClient);
+          fetchBoxesList(msg.activeClient);
+          fetchStatus();
+        }
+      } catch (e) {}
+    };
+    return () => {
+      es.close();
+    };
+  }, [fetchBoxesList, fetchStatus]);
 
   // Global Ctrl+K shortcut for Quick Search
   useEffect(() => {
@@ -413,41 +498,22 @@ export function App() {
     }
     playAudioCue('beep');
 
-    // Check manifest processable validation & pre-fetch lot and box (Validation 4.2)
-    let matchedLot = '';
-    let matchedBox = '';
-    try {
-      const checkRes = await fetch(`/api/manifest/check/${encodeURIComponent(clean)}?client=${encodeURIComponent(activeClient)}`);
-      const checkData = await checkRes.json();
+    // Fast local manifest processable & lot/box resolution (0ms, no redundant network roundtrip)
+    const matchedLot = validation.manifestMatch?.lotNumber || '';
+    const matchedBox = validation.manifestMatch?.boxNumber || '';
+    if (matchedLot) setLotNumber(matchedLot);
+    if (matchedBox) setBoxNumber(matchedBox);
 
-      if (!checkRes.ok || checkData.valid === false) {
-        setToastAlert({
-          message: checkData.error || checkData.reason || `ISBN "${clean}" was not found in the manifest or has an invalid format.`,
-          type: 'error'
-        });
-        playAudioCue('error');
-        isProcessingIsbnRef.current = false;
-        return;
-      }
-
-      matchedLot = checkData.item?.lotNumber || '';
-      matchedBox = checkData.item?.boxNumber || '';
-      if (matchedLot) setLotNumber(matchedLot);
-      if (matchedBox) setBoxNumber(matchedBox);
-
-      if (checkData.manifestActive && !checkData.isProcessable) {
-        const reasonMsg = checkData.reason || 'Journal is marked as Not Processable in the imported manifest.';
-        const locStr = matchedLot || matchedBox ? `[Lot: ${matchedLot || 'N/A'}${matchedBox ? ` • Box: ${matchedBox}` : ''}] ` : '';
-        setToastAlert({
-          message: `${locStr}ISBN ${clean} is NOT processable. ${reasonMsg} You cannot start a verification session for this journal.`,
-          type: 'error'
-        });
-        playAudioCue('error');
-        isProcessingIsbnRef.current = false;
-        return;
-      }
-    } catch (e) {
-      console.warn('Manifest pre-check failed, continuing:', e);
+    if (validation.manifestMatch && validation.manifestMatch.isProcessable === false) {
+      const reasonMsg = validation.manifestMatch.reason || 'Journal is marked as Not Processable in the imported manifest.';
+      const locStr = matchedLot || matchedBox ? `[Lot: ${matchedLot || 'N/A'}${matchedBox ? ` • Box: ${matchedBox}` : ''}] ` : '';
+      setToastAlert({
+        message: `${locStr}ISBN ${clean} is NOT processable. ${reasonMsg} You cannot start a verification session for this journal.`,
+        type: 'error'
+      });
+      playAudioCue('error');
+      isProcessingIsbnRef.current = false;
+      return;
     }
 
     try {
@@ -524,13 +590,18 @@ export function App() {
         setTotalParts(data.totalParts);
       }
 
-      lookupMetadata(data.baseIsbn || data.isbn);
+      if (data.bookDetails) {
+        setBookDetails(data.bookDetails);
+      }
+      if (!data.bookDetails?.title) {
+        lookupMetadata(data.baseIsbn || data.isbn);
+      }
 
       const newShots: Record<number, ShotInfo | null> = { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null };
       for (let s = 1; s <= 7; s++) {
         if (data.existingShots && data.existingShots[s]) {
           const fn = data.existingShots[s];
-          const isBoxShotFallback = fn.startsWith('shot_') && !data.exists;
+          const isBoxShotFallback = fn.startsWith('shot_');
           const previewUrl = isBoxShotFallback && s === 1 && data.boxShots?.boxShotUrl ? data.boxShots.boxShotUrl :
                              isBoxShotFallback && s === 2 && data.boxShots?.unboxShotUrl ? data.boxShots.unboxShotUrl :
                              `/proofs/${encodeURIComponent(data.isbn)}/${encodeURIComponent(fn)}?t=${Date.now()}`;
@@ -835,8 +906,6 @@ export function App() {
     } finally {
       setIsCapturing(false);
       setBlurWarning(null);
-    setActivePartNumber(null);
-    setExistingParts([]);
       if (pendingNextRef.current) {
         pendingNextRef.current = false;
         setTimeout(() => handleNextJournal(), 60);
@@ -2175,7 +2244,7 @@ export function App() {
       <ManifestImportModal
         isOpen={manifestModalOpen}
         onClose={() => setManifestModalOpen(false)}
-        onManifestUpdated={fetchStatus}
+        onManifestUpdated={() => fetchStatus(true)}
       />
 
       {/* Settings Modal */}
