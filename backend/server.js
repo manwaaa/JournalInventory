@@ -2297,9 +2297,17 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
       shotsCount = 7;
     }
   }
-  const isComplete = shotsCount >= 7 || Boolean(meta && meta.isComplete && shotsCount >= 5);
+
+  const hasFrontCover = Boolean(findShotFileInFolder(folderPath, 3, cleanIsbn));
+  const hasSpine = Boolean(findShotFileInFolder(folderPath, 4, cleanIsbn));
+  const hasTitlePage = Boolean(findShotFileInFolder(folderPath, 5, cleanIsbn));
+  const hasEditionNotice = Boolean(findShotFileInFolder(folderPath, 6, cleanIsbn));
+  const hasBackCover = Boolean(findShotFileInFolder(folderPath, 7, cleanIsbn));
+  const hasAllBookShots = hasFrontCover && hasSpine && hasTitlePage && hasEditionNotice && hasBackCover;
+
+  const isComplete = shotsCount >= 7 || hasAllBookShots || Boolean(customConfig.forceUpload);
   if (!isComplete) {
-    throw new Error(`Journal verification for ISBN ${cleanIsbn} is incomplete (${shotsCount}/7 shots). Pictures should be directed to S3 when completed only.`);
+    throw new Error(`Journal verification for ISBN ${cleanIsbn} is incomplete (${shotsCount}/7 shots). All required pictures (including Front Cover & Spine) must be captured before sending to S3.`);
   }
 
   const uploadedFiles = [];
@@ -2334,7 +2342,7 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
   // In multi-part sets, all parts are stored in 1 single base ISBN folder, not separated folders
   const s3BaseFolderKey = `${s3FolderPrefix}${baseIsbn}`;
 
-  // Clean up any stale retake photos or backup files on S3 so S3 only holds the active photos
+  // Clean up only backup, temporary, or hidden files on S3 (NEVER delete valid shot images like front cover or spine)
   try {
     const listRes = await s3.send(new ListObjectsV2Command({
       Bucket: targetBucket,
@@ -2342,28 +2350,12 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     }));
 
     if (listRes.Contents && listRes.Contents.length > 0) {
-      const allowedS3Keys = new Set(imageFiles.map(f => `${s3BaseFolderKey}/${f}`));
       for (const obj of listRes.Contents) {
         const objKey = obj.Key;
         const baseName = path.basename(objKey).toLowerCase();
-        // If this object is a backup file, remove it
-        if (baseName.includes('bak') || baseName.startsWith('.')) {
-          console.log(`[S3 Cleanup] Removing stale/backup file from S3: ${objKey}`);
-          await s3.send(new DeleteObjectCommand({
-            Bucket: targetBucket,
-            Key: objKey
-          })).catch(() => {});
-        } else if (partTag) {
-          // In multi-part, only clean up stale retakes for THIS specific part tag
-          if (baseName.includes(partTag) && !allowedS3Keys.has(objKey)) {
-            console.log(`[S3 Cleanup] Removing stale ${partTag} file from S3: ${objKey}`);
-            await s3.send(new DeleteObjectCommand({
-              Bucket: targetBucket,
-              Key: objKey
-            })).catch(() => {});
-          }
-        } else if (!allowedS3Keys.has(objKey) && !/_part\d+/i.test(baseName)) {
-          console.log(`[S3 Cleanup] Removing stale file from S3: ${objKey}`);
+        // Only delete backup, temporary, or hidden files (.bak, bak., _bak, backup, .tmp)
+        if (baseName.includes('bak') || baseName.startsWith('.') || baseName.includes('backup') || baseName.endsWith('.tmp')) {
+          console.log(`[S3 Cleanup] Removing stale backup/temp file from S3: ${objKey}`);
           await s3.send(new DeleteObjectCommand({
             Bucket: targetBucket,
             Key: objKey
@@ -2386,12 +2378,31 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     let contentType = 'image/jpeg';
     if (filename.endsWith('.png')) contentType = 'image/png';
 
-    await s3.send(new PutObjectCommand({
-      Bucket: targetBucket,
-      Key: s3Key,
-      Body: fileBuffer,
-      ContentType: contentType
-    }));
+    // Retry up to 3 times per file for reliable S3 transmission
+    let putSuccess = false;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await s3.send(new PutObjectCommand({
+          Bucket: targetBucket,
+          Key: s3Key,
+          Body: fileBuffer,
+          ContentType: contentType
+        }));
+        putSuccess = true;
+        break;
+      } catch (uploadErr) {
+        lastErr = uploadErr;
+        console.warn(`[S3 Upload] Attempt ${attempt}/3 failed for ${s3Key}:`, uploadErr.message);
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, 400 * attempt));
+        }
+      }
+    }
+
+    if (!putSuccess) {
+      throw new Error(`Failed to upload ${filename} to S3 after 3 attempts: ${lastErr?.message}`);
+    }
 
     // Generate 7-day pre-signed download URL for client
     let presignedUrl = '';
@@ -2622,11 +2633,7 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
         await new Promise(r => setImmediate(r));
       }
 
-      // Fast skip for already-uploaded single-book journals during background daemon scans
       let meta = readIsbnMetadata(entry);
-      if (!forceAll && !manualTrigger && meta?.s3Upload?.uploadedAt && meta.isComplete) {
-        continue;
-      }
 
       const allFiles = await fs.readdir(folderPath).catch(() => []);
       let imageFiles = allFiles.filter(f => f.match(/\.(jpg|jpeg|png)$/i) && !f.startsWith('.'));
@@ -2661,11 +2668,30 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
             for (let s = 1; s <= 7; s++) {
               if (findShotFileInFolder(folderPath, s, p.identifier)) pShotsFound++;
             }
-            const pComplete = pShotsFound >= 7 || Boolean(pMeta && pMeta.isComplete && pShotsFound >= 5);
+            const pHasFrontCover = Boolean(findShotFileInFolder(folderPath, 3, p.identifier, allFiles));
+            const pHasSpine = Boolean(findShotFileInFolder(folderPath, 4, p.identifier, allFiles));
+            const pHasTitlePage = Boolean(findShotFileInFolder(folderPath, 5, p.identifier, allFiles));
+            const pHasEditionNotice = Boolean(findShotFileInFolder(folderPath, 6, p.identifier, allFiles));
+            const pHasBackCover = Boolean(findShotFileInFolder(folderPath, 7, p.identifier, allFiles));
+            const pHasAllBookShots = pHasFrontCover && pHasSpine && pHasTitlePage && pHasEditionNotice && pHasBackCover;
+            const pComplete = pShotsFound >= 7 || pHasAllBookShots;
             const pHasUploaded = Boolean(pMeta?.s3Upload?.uploadedAt);
             const partTag = `_part${p.partNumber}`.toLowerCase();
             const partImageCount = imageFiles.filter(f => f.toLowerCase().includes(partTag)).length;
             const pUploadedCount = pMeta?.s3Upload?.fileCount || 0;
+
+            let pHasNewerFiles = false;
+            if (pHasUploaded && pMeta?.s3Upload?.uploadedAt) {
+              const lastUploadMs = new Date(pMeta.s3Upload.uploadedAt).getTime();
+              for (const f of imageFiles) {
+                if (f.toLowerCase().includes(partTag)) {
+                  try {
+                    const st = fs.statSync(path.join(folderPath, f));
+                    if (st.mtimeMs > lastUploadMs) { pHasNewerFiles = true; break; }
+                  } catch (e) {}
+                }
+              }
+            }
 
             const pClient = getItemClient(p.identifier, pMeta);
             const pEff = getEffectiveS3Config({ forceUpload: forceAll, manualTrigger }, pClient);
@@ -2674,7 +2700,7 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
 
             // Pictures are directed to S3 when completed only
             if (pComplete) {
-              if (!pHasUploaded || partImageCount > pUploadedCount || forceAll) {
+              if (!pHasUploaded || partImageCount > pUploadedCount || pHasNewerFiles || forceAll) {
                 s3SyncQueue.add(p.identifier);
                 queuedCount++;
               }
@@ -2686,9 +2712,6 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
 
       const hasUploaded = Boolean(meta?.s3Upload?.uploadedAt);
       const uploadedFileCount = meta?.s3Upload?.fileCount || 0;
-      if (!forceAll && hasUploaded && imageFiles.length <= uploadedFileCount) {
-        continue;
-      }
 
       const itemClient = getItemClient(entry, meta);
       const itemEff = getEffectiveS3Config({ forceUpload: forceAll, manualTrigger }, itemClient);
@@ -2718,15 +2741,32 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
       for (let s = 1; s <= 7; s++) {
         if (findShotFileInFolder(folderPath, s, entry, imageFiles)) shotsFound++;
       }
-      const isComplete = shotsFound >= 7 || Boolean(meta && meta.isComplete && shotsFound >= 5);
+      const hasFrontCover = Boolean(findShotFileInFolder(folderPath, 3, entry, imageFiles));
+      const hasSpine = Boolean(findShotFileInFolder(folderPath, 4, entry, imageFiles));
+      const hasTitlePage = Boolean(findShotFileInFolder(folderPath, 5, entry, imageFiles));
+      const hasEditionNotice = Boolean(findShotFileInFolder(folderPath, 6, entry, imageFiles));
+      const hasBackCover = Boolean(findShotFileInFolder(folderPath, 7, entry, imageFiles));
+      const hasAllBookShots = hasFrontCover && hasSpine && hasTitlePage && hasEditionNotice && hasBackCover;
+      const isComplete = shotsFound >= 7 || hasAllBookShots;
 
       // Pictures are directed to S3 when completed only
       if (!isComplete) {
         continue;
       }
 
-      // Queue for S3 upload ONLY if 100% complete and not yet uploaded, or if forced
-      if (!hasUploaded || imageFiles.length > uploadedFileCount || forceAll) {
+      let hasNewerFiles = false;
+      if (hasUploaded && meta?.s3Upload?.uploadedAt) {
+        const lastUploadMs = new Date(meta.s3Upload.uploadedAt).getTime();
+        for (const f of imageFiles) {
+          try {
+            const st = fs.statSync(path.join(folderPath, f));
+            if (st.mtimeMs > lastUploadMs) { hasNewerFiles = true; break; }
+          } catch (e) {}
+        }
+      }
+
+      // Queue for S3 upload ONLY if 100% complete and not yet uploaded, or if new images exist locally, or if forced
+      if (!hasUploaded || imageFiles.length > uploadedFileCount || hasNewerFiles || forceAll) {
         s3SyncQueue.add(entry);
         queuedCount++;
       }
@@ -4169,13 +4209,36 @@ app.post('/api/capture/save-shot', async (req, res) => {
       }
     }
 
-    // Automatic S3 Upload ONLY upon 100% full verification completion (all 7 shots saved & verified)
-    const isReadyForS3 = (totalShots >= 7) || Boolean(metadata && metadata.isComplete);
+    // Automatic S3 Upload upon full verification completion (all required pictures captured)
+    if (resolvedBox && (!findShotFileInFolder(folderPath, 1, cleanIsbn) || !findShotFileInFolder(folderPath, 2, cleanIsbn))) {
+      await applyBoxShotsToIsbn(cleanIsbn, resolvedLot, resolvedBox, folderPath).catch(() => {});
+      metadata = readIsbnMetadata(cleanIsbn) || metadata;
+    }
+
+    let actualShotsCount = 0;
+    for (let s = 1; s <= 7; s++) {
+      if (findShotFileInFolder(folderPath, s, cleanIsbn)) actualShotsCount++;
+    }
+
+    const hasFrontCover = Boolean(findShotFileInFolder(folderPath, 3, cleanIsbn));
+    const hasSpine = Boolean(findShotFileInFolder(folderPath, 4, cleanIsbn));
+    const hasTitlePage = Boolean(findShotFileInFolder(folderPath, 5, cleanIsbn));
+    const hasEditionNotice = Boolean(findShotFileInFolder(folderPath, 6, cleanIsbn));
+    const hasBackCover = Boolean(findShotFileInFolder(folderPath, 7, cleanIsbn));
+    const hasAllBookShots = hasFrontCover && hasSpine && hasTitlePage && hasEditionNotice && hasBackCover;
+    const isVerificationComplete = actualShotsCount >= 7 || hasAllBookShots;
+
+    if (isVerificationComplete && !metadata.isComplete) {
+      metadata.isComplete = true;
+      metadata.completedAt = new Date().toISOString();
+      await saveIsbnMetadata(cleanIsbn, metadata);
+    }
+
     const itemClient = getItemClient(cleanIsbn, metadata);
     const itemEff = getEffectiveS3Config({}, itemClient);
 
-    if (isReadyForS3 && itemEff.isConfigured && itemEff.s3Enabled) {
-      console.log(`[S3 Auto-Upload] Verification capture 100% complete for ${cleanIsbn} [${itemClient}] (${totalShots} shots saved). Enqueuing background upload to ${itemEff.s3Bucket}...`);
+    if (isVerificationComplete && itemEff.isConfigured && itemEff.s3Enabled) {
+      console.log(`[S3 Auto-Upload] Verification capture 100% complete for ${cleanIsbn} [${itemClient}] (${actualShotsCount} shots on disk). Directly sending all pictures to S3 (${itemEff.s3Bucket})...`);
       enqueueS3Upload(cleanIsbn);
     }
 
@@ -4194,8 +4257,8 @@ app.post('/api/capture/save-shot', async (req, res) => {
       filename,
       filePath,
       relativeUrl: `/proofs/${encodeURIComponent(cleanIsbn)}/${filename}`,
-      totalShotsSaved: totalShots,
-      isComplete: totalShots >= 7,
+      totalShotsSaved: actualShotsCount,
+      isComplete: isVerificationComplete,
       currentStep: nextStep,
       metadata
     });
@@ -5080,21 +5143,33 @@ app.post('/api/sync/receive-shot', async (req, res) => {
       currentSession.currentStep = nextStep;
     }
 
+    let repShotsCount = 0;
+    for (let s = 1; s <= 7; s++) {
+      if (findShotFileInFolder(folderPath, s, cleanIsbn)) repShotsCount++;
+    }
+    const hasFrontCover = Boolean(findShotFileInFolder(folderPath, 3, cleanIsbn));
+    const hasSpine = Boolean(findShotFileInFolder(folderPath, 4, cleanIsbn));
+    const hasTitlePage = Boolean(findShotFileInFolder(folderPath, 5, cleanIsbn));
+    const hasEditionNotice = Boolean(findShotFileInFolder(folderPath, 6, cleanIsbn));
+    const hasBackCover = Boolean(findShotFileInFolder(folderPath, 7, cleanIsbn));
+    const hasAllBookShots = hasFrontCover && hasSpine && hasTitlePage && hasEditionNotice && hasBackCover;
+    const isRepComplete = repShotsCount >= 7 || hasAllBookShots;
+
     broadcastSession('SHOT_SAVED', {
       isbn: cleanIsbn,
       shotNumber: sNum,
       shotInfo,
-      isComplete: totalShots >= 7,
+      isComplete: isRepComplete,
       currentStep: nextStep
     });
 
     const repItemClient = getItemClient(cleanIsbn, metadata);
     const repItemEff = getEffectiveS3Config({}, repItemClient);
-    if (totalShots >= 7 && repItemEff.isConfigured && repItemEff.s3Enabled) {
+    if (isRepComplete && repItemEff.isConfigured && repItemEff.s3Enabled) {
       enqueueS3Upload(cleanIsbn);
     }
 
-    res.json({ success: true, replicated: true, isbn: cleanIsbn, shotNumber: sNum, isComplete: totalShots >= 7 });
+    res.json({ success: true, replicated: true, isbn: cleanIsbn, shotNumber: sNum, isComplete: isRepComplete });
   } catch (err) {
     res.status(500).json({ error: 'Failed to save replicated photo', details: err.message });
   }

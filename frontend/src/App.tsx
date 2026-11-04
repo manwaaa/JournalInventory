@@ -106,6 +106,22 @@ export function App() {
   const [isLookingUpMeta, setIsLookingUpMeta] = useState<boolean>(false);
   const [isCapturing, setIsCapturing] = useState<boolean>(false);
 
+  // Refs to avoid stale closures across callbacks, scanner events, and timers
+  const shotsRef = useRef(shots);
+  shotsRef.current = shots;
+  const currentStepRef = useRef(currentStep);
+  currentStepRef.current = currentStep;
+  const activeIsbnRef = useRef(activeIsbn);
+  activeIsbnRef.current = activeIsbn;
+  const stationRoleRef = useRef(stationRole);
+  stationRoleRef.current = stationRole;
+  const isCapturingRef = useRef(isCapturing);
+  isCapturingRef.current = isCapturing;
+  const isbnInputRefValue = useRef(isbnInput);
+  isbnInputRefValue.current = isbnInput;
+  const undoHistoryRef = useRef(undoHistory);
+  undoHistoryRef.current = undoHistory;
+
   // Box-level list & active summary (PC 1 / PC 2 Workflow)
   const [boxesList, setBoxesList] = useState<BoxSummary[]>([]);
   const [activeBoxSummary, setActiveBoxSummary] = useState<BoxSummary | null>(null);
@@ -376,6 +392,11 @@ export function App() {
           }
         } else if (msg.type === 'MANIFEST_UPDATED') {
           fetchStatus(true);
+        } else if (msg.type === 'S3_AUTO_UPLOADED') {
+          if (msg.isbn && msg.isbn === activeIsbnRef.current && msg.s3Upload) {
+            setMetadata(prev => prev ? { ...prev, s3Upload: msg.s3Upload } : prev);
+          }
+          fetchStatus();
         } else if (msg.type === 'CLIENT_SWITCHED' && msg.activeClient) {
           setActiveClient(msg.activeClient);
           fetchBoxesList(msg.activeClient);
@@ -514,6 +535,17 @@ export function App() {
       playAudioCue('error');
       isProcessingIsbnRef.current = false;
       return;
+    }
+
+    // Safeguard: If previous session was completed, ensure S3 direct upload is dispatched
+    const prevIsbn = activeIsbnRef.current || activeIsbn;
+    const prevStep = currentStepRef.current || currentStep;
+    if (prevIsbn && prevStep === 'COMPLETE' && prevIsbn !== clean) {
+      fetch('/api/s3/upload-isbn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isbn: prevIsbn, client: activeClient })
+      }).catch(err => console.error('[S3 Upload Previous on Rescan] Error:', err));
     }
 
     try {
@@ -896,6 +928,42 @@ export function App() {
       if (data.metadata) {
         setMetadata(data.metadata);
       }
+
+      // Detect if user has finished capturing all required images
+      const hasAllBookPhotos = Boolean(
+        updatedShots[3] && updatedShots[4] && updatedShots[5] && updatedShots[6] && updatedShots[7]
+      );
+      const isFinishedNow = Boolean(
+        data.isComplete ||
+        (updatedShots[1] && updatedShots[2] && hasAllBookPhotos) ||
+        (stationRole === 'book_level' && hasAllBookPhotos) ||
+        (stationRole === 'box_spine' && updatedShots[1] && updatedShots[2] && updatedShots[4]) ||
+        (stationRole === 'box_level' && updatedShots[1] && updatedShots[2])
+      );
+
+      // DIRECT S3 TRANSMISSION: Once capturing is complete, immediately upload all images to S3
+      if (isFinishedNow && activeIsbn) {
+        console.log(`[S3 Direct Sync] Finished capturing all images for ${activeIsbn}. Sending directly to S3...`);
+        fetch('/api/s3/upload-isbn', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isbn: activeIsbn, client: activeClient })
+        }).then(async (res) => {
+          const s3Data = await res.json();
+          if (res.ok && s3Data.success) {
+            setToastAlert({
+              type: 'success',
+              message: `☁️ Verification complete! All pictures for ${activeIsbn} directly sent to S3 (${s3Data.uploadedFiles?.length || 'all'} files synced).`
+            });
+            fetchStatus();
+          } else {
+            console.warn('[S3 Direct Sync] Server response:', s3Data);
+          }
+        }).catch(err => {
+          console.error('[S3 Direct Sync] Error sending to S3:', err);
+        });
+      }
+
       fetchStatus();
     } catch (err: any) {
       setToastAlert({
@@ -1234,7 +1302,7 @@ export function App() {
       fetch('/api/s3/upload-isbn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isbn: curIsbn })
+        body: JSON.stringify({ isbn: curIsbn, client: activeClient })
       }).catch(err => console.error('[S3 Upload on Next] Error:', err));
     }
 
@@ -1286,22 +1354,6 @@ export function App() {
     if (!targetIsbn) return;
     window.location.href = `/api/capture/zip/${encodeURIComponent(targetIsbn)}`;
   };
-
-  // Refs to avoid stale closures in global keyboard & scanner listeners
-  const shotsRef = useRef(shots);
-  shotsRef.current = shots;
-  const currentStepRef = useRef(currentStep);
-  currentStepRef.current = currentStep;
-  const activeIsbnRef = useRef(activeIsbn);
-  activeIsbnRef.current = activeIsbn;
-  const stationRoleRef = useRef(stationRole);
-  stationRoleRef.current = stationRole;
-  const isCapturingRef = useRef(isCapturing);
-  isCapturingRef.current = isCapturing;
-  const isbnInputRefValue = useRef(isbnInput);
-  isbnInputRefValue.current = isbnInput;
-  const undoHistoryRef = useRef(undoHistory);
-  undoHistoryRef.current = undoHistory;
 
   // Global Keyboard shortcuts: Spacebar/Enter to trigger shutter, Ctrl+Z / Z for Undo, Esc for Cancel Retake
   useEffect(() => {
