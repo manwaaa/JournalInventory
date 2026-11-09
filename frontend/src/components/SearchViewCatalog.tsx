@@ -27,7 +27,9 @@ import {
   ChevronRight as ChevronRightIcon,
   X,
   LayoutGrid,
-  Maximize2
+  Maximize2,
+  ShieldCheck,
+  Award
 } from 'lucide-react';
 import { ProofItem, SHOT_DEFINITIONS } from '../types';
 
@@ -86,6 +88,8 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     openUpwards: boolean;
   } | null>(null);
   const [copiedS3Id, setCopiedS3Id] = useState<string | null>(null);
+  const [isAuditingS3, setIsAuditingS3] = useState(false);
+  const [isExportingCert, setIsExportingCert] = useState(false);
   const [selectedPhotoModal, setSelectedPhotoModal] = useState<{
     isbn: string;
     shots: Record<string, string | null>;
@@ -125,14 +129,28 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
 
   const toggleBoxExpand = (lotName: string, boxName: string) => {
     const boxKey = `${lotName}__${boxName}`;
-    setExpandedBoxes(prev => ({ ...prev, [boxKey]: prev[boxKey] === false ? true : false }));
+    setExpandedBoxes(prev => ({
+      ...prev,
+      [boxKey]: !isBoxExpanded(lotName, boxName)
+    }));
   };
 
   const isBoxExpanded = (lotName: string, boxName: string) => {
     const isSearching = Boolean(lotQuery.trim() || boxQuery.trim() || searchQuery.trim());
     if (isSearching) return true;
     const boxKey = `${lotName}__${boxName}`;
-    return expandedBoxes[boxKey] !== false;
+    return Boolean(expandedBoxes[boxKey]);
+  };
+
+  const toggleAllBoxesInLot = (lotName: string, bNames: string[], expand: boolean, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedBoxes(prev => {
+      const next = { ...prev };
+      for (const b of bNames) {
+        next[`${lotName}__${b}`] = expand;
+      }
+      return next;
+    });
   };
 
   const handleCopyS3Link = (isbn: string, s3Link: string) => {
@@ -179,7 +197,17 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
       if (res.ok) {
         const data = await res.json();
         const prog = data.progress;
-        setSyncStatus(prog);
+        setSyncStatus(prev => {
+          if (
+            prev?.isSyncing === prog?.isSyncing &&
+            prev?.completedCount === prog?.completedCount &&
+            prev?.totalPending === prog?.totalPending &&
+            prev?.currentIsbn === prog?.currentIsbn
+          ) {
+            return prev;
+          }
+          return prog;
+        });
         if (wasSyncingRef.current && prog && !prog.isSyncing) {
           wasSyncingRef.current = false;
           fetchItems();
@@ -239,6 +267,60 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     }
   };
 
+  const handleAuditReconcileS3 = async () => {
+    setIsAuditingS3(true);
+    try {
+      const res = await fetch('/api/s3/audit-reconcile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client: activeClient, autoHeal: true })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Audit failed');
+      }
+
+      alert(
+        `✓ AWS S3 Cloud QC Audit Finished!\n\n` +
+        `• Audited Complete Journals: ${data.auditedCount}\n` +
+        `• 100% Cloud Verified: ${data.fullyVerifiedCount}\n` +
+        `• Missing Pictures On Cloud: ${data.missingFilesCount}\n` +
+        `• Auto-Healed & Queued for Upload: ${data.autoHealedCount}\n\n` +
+        (data.missingFilesCount === 0 
+          ? `Status: 100% of proof pictures are confirmed on AWS S3!` 
+          : `Self-healing active: missing pictures have been queued for automatic parallel upload.`)
+      );
+      fetchItems();
+      checkSyncStatus();
+    } catch (err: any) {
+      alert(`S3 Audit Error: ${err.message}`);
+    } finally {
+      setIsAuditingS3(false);
+    }
+  };
+
+  const handleExportDeliveryCertificate = async () => {
+    setIsExportingCert(true);
+    try {
+      const clientName = activeClient || 'Mustang';
+      const res = await fetch(`/api/s3/export-delivery-certificate?client=${encodeURIComponent(clientName)}`);
+      if (!res.ok) throw new Error('Failed to generate S3 delivery certificate');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `S3_Delivery_Certificate_${clientName}_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert(`Export Error: ${err.message}`);
+    } finally {
+      setIsExportingCert(false);
+    }
+  };
+
   const fetchItems = async () => {
     setLoading(true);
     try {
@@ -262,6 +344,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
   }, []);
 
   useEffect(() => {
+    if (!activeActionMenu) return;
     const handleGlobalClick = () => setActiveActionMenu(null);
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setActiveActionMenu(null);
@@ -269,13 +352,13 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     const handleScroll = () => setActiveActionMenu(null);
     window.addEventListener('click', handleGlobalClick);
     window.addEventListener('keydown', handleEsc);
-    window.addEventListener('scroll', handleScroll, true);
+    window.addEventListener('scroll', handleScroll, { passive: true });
     return () => {
       window.removeEventListener('click', handleGlobalClick);
       window.removeEventListener('keydown', handleEsc);
-      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('scroll', handleScroll);
     };
-  }, []);
+  }, [activeActionMenu]);
 
   const handleExportCsv = async () => {
     try {
@@ -310,48 +393,50 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     setExpandedLots(prev => ({ ...prev, [lot]: !prev[lot] }));
   };
 
-  const filteredItems = items.filter(item => {
+  const filteredItems = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
     const lq = lotQuery.toLowerCase().trim();
     const bq = boxQuery.toLowerCase().trim();
 
-    const title = item.metadata?.bookDetails?.title?.toLowerCase() || '';
-    const author = item.metadata?.bookDetails?.authors?.toLowerCase() || '';
-    const lot = (item.lotNumber || item.metadata?.lotNumber || '').toLowerCase();
-    const box = (item.boxNumber || item.metadata?.boxNumber || '').toLowerCase();
-    const isbn = item.isbn.toLowerCase();
-    
-    // Dedicated Lot Filter
-    if (lq && !lot.includes(lq)) {
-      return false;
-    }
+    return items.filter(item => {
+      const title = item.metadata?.bookDetails?.title?.toLowerCase() || '';
+      const author = item.metadata?.bookDetails?.authors?.toLowerCase() || '';
+      const lot = (item.lotNumber || item.metadata?.lotNumber || '').toLowerCase();
+      const box = (item.boxNumber || item.metadata?.boxNumber || '').toLowerCase();
+      const isbn = item.isbn.toLowerCase();
+      
+      // Dedicated Lot Filter
+      if (lq && !lot.includes(lq)) {
+        return false;
+      }
 
-    // Dedicated Box Filter
-    if (bq && !box.includes(bq)) {
-      return false;
-    }
+      // Dedicated Box Filter
+      if (bq && !box.includes(bq)) {
+        return false;
+      }
 
-    // General Search Filter (matches ISBN, Title, Author, or fallback lot/box)
-    if (q) {
-      const matchesSearch = isbn.includes(q) || title.includes(q) || author.includes(q) || lot.includes(q) || box.includes(q);
-      if (!matchesSearch) return false;
-    }
+      // General Search Filter (matches ISBN, Title, Author, or fallback lot/box)
+      if (q) {
+        const matchesSearch = isbn.includes(q) || title.includes(q) || author.includes(q) || lot.includes(q) || box.includes(q);
+        if (!matchesSearch) return false;
+      }
 
-    if (activeTab === 'in_progress') return !item.isComplete;
-    if (activeTab === 'completed') return item.isComplete;
-    return true;
-  });
+      if (activeTab === 'in_progress') return !item.isComplete;
+      if (activeTab === 'completed') return item.isComplete;
+      return true;
+    });
+  }, [items, searchQuery, lotQuery, boxQuery, activeTab]);
 
   // Extract distinct lots and boxes for autocompletion datalists
-  const uniqueLots = Array.from(
+  const uniqueLots = useMemo(() => Array.from(
     new Set(
       items
         .map(i => i.lotNumber || i.metadata?.lotNumber)
         .filter((l): l is string => Boolean(l && l.trim()))
     )
-  ).sort();
+  ).sort(), [items]);
 
-  const uniqueBoxes = Array.from(
+  const uniqueBoxes = useMemo(() => Array.from(
     new Set(
       items
         .filter(i => {
@@ -362,46 +447,49 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
         .map(i => i.boxNumber || i.metadata?.boxNumber)
         .filter((b): b is string => Boolean(b && b.trim()))
     )
-  ).sort();
+  ).sort(), [items, lotQuery]);
 
   // Structure data: Lot -> Box -> Items[]
-  const lotGroups: Record<string, {
-    boxes: Record<string, ProofItem[]>;
-    totalBooks: number;
-    completedCount: number;
-  }> = {};
+  const lotGroups = useMemo(() => {
+    const groups: Record<string, {
+      boxes: Record<string, ProofItem[]>;
+      totalBooks: number;
+      completedCount: number;
+    }> = {};
 
-  for (const item of filteredItems) {
-    const lot = item.lotNumber || item.metadata?.lotNumber || 'Unassigned Lot';
-    const box = item.boxNumber || item.metadata?.boxNumber || 'Unassigned Box';
+    for (const item of filteredItems) {
+      const lot = item.lotNumber || item.metadata?.lotNumber || 'Unassigned Lot';
+      const box = item.boxNumber || item.metadata?.boxNumber || 'Unassigned Box';
 
-    if (!lotGroups[lot]) {
-      lotGroups[lot] = {
+      if (!groups[lot]) {
+        groups[lot] = {
+          boxes: {},
+          totalBooks: 0,
+          completedCount: 0
+        };
+      }
+
+      if (!groups[lot].boxes[box]) {
+        groups[lot].boxes[box] = [];
+      }
+
+      groups[lot].boxes[box].push(item);
+      groups[lot].totalBooks += 1;
+      if (item.isComplete) {
+        groups[lot].completedCount += 1;
+      }
+    }
+
+    if (Object.keys(groups).length === 0 && !loading) {
+      groups['Unassigned Lot'] = {
         boxes: {},
         totalBooks: 0,
         completedCount: 0
       };
     }
 
-    if (!lotGroups[lot].boxes[box]) {
-      lotGroups[lot].boxes[box] = [];
-    }
-
-    lotGroups[lot].boxes[box].push(item);
-    lotGroups[lot].totalBooks += 1;
-    if (item.isComplete) {
-      lotGroups[lot].completedCount += 1;
-    }
-  }
-
-  const lotKeys = Object.keys(lotGroups);
-  if (lotKeys.length === 0 && !loading) {
-    lotGroups['Unassigned Lot'] = {
-      boxes: {},
-      totalBooks: 0,
-      completedCount: 0
-    };
-  }
+    return groups;
+  }, [filteredItems, loading]);
 
   return (
     <div className="w-full space-y-6 animate-fade-in">
@@ -456,6 +544,28 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                   ? `Syncing S3 (${syncStatus.completedCount}/${syncStatus.totalPending})...` 
                   : 'Auto-Sync All to S3'}
               </span>
+            </button>
+
+            {/* Audit & QC S3 (Self-Heal) Button */}
+            <button
+              onClick={handleAuditReconcileS3}
+              disabled={isAuditingS3}
+              title="Audit all journals against AWS S3 directly and auto-heal any missing pictures"
+              className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-bold text-indigo-900 bg-gradient-to-b from-indigo-50 to-blue-50 hover:from-indigo-100 hover:to-blue-100 border border-indigo-200/80 transition-all shadow-sm cursor-pointer"
+            >
+              <ShieldCheck className={`w-4 h-4 ${isAuditingS3 ? 'animate-spin text-indigo-600' : 'text-indigo-600'}`} />
+              <span>{isAuditingS3 ? 'Auditing S3...' : 'Audit S3 (QC)'}</span>
+            </button>
+
+            {/* Export S3 Delivery Certificate Button */}
+            <button
+              onClick={handleExportDeliveryCertificate}
+              disabled={isExportingCert}
+              title="Download 100% Cloud Delivery Certificate CSV for client verification"
+              className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-bold text-purple-900 bg-gradient-to-b from-purple-50 to-violet-50 hover:from-purple-100 hover:to-violet-100 border border-purple-200/80 transition-all shadow-sm cursor-pointer"
+            >
+              <Award className="w-4 h-4 text-purple-600" />
+              <span>{isExportingCert ? 'Generating...' : 'Delivery Certificate'}</span>
             </button>
 
             <button
@@ -647,6 +757,24 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                 </div>
 
                 <div className="flex items-center space-x-3">
+                  <div className="flex items-center space-x-1.5" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      onClick={(e) => toggleAllBoxesInLot(lotName, boxNames, true, e)}
+                      className="px-2 py-0.5 text-[10px] font-bold rounded-md bg-white/15 hover:bg-white/25 text-white transition-colors cursor-pointer"
+                      title="Expand all boxes in this lot"
+                    >
+                      Open All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => toggleAllBoxesInLot(lotName, boxNames, false, e)}
+                      className="px-2 py-0.5 text-[10px] font-bold rounded-md bg-white/15 hover:bg-white/25 text-white transition-colors cursor-pointer"
+                      title="Collapse all boxes in this lot"
+                    >
+                      Close All
+                    </button>
+                  </div>
                   <span className="px-3 py-0.5 text-xs font-bold rounded-full bg-white/20 text-white backdrop-blur-sm border border-white/20">
                     {boxNames.length} {boxNames.length === 1 ? 'box' : 'boxes'} • {totalBooks} {totalBooks === 1 ? 'book' : 'books'} ({completedCount} verified)
                   </span>
@@ -672,6 +800,10 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                       const boxItems = lotGroup.boxes[boxName];
                       const boxCompleted = boxItems.filter(i => i.isComplete).length;
                       const isExpandedBox = isBoxExpanded(lotName, boxName);
+                      const boxKey = `${lotName}__${boxName}`;
+                      const pageLimit = boxPageLimits[boxKey] || 25;
+                      const isSearchingActive = Boolean(lotQuery.trim() || boxQuery.trim() || searchQuery.trim());
+                      const displayedItems = isSearchingActive ? boxItems : boxItems.slice(0, pageLimit);
 
                       return (
                         <div
@@ -717,7 +849,7 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100 font-sans">
-                                  {boxItems.map((item, itemIdx) => {
+                                  {displayedItems.map((item, itemIdx) => {
                                     const book = item.metadata?.bookDetails;
                                     const station = item.metadata?.station || item.metadata?.operator || 'Station-01';
 
@@ -768,7 +900,13 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                                   }`}
                                                 >
                                                   {shotUrl ? (
-                                                    <img src={shotUrl} alt={`Shot ${s}`} className="w-full h-full object-cover" />
+                                                    <img 
+                                                      src={shotUrl} 
+                                                      alt={`Shot ${s}`} 
+                                                      loading="lazy" 
+                                                      decoding="async" 
+                                                      className="w-full h-full object-cover" 
+                                                    />
                                                   ) : (
                                                     <span className="text-[8px] font-bold text-slate-300 font-mono">{s}</span>
                                                   )}
@@ -810,11 +948,25 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                                   const link = item.metadata?.s3Upload?.shareableLink || item.metadata?.s3Upload?.s3FolderUri;
                                                   if (link) handleCopyS3Link(item.isbn, link);
                                                 }}
-                                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 shadow-xs cursor-pointer transition-colors"
-                                                title={`Uploaded to: ${item.metadata.s3Upload.s3FolderUri}\nClick to copy S3 link`}
+                                                className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-bold shadow-xs cursor-pointer transition-colors ${
+                                                  item.metadata.s3Upload.cloudVerified || (item.metadata.s3Upload.fileCount && item.metadata.s3Upload.fileCount >= 7)
+                                                    ? 'bg-green-100 hover:bg-green-200 text-green-800 border border-green-300'
+                                                    : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300'
+                                                }`}
+                                                title={`Cloud Presence: ${item.metadata.s3Upload.s3FolderUri}\nClick to copy S3 link`}
                                               >
-                                                <CloudUpload className="w-3 h-3 text-emerald-600" />
-                                                <span>{copiedS3Id === item.isbn ? '✓ Link Copied' : 'S3 Synced'}</span>
+                                                {item.metadata.s3Upload.cloudVerified || (item.metadata.s3Upload.fileCount && item.metadata.s3Upload.fileCount >= 7) ? (
+                                                  <CheckCircle2 className="w-3 h-3 text-green-600" />
+                                                ) : (
+                                                  <CloudUpload className="w-3 h-3 text-emerald-600" />
+                                                )}
+                                                <span>
+                                                  {copiedS3Id === item.isbn 
+                                                    ? '✓ Link Copied' 
+                                                    : item.metadata.s3Upload.cloudVerified || (item.metadata.s3Upload.fileCount && item.metadata.s3Upload.fileCount >= 7)
+                                                      ? `🟢 S3 Verified (${item.metadata.s3Upload.fileCount || 7}/7)`
+                                                      : `🟡 S3 Synced (${item.metadata.s3Upload.fileCount || 0}/7)`}
+                                                </span>
                                               </button>
                                             ) : item.isComplete ? (
                                               <span
@@ -866,6 +1018,27 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                                   })}
                                 </tbody>
                               </table>
+                              {boxItems.length > pageLimit && !isSearchingActive && (
+                                <div className="py-2.5 px-4 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+                                  <span>Showing <strong>{displayedItems.length}</strong> of <strong>{boxItems.length}</strong> journals in Box {boxName}</span>
+                                  <div className="flex items-center space-x-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => setBoxPageLimits(prev => ({ ...prev, [boxKey]: (prev[boxKey] || 25) + 30 }))}
+                                      className="px-3 py-1 bg-white hover:bg-blue-50 text-brand-700 font-bold border border-blue-200 rounded-lg shadow-xs cursor-pointer transition-colors"
+                                    >
+                                      Load More (+30) ▼
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setBoxPageLimits(prev => ({ ...prev, [boxKey]: boxItems.length }))}
+                                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg transition-colors cursor-pointer"
+                                    >
+                                      Show All
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -943,8 +1116,16 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
             {selectedPhotoModal.item.metadata?.s3Upload && (
               <div className="mx-4 sm:mx-6 mt-3 px-3.5 py-2 rounded-xl bg-emerald-50 border border-emerald-200 flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-900">
                 <div className="flex items-center space-x-2">
-                  <CloudUpload className="w-4 h-4 text-emerald-600" />
-                  <span className="font-bold">AWS S3 Synced:</span>
+                  {selectedPhotoModal.item.metadata.s3Upload.cloudVerified || (selectedPhotoModal.item.metadata.s3Upload.fileCount && selectedPhotoModal.item.metadata.s3Upload.fileCount >= 7) ? (
+                    <CheckCircle2 className="w-4 h-4 text-green-600" />
+                  ) : (
+                    <CloudUpload className="w-4 h-4 text-emerald-600" />
+                  )}
+                  <span className="font-bold">
+                    {selectedPhotoModal.item.metadata.s3Upload.cloudVerified || (selectedPhotoModal.item.metadata.s3Upload.fileCount && selectedPhotoModal.item.metadata.s3Upload.fileCount >= 7)
+                      ? '🟢 100% S3 Cloud Verified:'
+                      : 'AWS S3 Synced:'}
+                  </span>
                   <span className="font-mono text-[11px] text-emerald-700 select-all truncate max-w-sm">
                     {selectedPhotoModal.item.metadata.s3Upload.s3FolderUri}
                   </span>

@@ -77,6 +77,8 @@ export interface JournalMetadata {
     s3FolderUri: string;
     shareableLink?: string;
     fileCount: number;
+    cloudVerified?: boolean;
+    cloudVerifiedAt?: string;
   } | null;
 }
 
@@ -172,6 +174,9 @@ export interface BoxSummary {
   boxKey: string;
   totalBooks: number;
   completedBooks: number;
+  s3VerifiedBooks?: number;
+  isS3FullyVerified?: boolean;
+  s3VerifiedPercent?: number;
   hasBoxShot: boolean;
   hasUnboxShot: boolean;
   boxShotUrl?: string | null;

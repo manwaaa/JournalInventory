@@ -225,12 +225,29 @@ export function App() {
       const res = await fetch(`/api/boxes/list?client=${encodeURIComponent(client)}`);
       if (res.ok) {
         const data = await res.json();
-        setBoxesList(data.boxes || []);
+        const boxes: BoxSummary[] = data.boxes || [];
+        setBoxesList(boxes);
+        const currentBox = boxNumberLiveRef.current;
+        if (currentBox) {
+          const matched = boxes.find(b => isMatchingBoxNumber(b.boxNumber, currentBox));
+          if (matched) {
+            setActiveBoxSummary(prev => {
+              if (matched.isS3FullyVerified && (!prev || !prev.isS3FullyVerified)) {
+                playAudioCue('success');
+                setToastAlert({
+                  type: 'success',
+                  message: `🎉 Box ${matched.boxNumber}: 100% S3 Cloud Verified! All ${matched.totalBooks} journals confirmed in AWS.`
+                });
+              }
+              return prev ? { ...prev, ...matched } : matched;
+            });
+          }
+        }
       }
     } catch (e) {
       console.warn('Failed to fetch boxes list:', e);
     }
-  }, [activeClient]);
+  }, [activeClient, playAudioCue]);
 
   // Fetch status & optionally config/manifest
   const fetchStatus = useCallback(async (includeManifest: boolean = false) => {
@@ -1637,7 +1654,7 @@ export function App() {
                     <option value="">-- Choose a Box from Manifest ({boxesList.length} boxes available) --</option>
                     {boxesList.map((b) => (
                       <option key={b.boxKey} value={`${b.lotNumber}__${b.boxNumber}`}>
-                        📦 Box {b.boxNumber} ({b.totalBooks} books {b.completedBooks > 0 ? `• ${b.completedBooks} verified` : ''}) - Lot: {b.lotNumber} {b.hasBoxShot && b.hasUnboxShot ? '✓ (Photos Done)' : ''}
+                        📦 Box {b.boxNumber} ({b.totalBooks} books {b.isS3FullyVerified ? '• 🟢 100% S3 Confirmed ✓' : (b.s3VerifiedBooks && b.s3VerifiedBooks > 0) ? `• 🟡 ${b.s3VerifiedBooks}/${b.totalBooks} S3 Synced` : b.completedBooks > 0 ? `• ${b.completedBooks} verified` : ''}) - Lot: {b.lotNumber} {b.hasBoxShot && b.hasUnboxShot ? '✓ (Photos Done)' : ''}
                       </option>
                     ))}
                   </select>

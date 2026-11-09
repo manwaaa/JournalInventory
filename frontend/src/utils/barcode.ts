@@ -40,18 +40,18 @@ export function normalizeBoxString(boxNumber?: string): string {
 
 /**
  * Compares two box numbers with lenient matching:
- * - "RB-0005" == "rb0005" == "0005" == "5" == "RB5"
+ * - "RB-0005" == "rb0005" == "Box 5" == "0005" == "5" == "RB5"
  */
 export function isMatchingBoxNumber(boxA?: string, boxB?: string): boolean {
   if (!boxA || !boxB) return false;
   const normA = normalizeBoxString(boxA);
   const normB = normalizeBoxString(boxB);
   if (normA === normB) return true;
-  const noRbA = normA.replace(/^rb/, '');
-  const noRbB = normB.replace(/^rb/, '');
-  if (noRbA && noRbB && noRbA === noRbB) return true;
-  const strippedA = noRbA.replace(/^0+/, '') || '0';
-  const strippedB = noRbB.replace(/^0+/, '') || '0';
+  const cleanA = normA.replace(/^(rb|box|b)/, '');
+  const cleanB = normB.replace(/^(rb|box|b)/, '');
+  if (cleanA && cleanB && cleanA === cleanB) return true;
+  const strippedA = cleanA.replace(/^0+/, '') || cleanA;
+  const strippedB = cleanB.replace(/^0+/, '') || cleanB;
   return strippedA === strippedB;
 }
 

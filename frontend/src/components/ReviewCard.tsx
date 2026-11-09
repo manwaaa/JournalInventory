@@ -153,9 +153,22 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
               {lotNumber || 'Unassigned Lot'} {boxNumber ? `• Box ${boxNumber}` : ''}
             </span>
             {boxSummary && (
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                📦 {boxSummary.totalBooks} Journals in Manifest
-              </span>
+              <>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                  📦 {boxSummary.totalBooks} Journals in Manifest
+                </span>
+                {boxSummary.isS3FullyVerified ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-100 text-green-800 border border-green-300 shadow-xs">
+                    <CheckCircle2 className="w-3 h-3 text-green-600" />
+                    100% S3 Confirmed ✓
+                  </span>
+                ) : (boxSummary.s3VerifiedBooks || 0) > 0 ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-300 shadow-xs">
+                    <CloudUpload className="w-3 h-3 text-amber-600" />
+                    {boxSummary.s3VerifiedBooks}/{boxSummary.totalBooks} Cloud Synced
+                  </span>
+                ) : null}
+              </>
             )}
             {metadata?.copyNumber && metadata.copyNumber > 1 && (
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gradient-to-r from-purple-50 to-indigo-50 text-purple-800 border border-purple-200">
@@ -196,6 +209,19 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
                 Incomplete ({shotsCount}/7)
               </span>
+            )}
+            {metadata?.s3Upload && (
+              metadata.s3Upload.cloudVerified ? (
+                <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-bold bg-green-100 text-green-800 border border-green-300 shadow-sm" title={`Verified on AWS S3: ${metadata.s3Upload.s3FolderUri}`}>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />
+                  🟢 S3 Verified ({metadata.s3Upload.fileCount || 7}/7)
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200 shadow-sm">
+                  <CloudUpload className="w-3.5 h-3.5 text-blue-600" />
+                  S3 Synced ({metadata.s3Upload.fileCount || 0}/7)
+                </span>
+              )
             )}
           </div>
 
@@ -278,11 +304,24 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
       {boxSummary && boxSummary.totalBooks > 0 && (
         <div className="p-3 bg-gradient-to-r from-blue-50/80 to-indigo-50/50 rounded-xl border border-blue-200/80 text-xs">
           <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <Package className="w-4 h-4 text-brand-600 shrink-0" />
-              <span className="font-bold text-slate-800">
-                Box {boxNumber} contains <span className="text-brand-700 font-extrabold">{boxSummary.totalBooks} Journals</span> in Manifest
-              </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center space-x-2">
+                <Package className="w-4 h-4 text-brand-600 shrink-0" />
+                <span className="font-bold text-slate-800">
+                  Box {boxNumber} contains <span className="text-brand-700 font-extrabold">{boxSummary.totalBooks} Journals</span> in Manifest
+                </span>
+              </div>
+              {boxSummary.isS3FullyVerified ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-green-100 text-green-800 border border-green-300 shadow-xs">
+                  <CheckCircle2 className="w-3 h-3 text-green-600" />
+                  100% S3 Confirmed ✓
+                </span>
+              ) : (boxSummary.s3VerifiedBooks || 0) > 0 ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-300 shadow-xs">
+                  <CloudUpload className="w-3 h-3 text-amber-600" />
+                  {boxSummary.s3VerifiedBooks}/{boxSummary.totalBooks} Cloud Synced ({boxSummary.s3VerifiedPercent || 0}%)
+                </span>
+              ) : null}
             </div>
             {boxSummary.books && boxSummary.books.length > 0 && (
               <button

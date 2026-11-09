@@ -91,20 +91,25 @@ function isJaguarLot(lotNumber, project, client) {
     if (/jaguar/i.test(project)) return true;
     if (/mustang/i.test(project)) return false;
   }
-  if (!lotNumber) return false;
-  const clean = String(lotNumber).trim().toLowerCase();
-  return clean.includes('j');
+  if (lotNumber) {
+    const clean = String(lotNumber).trim().toLowerCase();
+    if (clean.includes('j')) return true;
+  }
+  if (config?.activeClient && /jaguar/i.test(config.activeClient)) {
+    return true;
+  }
+  return false;
 }
 
 // Helper: Resolve which client (Jaguar vs Mustang) an ISBN belongs to
 function getItemClient(identifier, metadata = null) {
   const cleanId = sanitizeIsbn(identifier);
+  if (!cleanId) return config?.activeClient || 'Mustang';
   const base = getBaseIsbn(cleanId);
-  const meta = metadata || (typeof readIsbnMetadata === 'function' ? (readIsbnMetadata(cleanId) || (base !== cleanId ? readIsbnMetadata(base) : null)) : null);
   const manifestMatch = typeof findManifestItem === 'function' ? (findManifestItem(base) || findManifestItem(cleanId)) : null;
-  const resolvedLot = meta?.lotNumber || manifestMatch?.lotNumber || '';
-  const resolvedProject = meta?.project || manifestMatch?.project || '';
-  const resolvedClient = meta?.client || manifestMatch?.client || '';
+  const resolvedLot = metadata?.lotNumber || manifestMatch?.lotNumber || '';
+  const resolvedProject = metadata?.project || manifestMatch?.project || '';
+  const resolvedClient = metadata?.client || manifestMatch?.client || '';
 
   if (isJaguarLot(resolvedLot, resolvedProject, resolvedClient)) {
     return 'Jaguar';
@@ -118,6 +123,44 @@ function getItemClient(identifier, metadata = null) {
   if (resolvedClient && config?.clientProfiles && config.clientProfiles[resolvedClient]) {
     return resolvedClient;
   }
+
+  // Fast direct check of .metadata files on disk without calling readIsbnMetadata (avoids any recursion)
+  try {
+    const candidateMetaDirs = [
+      path.join(config.storagePath, '.metadata')
+    ];
+    if (config.storagePath) {
+      candidateMetaDirs.push(path.join(path.dirname(config.storagePath), '.metadata'));
+    }
+    if (config.clientProfiles) {
+      for (const p of Object.values(config.clientProfiles)) {
+        if (p.storagePath) candidateMetaDirs.push(path.join(p.storagePath, '.metadata'));
+      }
+    }
+    for (const mDir of candidateMetaDirs) {
+      const f1 = path.join(mDir, `${cleanId}.json`);
+      if (fs.existsSync(f1)) {
+        const m = fs.readJsonSync(f1);
+        if (m) {
+          if (isJaguarLot(m.lotNumber, m.project, m.client)) return 'Jaguar';
+          if (m.client && /mustang/i.test(m.client)) return 'Mustang';
+          if (m.client && config?.clientProfiles?.[m.client]) return m.client;
+        }
+      }
+      if (base !== cleanId) {
+        const f2 = path.join(mDir, `${base}.json`);
+        if (fs.existsSync(f2)) {
+          const m = fs.readJsonSync(f2);
+          if (m) {
+            if (isJaguarLot(m.lotNumber, m.project, m.client)) return 'Jaguar';
+            if (m.client && /mustang/i.test(m.client)) return 'Mustang';
+            if (m.client && config?.clientProfiles?.[m.client]) return m.client;
+          }
+        }
+      }
+    }
+  } catch (e) {}
+
   return config?.activeClient || 'Mustang';
 }
 
@@ -1211,26 +1254,109 @@ function readIsbnMetadata(cleanIsbn) {
   }
 
   // Backwards-compatible check: legacy metadata.json inside photo folder
-  const folderPath = getFolderForIdentifier(cleanIsbn);
-  const legacyPath = path.join(folderPath, 'metadata.json');
-  if (fs.existsSync(legacyPath)) {
-    try {
-      const data = fs.readJsonSync(legacyPath);
-      // Auto-migrate legacy metadata.json out of the photo folder
+  // Directly check physical candidate directory paths without calling getFolderForIdentifier (avoids any recursion)
+  const candidateFolders = [];
+  if (config.storagePath) {
+    candidateFolders.push(path.join(config.storagePath, cleanIsbn));
+    candidateFolders.push(path.join(path.dirname(config.storagePath), cleanIsbn));
+  }
+  if (config.clientProfiles) {
+    for (const p of Object.values(config.clientProfiles)) {
+      if (p.storagePath && p.storagePath !== config.storagePath) {
+        candidateFolders.push(path.join(p.storagePath, cleanIsbn));
+      }
+    }
+  }
+  for (const cFolder of candidateFolders) {
+    const legacyPath = path.join(cFolder, 'metadata.json');
+    if (fs.existsSync(legacyPath)) {
       try {
-        fs.writeJsonSync(newPath, data, { spaces: 2 });
-        fs.removeSync(legacyPath);
-        console.log(`[Metadata Migration] Migrated metadata.json for ${cleanIsbn} to .metadata/ directory`);
-      } catch (migErr) {}
-      return data;
-    } catch (e) {}
+        const data = fs.readJsonSync(legacyPath);
+        // Auto-migrate legacy metadata.json out of the photo folder
+        try {
+          fs.writeJsonSync(newPath, data, { spaces: 2 });
+          fs.removeSync(legacyPath);
+          console.log(`[Metadata Migration] Migrated metadata.json for ${cleanIsbn} to .metadata/ directory`);
+        } catch (migErr) {}
+        return data;
+      } catch (e) {}
+    }
   }
   return null;
 }
 
+// Fast In-Memory Metadata Index for Box & Cloud Verification calculation
+let cachedMetadataIndex = null;
+let cachedMetadataIndexTimestamp = 0;
+const METADATA_INDEX_TTL_MS = 3000;
+
+function invalidateMetadataIndex() {
+  cachedMetadataIndex = null;
+  cachedMetadataIndexTimestamp = 0;
+}
+
+function getMetadataIndex() {
+  const now = Date.now();
+  if (cachedMetadataIndex && (now - cachedMetadataIndexTimestamp) < METADATA_INDEX_TTL_MS) {
+    return cachedMetadataIndex;
+  }
+
+  const map = new Map();
+
+  const candidateMetaDirs = [];
+  if (config.storagePath) {
+    candidateMetaDirs.push(path.join(config.storagePath, '.metadata'));
+    candidateMetaDirs.push(path.join(path.dirname(config.storagePath), '.metadata'));
+  }
+  if (config.clientProfiles) {
+    for (const p of Object.values(config.clientProfiles)) {
+      if (p.storagePath) {
+        candidateMetaDirs.push(path.join(p.storagePath, '.metadata'));
+      }
+    }
+  }
+
+  const seenDirs = new Set();
+  for (const dir of candidateMetaDirs) {
+    if (!dir || seenDirs.has(dir) || !fs.existsSync(dir)) continue;
+    seenDirs.add(dir);
+    try {
+      const files = fs.readdirSync(dir);
+      for (const f of files) {
+        if (!f.endsWith('.json')) continue;
+        const cleanIsbn = f.replace(/\.json$/i, '');
+        if (map.has(cleanIsbn)) continue;
+        try {
+          const meta = fs.readJsonSync(path.join(dir, f));
+          if (meta) {
+            const hasS3 = Boolean(meta.s3Upload?.uploadedAt);
+            const isVerified = Boolean(
+              meta.s3Upload?.cloudVerified === true ||
+              (hasS3 && (meta.s3Upload?.fileCount >= 7 || meta.isComplete))
+            );
+            map.set(cleanIsbn, {
+              isComplete: Boolean(meta.isComplete),
+              cloudVerified: isVerified,
+              s3Uploaded: hasS3,
+              s3FolderUri: meta.s3Upload?.s3FolderUri || null,
+              fileCount: meta.s3Upload?.fileCount || 0,
+              lotNumber: meta.lotNumber || '',
+              boxNumber: meta.boxNumber || ''
+            });
+          }
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  cachedMetadataIndex = map;
+  cachedMetadataIndexTimestamp = now;
+  return map;
+}
+
 async function saveIsbnMetadata(cleanIsbn, metadata) {
   if (!cleanIsbn || !metadata) return metadata;
-  const isJag = metadata?.client === 'Jaguar' || isJaguarLot(metadata?.lotNumber);
+  const isJag = metadata?.client === 'Jaguar' || isJaguarLot(metadata?.lotNumber, metadata?.project, metadata?.client);
   const targetClient = isJag ? 'Jaguar' : (config.activeClient || 'Mustang');
   const targetStorage = config.clientProfiles?.[targetClient]?.storagePath || config.storagePath;
   const targetMetaDir = path.join(targetStorage, '.metadata');
@@ -1247,12 +1373,23 @@ async function saveIsbnMetadata(cleanIsbn, metadata) {
     } catch (e) {}
   }
 
-  // Clean up any legacy metadata.json from photo folder so only pictures remain
-  const folderPath = getFolderForIdentifier(cleanIsbn);
-  const legacyPath = path.join(folderPath, 'metadata.json');
-  if (fs.existsSync(legacyPath)) {
-    try { await fs.remove(legacyPath); } catch (e) {}
+  // Clean up any legacy metadata.json from candidate photo folders so only pictures remain
+  const candidateFolders = [];
+  if (config.storagePath) candidateFolders.push(path.join(config.storagePath, cleanIsbn));
+  if (config.clientProfiles) {
+    for (const p of Object.values(config.clientProfiles)) {
+      if (p.storagePath && p.storagePath !== config.storagePath) {
+        candidateFolders.push(path.join(p.storagePath, cleanIsbn));
+      }
+    }
   }
+  for (const cFolder of candidateFolders) {
+    const legacyPath = path.join(cFolder, 'metadata.json');
+    if (fs.existsSync(legacyPath)) {
+      try { await fs.remove(legacyPath); } catch (e) {}
+    }
+  }
+  invalidateMetadataIndex();
   return metadata;
 }
 
@@ -1423,6 +1560,17 @@ app.use('/proofs', (req, res, next) => {
       if (parts.length >= 3) {
         const boxKey = parts[1];
         const filename = parts[2];
+
+        // 1. Direct match in any candidate _boxes directories
+        const candidateDirs = getAllCandidateBoxesDirs();
+        for (const bDir of candidateDirs) {
+          const directFile = path.join(bDir, boxKey, filename);
+          if (isValidImageFile(directFile)) {
+            return res.sendFile(directFile);
+          }
+        }
+
+        // 2. Lenient lookup via findBoxStorageDir
         const [lot, ...boxParts] = boxKey.split('__');
         const box = boxParts.join('__');
         const foundBoxDir = findBoxStorageDir(lot, box);
@@ -2222,271 +2370,332 @@ function getIsbnCaptureDate(cleanIsbn, folderPath, metadata) {
   return formatLocalDate(new Date());
 }
 
+// Active in-progress S3 uploads mutex to prevent duplicate simultaneous uploads of the same ISBN
+const activeUploadsInProgress = new Map(); // cleanIsbn -> Promise
+
 // Core helper: Upload proof folder for a specific ISBN to S3 (Pictures ONLY, no metadata.json)
 async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
-  const folderPath = getFolderForIdentifier(cleanIsbn);
-  if (!fs.existsSync(folderPath)) {
-    throw new Error(`No local folder found for ISBN ${cleanIsbn}`);
+  if (activeUploadsInProgress.has(cleanIsbn)) {
+    console.log(`[S3 Auto-Upload] Upload for ${cleanIsbn} already in progress. Awaiting existing task...`);
+    return activeUploadsInProgress.get(cleanIsbn);
   }
 
-  // Ensure box shots (Shot 1 & Shot 2) are inherited before checking completeness or uploading
-  let meta = readIsbnMetadata(cleanIsbn);
-  const baseIsbn = getBaseIsbn(cleanIsbn);
-  const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(cleanIsbn);
-  const resolvedLot = meta?.lotNumber || manifestMatch?.lotNumber || '';
-  const resolvedBox = meta?.boxNumber || manifestMatch?.boxNumber || '';
-  if (resolvedBox && (!findShotFileInFolder(folderPath, 1, cleanIsbn) || !findShotFileInFolder(folderPath, 2, cleanIsbn))) {
-    await applyBoxShotsToIsbn(cleanIsbn, resolvedLot, resolvedBox, folderPath).catch(() => {});
-    meta = readIsbnMetadata(cleanIsbn) || meta;
-  }
-
-  const itemClient = getItemClient(cleanIsbn, meta);
-  const eff = getEffectiveS3Config(customConfig, itemClient);
-  const targetBucket = eff.s3Bucket;
-  const targetRegion = eff.s3Region;
-  let prefix = (customConfig.s3Prefix || eff.s3Prefix || (itemClient === 'Jaguar' ? 'Phase-09/Lot-156J/' : 'innoscanmussgp1/JournalVerificationImages/')).trim();
-  if (prefix && !prefix.endsWith('/')) prefix += '/';
-
-  const s3 = getS3Client(eff);
-
-  if (!s3 || !targetBucket) {
-    throw new Error(`S3 is not configured for ${itemClient}. Please enter AWS Bucket and Access Keys for ${itemClient} in Settings.`);
-  }
-
-  // Clean up any stray legacy metadata.json from photo folder
-  const legacyMetaPath = path.join(folderPath, 'metadata.json');
-  if (fs.existsSync(legacyMetaPath)) {
-    try {
-      const data = await fs.readJson(legacyMetaPath);
-      await saveIsbnMetadata(cleanIsbn, data);
-      await fs.remove(legacyMetaPath);
-    } catch (e) {}
-  }
-
-  // Only upload valid photo image files (exclude json/zip/hidden/backup files like bak.* or .bak_*)
-  const allFilesInFolder = await fs.readdir(folderPath);
-  const partNum = getPartNumber(cleanIsbn);
-  const partTag = partNum !== null ? `_part${partNum}`.toLowerCase() : null;
-
-  let imageFiles = allFilesInFolder.filter(filename => {
-    if (!filename.match(/\.(jpg|jpeg|png)$/i)) return false;
-    if (filename.startsWith('.')) return false;
-    const lower = filename.toLowerCase();
-    if (lower.startsWith('bak') || lower.includes('.bak') || lower.includes('_bak') || lower.includes('bak.') || lower.includes('backup')) {
-      return false;
+  const uploadTask = (async () => {
+    const folderPath = getFolderForIdentifier(cleanIsbn);
+    if (!fs.existsSync(folderPath)) {
+      throw new Error(`No local folder found for ISBN ${cleanIsbn}`);
     }
-    if (partTag) {
-      return lower.includes(partTag);
+
+    // Ensure box shots (Shot 1 & Shot 2) are inherited before checking completeness or uploading
+    let meta = readIsbnMetadata(cleanIsbn);
+    const baseIsbn = getBaseIsbn(cleanIsbn);
+    const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(cleanIsbn);
+    const resolvedLot = meta?.lotNumber || manifestMatch?.lotNumber || '';
+    const resolvedBox = meta?.boxNumber || manifestMatch?.boxNumber || '';
+    if (resolvedBox && (!findShotFileInFolder(folderPath, 1, cleanIsbn) || !findShotFileInFolder(folderPath, 2, cleanIsbn))) {
+      await applyBoxShotsToIsbn(cleanIsbn, resolvedLot, resolvedBox, folderPath).catch(() => {});
+      meta = readIsbnMetadata(cleanIsbn) || meta;
     }
-    return true;
-  });
 
-  if (imageFiles.length === 0) {
-    throw new Error(`Folder for ISBN ${cleanIsbn} contains no captured picture files.`);
-  }
+    const itemClient = getItemClient(cleanIsbn, meta);
+    const eff = getEffectiveS3Config(customConfig, itemClient);
+    const targetBucket = eff.s3Bucket;
+    const targetRegion = eff.s3Region;
+    let prefix = (customConfig.s3Prefix || eff.s3Prefix || (itemClient === 'Jaguar' ? 'Phase-09/Lot-156J/' : 'innoscanmussgp1/JournalVerificationImages/')).trim();
+    if (prefix && !prefix.endsWith('/')) prefix += '/';
 
-  // Check if journal verification is complete before uploading to S3
-  let shotsCount = 0;
-  for (let s = 1; s <= 7; s++) {
-    if (findShotFileInFolder(folderPath, s, cleanIsbn)) shotsCount++;
-  }
-  // Also check if this is a base folder containing complete multi-part captures
-  if (shotsCount < 7 && !partTag) {
-    const parts = await findExistingParts(baseIsbn);
-    if (parts.length > 0 && parts.every(p => p.isComplete || p.shotsCount >= 7)) {
-      shotsCount = 7;
+    const s3 = getS3Client(eff);
+
+    if (!s3 || !targetBucket) {
+      throw new Error(`S3 is not configured for ${itemClient}. Please enter AWS Bucket and Access Keys for ${itemClient} in Settings.`);
     }
-  }
 
-  const hasFrontCover = Boolean(findShotFileInFolder(folderPath, 3, cleanIsbn));
-  const hasSpine = Boolean(findShotFileInFolder(folderPath, 4, cleanIsbn));
-  const hasTitlePage = Boolean(findShotFileInFolder(folderPath, 5, cleanIsbn));
-  const hasEditionNotice = Boolean(findShotFileInFolder(folderPath, 6, cleanIsbn));
-  const hasBackCover = Boolean(findShotFileInFolder(folderPath, 7, cleanIsbn));
-  const hasAllBookShots = hasFrontCover && hasSpine && hasTitlePage && hasEditionNotice && hasBackCover;
-
-  const isComplete = shotsCount >= 7 || hasAllBookShots || Boolean(customConfig.forceUpload);
-  if (!isComplete) {
-    throw new Error(`Journal verification for ISBN ${cleanIsbn} is incomplete (${shotsCount}/7 shots). All required pictures (including Front Cover & Spine) must be captured before sending to S3.`);
-  }
-
-  const uploadedFiles = [];
-
-  // Determine capture date for this specific ISBN
-  const captureDate = getIsbnCaptureDate(cleanIsbn, folderPath, meta);
-
-  // Build S3 folder key incorporating the capture date
-  let s3FolderPrefix = prefix;
-
-  // Support placeholders {lot} / {lotNumber} and {project}
-  if (/\{lot(?:number)?\}/i.test(s3FolderPrefix) && resolvedLot) {
-    s3FolderPrefix = s3FolderPrefix.replace(/\{lot(?:number)?\}/gi, resolvedLot);
-  }
-  if (/\{project\}/i.test(s3FolderPrefix) && manifestMatch?.project) {
-    s3FolderPrefix = s3FolderPrefix.replace(/\{project\}/gi, manifestMatch.project);
-  }
-
-  // Incorporate capture date
-  if (/\{date\}/i.test(s3FolderPrefix)) {
-    s3FolderPrefix = s3FolderPrefix.replace(/\{date\}/gi, captureDate);
-  } else if (/\/\d{4}-\d{2}-\d{2}\/$/.test(s3FolderPrefix)) {
-    // If prefix already ends with an explicit date folder, substitute with the ISBN's actual capture date
-    s3FolderPrefix = s3FolderPrefix.replace(/\/\d{4}-\d{2}-\d{2}\/$/, `/${captureDate}/`);
-  } else {
-    // Otherwise automatically append the capture date subfolder
-    s3FolderPrefix = `${s3FolderPrefix}${captureDate}/`;
-  }
-
-  if (!s3FolderPrefix.endsWith('/')) s3FolderPrefix += '/';
-
-  // In multi-part sets, all parts are stored in 1 single base ISBN folder, not separated folders
-  const s3BaseFolderKey = `${s3FolderPrefix}${baseIsbn}`;
-
-  // Clean up only backup, temporary, or hidden files on S3 (NEVER delete valid shot images like front cover or spine)
-  try {
-    const listRes = await s3.send(new ListObjectsV2Command({
-      Bucket: targetBucket,
-      Prefix: `${s3BaseFolderKey}/`
-    }));
-
-    if (listRes.Contents && listRes.Contents.length > 0) {
-      for (const obj of listRes.Contents) {
-        const objKey = obj.Key;
-        const baseName = path.basename(objKey).toLowerCase();
-        // Only delete backup, temporary, or hidden files (.bak, bak., _bak, backup, .tmp)
-        if (baseName.includes('bak') || baseName.startsWith('.') || baseName.includes('backup') || baseName.endsWith('.tmp')) {
-          console.log(`[S3 Cleanup] Removing stale backup/temp file from S3: ${objKey}`);
-          await s3.send(new DeleteObjectCommand({
-            Bucket: targetBucket,
-            Key: objKey
-          })).catch(() => {});
-        }
-      }
-    }
-  } catch (cleanErr) {
-    console.warn('[S3 Cleanup] Non-critical warning listing existing S3 files:', cleanErr.message);
-  }
-
-  for (const filename of imageFiles) {
-    const filePath = path.join(folderPath, filename);
-    const stat = await fs.stat(filePath);
-    if (!stat.isFile()) continue;
-
-    const fileBuffer = await fs.readFile(filePath);
-    const s3Key = `${s3BaseFolderKey}/${filename}`;
-
-    let contentType = 'image/jpeg';
-    if (filename.endsWith('.png')) contentType = 'image/png';
-
-    // Retry up to 3 times per file for reliable S3 transmission
-    let putSuccess = false;
-    let lastErr = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    // Clean up any stray legacy metadata.json from photo folder
+    const legacyMetaPath = path.join(folderPath, 'metadata.json');
+    if (fs.existsSync(legacyMetaPath)) {
       try {
-        await s3.send(new PutObjectCommand({
-          Bucket: targetBucket,
-          Key: s3Key,
-          Body: fileBuffer,
-          ContentType: contentType
-        }));
-        putSuccess = true;
-        break;
-      } catch (uploadErr) {
-        lastErr = uploadErr;
-        console.warn(`[S3 Upload] Attempt ${attempt}/3 failed for ${s3Key}:`, uploadErr.message);
-        if (attempt < 3) {
-          await new Promise(r => setTimeout(r, 400 * attempt));
-        }
+        const data = await fs.readJson(legacyMetaPath);
+        await saveIsbnMetadata(cleanIsbn, data);
+        await fs.remove(legacyMetaPath);
+      } catch (e) {}
+    }
+
+    // Only upload valid photo image files (exclude json/zip/hidden/backup files like bak.* or .bak_*)
+    const allFilesInFolder = await fs.readdir(folderPath);
+    const partNum = getPartNumber(cleanIsbn);
+    const partTag = partNum !== null ? `_part${partNum}`.toLowerCase() : null;
+
+    let imageFiles = allFilesInFolder.filter(filename => {
+      if (!filename.match(/\.(jpg|jpeg|png)$/i)) return false;
+      if (filename.startsWith('.')) return false;
+      const lower = filename.toLowerCase();
+      if (lower.startsWith('bak') || lower.includes('.bak') || lower.includes('_bak') || lower.includes('bak.') || lower.includes('backup')) {
+        return false;
+      }
+      if (partTag) {
+        return lower.includes(partTag);
+      }
+      return true;
+    });
+
+    if (imageFiles.length === 0) {
+      throw new Error(`Folder for ISBN ${cleanIsbn} contains no captured picture files.`);
+    }
+
+    // Check if journal verification is complete before uploading to S3
+    let shotsCount = 0;
+    for (let s = 1; s <= 7; s++) {
+      if (findShotFileInFolder(folderPath, s, cleanIsbn)) shotsCount++;
+    }
+    // Also check if this is a base folder containing complete multi-part captures
+    if (shotsCount < 7 && !partTag) {
+      const parts = await findExistingParts(baseIsbn);
+      if (parts.length > 0 && parts.every(p => p.isComplete || p.shotsCount >= 7)) {
+        shotsCount = 7;
       }
     }
 
-    if (!putSuccess) {
-      throw new Error(`Failed to upload ${filename} to S3 after 3 attempts: ${lastErr?.message}`);
+    const hasFrontCover = Boolean(findShotFileInFolder(folderPath, 3, cleanIsbn));
+    const hasSpine = Boolean(findShotFileInFolder(folderPath, 4, cleanIsbn));
+    const hasTitlePage = Boolean(findShotFileInFolder(folderPath, 5, cleanIsbn));
+    const hasEditionNotice = Boolean(findShotFileInFolder(folderPath, 6, cleanIsbn));
+    const hasBackCover = Boolean(findShotFileInFolder(folderPath, 7, cleanIsbn));
+    const hasAllBookShots = hasFrontCover && hasSpine && hasTitlePage && hasEditionNotice && hasBackCover;
+
+    const isComplete = shotsCount >= 7 || hasAllBookShots || Boolean(customConfig.forceUpload);
+    if (!isComplete) {
+      throw new Error(`Journal verification for ISBN ${cleanIsbn} is incomplete (${shotsCount}/7 shots). All required pictures (including Front Cover & Spine) must be captured before sending to S3.`);
     }
 
-    // Generate 7-day pre-signed download URL for client
-    let presignedUrl = '';
+    const uploadedFiles = [];
+
+    // Determine capture date for this specific ISBN
+    const captureDate = getIsbnCaptureDate(cleanIsbn, folderPath, meta);
+
+    // Build S3 folder key incorporating the capture date
+    let s3FolderPrefix = prefix;
+
+    // Support placeholders {lot} / {lotNumber} and {project}
+    if (/\{lot(?:number)?\}/i.test(s3FolderPrefix) && resolvedLot) {
+      s3FolderPrefix = s3FolderPrefix.replace(/\{lot(?:number)?\}/gi, resolvedLot);
+    }
+    if (/\{project\}/i.test(s3FolderPrefix) && manifestMatch?.project) {
+      s3FolderPrefix = s3FolderPrefix.replace(/\{project\}/gi, manifestMatch.project);
+    }
+
+    // Incorporate capture date
+    if (/\{date\}/i.test(s3FolderPrefix)) {
+      s3FolderPrefix = s3FolderPrefix.replace(/\{date\}/gi, captureDate);
+    } else if (/\/\d{4}-\d{2}-\d{2}\/$/.test(s3FolderPrefix)) {
+      // If prefix already ends with an explicit date folder, substitute with the ISBN's actual capture date
+      s3FolderPrefix = s3FolderPrefix.replace(/\/\d{4}-\d{2}-\d{2}\/$/, `/${captureDate}/`);
+    } else {
+      // Otherwise automatically append the capture date subfolder
+      s3FolderPrefix = `${s3FolderPrefix}${captureDate}/`;
+    }
+
+    if (!s3FolderPrefix.endsWith('/')) s3FolderPrefix += '/';
+
+    // In multi-part sets, all parts are stored in 1 single base ISBN folder, not separated folders
+    const s3BaseFolderKey = `${s3FolderPrefix}${baseIsbn}`;
+
+    // 1. Inspect existing files on S3 to skip re-uploading pictures that already exist
+    const existingS3Files = new Map(); // filename (lowercase) -> { size: number, key: string }
     try {
-      presignedUrl = await getSignedUrl(s3, new GetObjectCommand({
+      const listRes = await s3.send(new ListObjectsV2Command({
         Bucket: targetBucket,
-        Key: s3Key
-      }), { expiresIn: 604800 }); // 7 days
-    } catch (e) {}
+        Prefix: `${s3BaseFolderKey}/`
+      }));
 
-    const directUrl = `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${encodeURI(s3Key)}`;
-
-    uploadedFiles.push({
-      filename,
-      s3Key,
-      s3Url: directUrl,
-      presignedUrl: presignedUrl || directUrl,
-      sizeBytes: stat.size
-    });
-  }
-
-  const s3FolderUri = `s3://${targetBucket}/${s3BaseFolderKey}/`;
-  
-  // Choose best shareable link
-  const mainPhoto = uploadedFiles.find(f => f.filename.includes('front cover') || f.filename.includes('box') || f.filename.endsWith('.jpg'));
-  const shareableLink = mainPhoto?.presignedUrl || `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${s3BaseFolderKey}/`;
-
-  // Save S3 upload record into centralized .metadata/ directory
-  let metadata = readIsbnMetadata(cleanIsbn) || {
-    identifier: cleanIsbn,
-    isbn: getBaseIsbn(cleanIsbn),
-    shots: {}
-  };
-  metadata.s3Upload = {
-    uploadedAt: new Date().toISOString(),
-    bucket: targetBucket,
-    region: targetRegion,
-    captureDate,
-    s3FolderUri,
-    shareableLink,
-    fileCount: uploadedFiles.length
-  };
-  await saveIsbnMetadata(cleanIsbn, metadata);
-
-  // If this was a multi-part upload, also update the base ISBN metadata so it reflects the shared S3 folder
-  if (cleanIsbn !== baseIsbn) {
-    let baseMeta = readIsbnMetadata(baseIsbn);
-    if (baseMeta) {
-      baseMeta.s3Upload = {
-        ...(baseMeta.s3Upload || {}),
-        uploadedAt: metadata.s3Upload.uploadedAt,
-        bucket: targetBucket,
-        region: targetRegion,
-        captureDate,
-        s3FolderUri,
-        shareableLink
-      };
-      await saveIsbnMetadata(baseIsbn, baseMeta);
+      if (listRes.Contents && listRes.Contents.length > 0) {
+        for (const obj of listRes.Contents) {
+          const objKey = obj.Key;
+          const baseName = (objKey.split('/').pop() || '').toLowerCase();
+          // Only delete backup, temporary, or hidden files (.bak, bak., _bak, backup, .tmp)
+          if (baseName.includes('bak') || baseName.startsWith('.') || baseName.includes('backup') || baseName.endsWith('.tmp')) {
+            console.log(`[S3 Cleanup] Removing stale backup/temp file from S3: ${objKey}`);
+            await s3.send(new DeleteObjectCommand({
+              Bucket: targetBucket,
+              Key: objKey
+            })).catch(() => {});
+          } else if (baseName) {
+            existingS3Files.set(baseName, { size: obj.Size || 0, key: objKey });
+          }
+        }
+      }
+    } catch (cleanErr) {
+      console.warn('[S3 Cleanup] Non-critical warning listing existing S3 files:', cleanErr.message);
     }
+
+    // 2. Identify which specific files actually need uploading (skipping pictures already on S3 with matching size)
+    const filesToUpload = [];
+
+    for (const filename of imageFiles) {
+      const filePath = path.join(folderPath, filename);
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) continue;
+
+      const s3Key = `${s3BaseFolderKey}/${filename}`;
+      const baseNameLower = filename.toLowerCase();
+      const existingObj = existingS3Files.get(baseNameLower);
+
+      // If file is already in S3 with matching size (> 100 bytes), DO NOT re-upload!
+      if (existingObj && existingObj.size === stat.size && stat.size > 100) {
+        const directUrl = `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${encodeURI(existingObj.key)}`;
+        uploadedFiles.push({
+          filename,
+          s3Key: existingObj.key,
+          s3Url: directUrl,
+          presignedUrl: directUrl,
+          sizeBytes: stat.size,
+          alreadyExisted: true
+        });
+      } else {
+        filesToUpload.push({ filename, filePath, s3Key, size: stat.size });
+      }
+    }
+
+    if (filesToUpload.length === 0) {
+      console.log(`[S3 Auto-Sync] All ${uploadedFiles.length} picture(s) for ${cleanIsbn} already exist in S3. 0 pictures re-sent.`);
+    } else {
+      console.log(`[S3 Auto-Sync] Uploading ${filesToUpload.length} missing/updated picture(s) for ${cleanIsbn} (${uploadedFiles.length} already in S3)...`);
+
+      // Upload missing/updated pictures in parallel (concurrency 4 for optimal speed and reliability)
+      const CONCURRENCY = 4;
+      for (let i = 0; i < filesToUpload.length; i += CONCURRENCY) {
+        const chunk = filesToUpload.slice(i, i + CONCURRENCY);
+        await Promise.all(chunk.map(async ({ filename, filePath, s3Key, size }) => {
+          const fileBuffer = await fs.readFile(filePath);
+          let contentType = 'image/jpeg';
+          if (filename.endsWith('.png')) contentType = 'image/png';
+
+          let putSuccess = false;
+          let lastErr = null;
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              await s3.send(new PutObjectCommand({
+                Bucket: targetBucket,
+                Key: s3Key,
+                Body: fileBuffer,
+                ContentType: contentType
+              }));
+              putSuccess = true;
+              break;
+            } catch (uploadErr) {
+              lastErr = uploadErr;
+              console.warn(`[S3 Upload] Attempt ${attempt}/3 failed for ${s3Key}:`, uploadErr.message);
+              if (attempt < 3) {
+                await new Promise(r => setTimeout(r, 400 * attempt));
+              }
+            }
+          }
+
+          if (!putSuccess) {
+            throw new Error(`Failed to upload ${filename} to S3 after 3 attempts: ${lastErr?.message}`);
+          }
+
+          const directUrl = `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${encodeURI(s3Key)}`;
+          uploadedFiles.push({
+            filename,
+            s3Key,
+            s3Url: directUrl,
+            presignedUrl: directUrl,
+            sizeBytes: size,
+            alreadyExisted: false
+          });
+        }));
+      }
+    }
+
+    const s3FolderUri = `s3://${targetBucket}/${s3BaseFolderKey}/`;
+    
+    // Choose best shareable link (generate pre-signed URL for the primary cover photo)
+    const mainPhoto = uploadedFiles.find(f => f.filename.includes('front cover') || f.filename.includes('box') || f.filename.endsWith('.jpg'));
+    let shareableLink = `https://${targetBucket}.s3.${targetRegion}.amazonaws.com/${s3BaseFolderKey}/`;
+    if (mainPhoto) {
+      try {
+        const presigned = await getSignedUrl(s3, new GetObjectCommand({
+          Bucket: targetBucket,
+          Key: mainPhoto.s3Key
+        }), { expiresIn: 604800 });
+        if (presigned) {
+          shareableLink = presigned;
+          mainPhoto.presignedUrl = presigned;
+        }
+      } catch (e) {}
+    }
+
+    // Save S3 upload record into centralized .metadata/ directory
+    let metadata = readIsbnMetadata(cleanIsbn) || {
+      identifier: cleanIsbn,
+      isbn: getBaseIsbn(cleanIsbn),
+      shots: {}
+    };
+    const isCloudVerified = Boolean(uploadedFiles.length >= 7 || hasAllBookShots);
+    metadata.s3Upload = {
+      uploadedAt: new Date().toISOString(),
+      bucket: targetBucket,
+      region: targetRegion,
+      captureDate,
+      s3FolderUri,
+      shareableLink,
+      fileCount: uploadedFiles.length,
+      cloudVerified: isCloudVerified,
+      cloudVerifiedAt: new Date().toISOString()
+    };
+    await saveIsbnMetadata(cleanIsbn, metadata);
+
+    // If this was a multi-part upload, also update the base ISBN metadata so it reflects the shared S3 folder
+    if (cleanIsbn !== baseIsbn) {
+      let baseMeta = readIsbnMetadata(baseIsbn);
+      if (baseMeta) {
+        baseMeta.s3Upload = {
+          ...(baseMeta.s3Upload || {}),
+          uploadedAt: metadata.s3Upload.uploadedAt,
+          bucket: targetBucket,
+          region: targetRegion,
+          captureDate,
+          s3FolderUri,
+          shareableLink,
+          fileCount: uploadedFiles.length,
+          cloudVerified: isCloudVerified,
+          cloudVerifiedAt: metadata.s3Upload.cloudVerifiedAt
+        };
+        await saveIsbnMetadata(baseIsbn, baseMeta);
+      }
+    }
+
+    if (currentSession.activeIsbn === cleanIsbn && currentSession.metadata) {
+      currentSession.metadata.s3Upload = metadata.s3Upload;
+    }
+
+    broadcastSession('S3_AUTO_UPLOADED', {
+      isbn: cleanIsbn,
+      s3Upload: metadata.s3Upload
+    });
+
+    console.log(`[S3 Auto-Upload] Verification for ${cleanIsbn} fully synchronized to ${s3FolderUri} (Capture Date: ${captureDate})`);
+
+    return {
+      success: true,
+      isbn: cleanIsbn,
+      bucket: targetBucket,
+      region: targetRegion,
+      captureDate,
+      prefix: s3FolderPrefix,
+      s3FolderUri,
+      shareableLink,
+      uploadedAt: metadata.s3Upload.uploadedAt,
+      files: uploadedFiles
+    };
+  })();
+
+  activeUploadsInProgress.set(cleanIsbn, uploadTask);
+  try {
+    return await uploadTask;
+  } finally {
+    activeUploadsInProgress.delete(cleanIsbn);
   }
-
-  if (currentSession.activeIsbn === cleanIsbn && currentSession.metadata) {
-    currentSession.metadata.s3Upload = metadata.s3Upload;
-  }
-
-  broadcastSession('S3_AUTO_UPLOADED', {
-    isbn: cleanIsbn,
-    s3Upload: metadata.s3Upload
-  });
-
-  console.log(`[S3 Auto-Upload] Successfully uploaded ${uploadedFiles.length} photo(s) for ${cleanIsbn} to ${s3FolderUri} (Capture Date: ${captureDate})`);
-
-  return {
-    success: true,
-    isbn: cleanIsbn,
-    bucket: targetBucket,
-    region: targetRegion,
-    captureDate,
-    prefix: s3FolderPrefix,
-    s3FolderUri,
-    shareableLink,
-    uploadedAt: metadata.s3Upload.uploadedAt,
-    files: uploadedFiles
-  };
 }
 
 // -------------------------------------------------------------
@@ -2505,10 +2714,18 @@ let s3SyncProgress = {
   lastError: null
 };
 
-function enqueueS3Upload(cleanIsbn, forceUpload = false) {
+function enqueueS3Upload(cleanIsbn, forceUpload = false, highPriority = false) {
   if (!cleanIsbn || cleanIsbn.startsWith('.') || cleanIsbn.startsWith('_')) return;
   if (forceUpload) s3QueueForceUpload = true;
-  s3SyncQueue.add(cleanIsbn);
+  if (highPriority) {
+    // Jump straight to the front of the queue so live user captures upload immediately without delay
+    const existing = Array.from(s3SyncQueue).filter(x => x !== cleanIsbn);
+    s3SyncQueue.clear();
+    s3SyncQueue.add(cleanIsbn);
+    for (const it of existing) s3SyncQueue.add(it);
+  } else {
+    s3SyncQueue.add(cleanIsbn);
+  }
   processS3Queue(s3QueueForceUpload).catch(err => console.error('[S3 Queue Error]', err));
 }
 
@@ -2624,10 +2841,22 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
       return { eligible: true, queued: 0, totalQueueSize: s3SyncQueue.size };
     }
 
+    // Sort candidate entries newest first so newly taken journals are uploaded first without delay
+    const folderEntries = Array.from(folderMap.entries());
+    folderEntries.sort((a, b) => {
+      try {
+        const statA = fs.statSync(a[1]);
+        const statB = fs.statSync(b[1]);
+        return (statB.mtimeMs || 0) - (statA.mtimeMs || 0);
+      } catch (e) {
+        return 0;
+      }
+    });
+
     let queuedCount = 0;
     let processedIdx = 0;
 
-    for (const [entry, folderPath] of folderMap.entries()) {
+    for (const [entry, folderPath] of folderEntries) {
       processedIdx++;
       if (processedIdx % 30 === 0) {
         await new Promise(r => setImmediate(r));
@@ -2760,7 +2989,7 @@ async function scanAllPendingJournalsForS3(forceAll = false, manualTrigger = fal
         for (const f of imageFiles) {
           try {
             const st = fs.statSync(path.join(folderPath, f));
-            if (st.mtimeMs > lastUploadMs) { hasNewerFiles = true; break; }
+            if (st.mtimeMs > (lastUploadMs + 5000)) { hasNewerFiles = true; break; }
           } catch (e) {}
         }
       }
@@ -2834,6 +3063,230 @@ app.post('/api/s3/upload-isbn', async (req, res) => {
   } catch (err) {
     console.error('[S3] Upload error:', err);
     res.status(500).json({ error: `Failed to upload to S3: ${err.message}` });
+  }
+});
+
+// Automated S3 Audit, Reconciliation & Self-Healing Engine
+app.post('/api/s3/audit-reconcile', async (req, res) => {
+  try {
+    const { client, lotNumber, boxNumber, autoHeal = true } = req.body || {};
+    const targetClient = client || config.activeClient || 'Jaguar';
+    const eff = getEffectiveS3Config({}, targetClient);
+
+    if (!eff.isConfigured) {
+      return res.status(400).json({ error: `AWS S3 credentials not configured for client ${targetClient}. Please check Settings.` });
+    }
+
+    const s3 = createS3Client(eff);
+    const targetBucket = eff.s3Bucket;
+    const targetRegion = eff.s3Region;
+    let basePrefix = eff.s3Prefix || '';
+    if (lotNumber && /\{lot(?:number)?\}/i.test(basePrefix)) {
+      basePrefix = basePrefix.replace(/\{lot(?:number)?\}/gi, lotNumber);
+    }
+
+    console.log(`[S3 Audit Engine] Auditing S3 bucket ${targetBucket} (prefix: "${basePrefix}") for ${targetClient}...`);
+
+    // List all objects in S3 under prefix with pagination
+    const s3Objects = new Map();
+    let continuationToken = null;
+    let totalS3Objects = 0;
+    do {
+      const listParams = {
+        Bucket: targetBucket,
+        Prefix: basePrefix,
+        ContinuationToken: continuationToken
+      };
+      const listRes = await s3.send(new ListObjectsV2Command(listParams));
+      if (listRes.Contents) {
+        for (const obj of listRes.Contents) {
+          totalS3Objects++;
+          s3Objects.set(obj.Key, obj.Size || 0);
+        }
+      }
+      continuationToken = listRes.IsTruncated ? listRes.NextContinuationToken : null;
+    } while (continuationToken);
+
+    console.log(`[S3 Audit Engine] Found ${totalS3Objects} total objects on S3 under "${basePrefix}".`);
+
+    const folderMap = await getAllCandidateJournalFolders();
+    const auditResults = [];
+    let fullyVerifiedCount = 0;
+    let missingFilesCount = 0;
+    let autoHealedCount = 0;
+
+    for (const [cleanIsbn, folderPath] of folderMap.entries()) {
+      let meta = readIsbnMetadata(cleanIsbn);
+      const baseIsbn = getBaseIsbn(cleanIsbn);
+      const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(cleanIsbn);
+      const itemClient = getItemClient(cleanIsbn, meta);
+      if (itemClient.toLowerCase() !== targetClient.toLowerCase()) continue;
+
+      const itemLot = meta?.lotNumber || manifestMatch?.lotNumber || '';
+      const itemBox = meta?.boxNumber || manifestMatch?.boxNumber || '';
+      if (lotNumber && !isMatchingBoxNumber(itemLot, lotNumber)) continue;
+      if (boxNumber && !isMatchingBoxNumber(itemBox, boxNumber)) continue;
+
+      // Inherit box shots if missing before checking completeness
+      if (itemBox && (!findShotFileInFolder(folderPath, 1, cleanIsbn) || !findShotFileInFolder(folderPath, 2, cleanIsbn))) {
+        await applyBoxShotsToIsbn(cleanIsbn, itemLot, itemBox, folderPath).catch(() => {});
+        meta = readIsbnMetadata(cleanIsbn) || meta;
+      }
+
+      const allFiles = await fs.readdir(folderPath).catch(() => []);
+      const imageFiles = allFiles.filter(f => f.match(/\.(jpg|jpeg|png)$/i) && !f.startsWith('.'));
+      if (imageFiles.length === 0) continue;
+
+      let shotsPresent = 0;
+      for (let s = 1; s <= 7; s++) {
+        if (findShotFileInFolder(folderPath, s, cleanIsbn, imageFiles)) shotsPresent++;
+      }
+      const hasFrontCover = Boolean(findShotFileInFolder(folderPath, 3, cleanIsbn, imageFiles));
+      const hasSpine = Boolean(findShotFileInFolder(folderPath, 4, cleanIsbn, imageFiles));
+      const hasTitlePage = Boolean(findShotFileInFolder(folderPath, 5, cleanIsbn, imageFiles));
+      const hasEditionNotice = Boolean(findShotFileInFolder(folderPath, 6, cleanIsbn, imageFiles));
+      const hasBackCover = Boolean(findShotFileInFolder(folderPath, 7, cleanIsbn, imageFiles));
+      const hasAllBookShots = hasFrontCover && hasSpine && hasTitlePage && hasEditionNotice && hasBackCover;
+      const isLocallyComplete = shotsPresent >= 7 || hasAllBookShots || meta?.isComplete;
+      if (!isLocallyComplete) continue;
+
+      const captureDate = getIsbnCaptureDate(cleanIsbn, folderPath, meta);
+      let s3FolderPrefix = eff.s3Prefix || '';
+      if (/\{lot(?:number)?\}/i.test(s3FolderPrefix) && itemLot) {
+        s3FolderPrefix = s3FolderPrefix.replace(/\{lot(?:number)?\}/gi, itemLot);
+      }
+      if (/\{project\}/i.test(s3FolderPrefix) && manifestMatch?.project) {
+        s3FolderPrefix = s3FolderPrefix.replace(/\{project\}/gi, manifestMatch.project);
+      }
+      if (/\{date\}/i.test(s3FolderPrefix)) {
+        s3FolderPrefix = s3FolderPrefix.replace(/\{date\}/gi, captureDate);
+      } else if (/\/\d{4}-\d{2}-\d{2}\/$/.test(s3FolderPrefix)) {
+        s3FolderPrefix = s3FolderPrefix.replace(/\/\d{4}-\d{2}-\d{2}\/$/, `/${captureDate}/`);
+      } else {
+        s3FolderPrefix = `${s3FolderPrefix}${captureDate}/`;
+      }
+      if (!s3FolderPrefix.endsWith('/')) s3FolderPrefix += '/';
+      const s3BaseFolderKey = `${s3FolderPrefix}${baseIsbn}`;
+
+      const missingOnS3 = [];
+      const presentOnS3 = [];
+
+      for (const img of imageFiles) {
+        const expectedKey = `${s3BaseFolderKey}/${img}`;
+        const s3Size = s3Objects.get(expectedKey);
+        if (typeof s3Size === 'number' && s3Size > 100) {
+          presentOnS3.push(img);
+        } else {
+          missingOnS3.push(img);
+        }
+      }
+
+      const isVerified = missingOnS3.length === 0 && (presentOnS3.length >= 7 || hasAllBookShots);
+      if (isVerified) {
+        fullyVerifiedCount++;
+        if (!meta) meta = { identifier: cleanIsbn, isbn: baseIsbn };
+        if (!meta.s3Upload) meta.s3Upload = {};
+        meta.s3Upload.cloudVerified = true;
+        meta.s3Upload.cloudVerifiedAt = meta.s3Upload.cloudVerifiedAt || new Date().toISOString();
+        meta.s3Upload.bucket = targetBucket;
+        meta.s3Upload.region = targetRegion;
+        meta.s3Upload.s3FolderUri = `s3://${targetBucket}/${s3BaseFolderKey}/`;
+        meta.s3Upload.fileCount = presentOnS3.length;
+        await saveIsbnMetadata(cleanIsbn, meta);
+      } else {
+        missingFilesCount += missingOnS3.length;
+        if (autoHeal) {
+          console.log(`[S3 Self-Heal] Journal ${cleanIsbn} has ${missingOnS3.length} missing picture(s) on S3. Queuing for immediate upload...`);
+          enqueueS3Upload(cleanIsbn, false, true);
+          autoHealedCount++;
+        }
+      }
+
+      auditResults.push({
+        isbn: cleanIsbn,
+        lotNumber: itemLot,
+        boxNumber: itemBox,
+        locallyComplete: isLocallyComplete,
+        verifiedInS3: isVerified,
+        presentCount: presentOnS3.length,
+        missingCount: missingOnS3.length,
+        missingFiles: missingOnS3,
+        s3FolderUri: `s3://${targetBucket}/${s3BaseFolderKey}/`
+      });
+    }
+
+    invalidateMetadataIndex();
+    invalidateBoxesDiskCache();
+
+    res.json({
+      success: true,
+      client: targetClient,
+      bucket: targetBucket,
+      totalS3ObjectsFound: totalS3Objects,
+      auditedCount: auditResults.length,
+      fullyVerifiedCount,
+      missingFilesCount,
+      autoHealedCount,
+      items: auditResults
+    });
+  } catch (err) {
+    console.error('[S3 Audit Error]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 1-Click Export S3 Delivery Certificate (CSV)
+app.get('/api/s3/export-delivery-certificate', async (req, res) => {
+  try {
+    const client = req.query.client || config.activeClient || 'Jaguar';
+    const targetLot = req.query.lotNumber || '';
+    const targetBox = req.query.boxNumber || '';
+
+    const folderMap = await getAllCandidateJournalFolders();
+    const rows = [
+      ['Client', 'Lot Number', 'Box Number', 'ISBN / Identifier', 'Title', 'Author', 'Publisher', 'Publication Year', 'Total Photos In Cloud', 'Cloud Verification Status', 'AWS S3 Bucket', 'S3 Folder URI', 'Verified At (UTC)']
+    ];
+
+    for (const [cleanIsbn, folderPath] of folderMap.entries()) {
+      const meta = readIsbnMetadata(cleanIsbn);
+      const baseIsbn = getBaseIsbn(cleanIsbn);
+      const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(cleanIsbn);
+      const itemClient = getItemClient(cleanIsbn, meta);
+      if (itemClient.toLowerCase() !== client.toLowerCase()) continue;
+
+      const lot = meta?.lotNumber || manifestMatch?.lotNumber || '';
+      const box = meta?.boxNumber || manifestMatch?.boxNumber || '';
+      if (targetLot && !isMatchingBoxNumber(lot, targetLot)) continue;
+      if (targetBox && !isMatchingBoxNumber(box, targetBox)) continue;
+
+      const isVerified = Boolean(meta?.s3Upload?.cloudVerified === true || (meta?.s3Upload?.fileCount >= 7));
+      const statusText = isVerified ? '100% CLOUD VERIFIED ✓' : (meta?.s3Upload?.uploadedAt ? 'PARTIALLY UPLOADED' : 'PENDING UPLOAD');
+
+      rows.push([
+        itemClient,
+        lot || 'N/A',
+        box || 'N/A',
+        cleanIsbn,
+        meta?.bookDetails?.title || manifestMatch?.title || 'Unknown Title',
+        meta?.bookDetails?.authors || manifestMatch?.author || '',
+        meta?.bookDetails?.publisher || manifestMatch?.publisher || '',
+        meta?.bookDetails?.publishYear || manifestMatch?.publicationYear || '',
+        meta?.s3Upload?.fileCount || 0,
+        statusText,
+        meta?.s3Upload?.bucket || '',
+        meta?.s3Upload?.s3FolderUri || '',
+        meta?.s3Upload?.cloudVerifiedAt || meta?.s3Upload?.uploadedAt || ''
+      ]);
+    }
+
+    const csvContent = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    const filename = `S3_Delivery_Certificate_${client}_${new Date().toISOString().slice(0, 10)}.csv`;
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.status(200).send(csvContent);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -2988,17 +3441,17 @@ function normalizeBoxString(boxNumber) {
   return String(boxNumber).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-// Lenient box equality helper (e.g. "RB-0005", "rb0005", "0005", "5" all match)
+// Lenient box equality helper (e.g. "RB-0005", "rb0005", "Box 5", "box0005", "0005", "5" all match)
 function isMatchingBoxNumber(boxA, boxB) {
   if (!boxA || !boxB) return false;
   const normA = normalizeBoxString(boxA);
   const normB = normalizeBoxString(boxB);
   if (normA === normB) return true;
-  const noRbA = normA.replace(/^rb/, '');
-  const noRbB = normB.replace(/^rb/, '');
-  if (noRbA && noRbB && noRbA === noRbB) return true;
-  const strippedA = noRbA.replace(/^0+/, '') || '0';
-  const strippedB = noRbB.replace(/^0+/, '') || '0';
+  const cleanA = normA.replace(/^(rb|box|b)/, '');
+  const cleanB = normB.replace(/^(rb|box|b)/, '');
+  if (cleanA && cleanB && cleanA === cleanB) return true;
+  const strippedA = cleanA.replace(/^0+/, '') || cleanA;
+  const strippedB = cleanB.replace(/^0+/, '') || cleanB;
   return strippedA === strippedB;
 }
 
@@ -3228,13 +3681,13 @@ function getBoxShots(lotNumber, boxNumber) {
   return { hasBoxShot: false, hasUnboxShot: false, hasBoxAShot: false, hasBoxBShot: false, boxShotUrl: null, unboxShotUrl: null, boxMeta: null };
 }
 
-async function saveBoxShotToFile(lotNumber, boxNumber, shotNumber, buffer, blurScore) {
+async function saveBoxShotToFile(lotNumber, boxNumber, shotNumber, buffer, blurScore, client = null) {
   if (!buffer || buffer.length < 100) return null;
   const key = getBoxKey(lotNumber, boxNumber);
   if (!key) return null;
 
-  const isJag = isJaguarLot(lotNumber);
-  const targetClient = isJag ? 'Jaguar' : 'Mustang';
+  const isJag = client ? /jaguar/i.test(client) : isJaguarLot(lotNumber, '', client);
+  const targetClient = isJag ? 'Jaguar' : (client || (config.activeClient || 'Mustang'));
   const clientStorage = config.clientProfiles?.[targetClient]?.storagePath || config.storagePath;
 
   const primaryBoxDir = path.join(clientStorage, '_boxes', key);
@@ -3304,88 +3757,91 @@ async function saveBoxShotToFile(lotNumber, boxNumber, shotNumber, buffer, blurS
 
 // Fast single-box peer pull with circuit breaker (only called once per box session if local _boxes is missing shots)
 async function pullSingleBoxShotsFromPeer(lotNumber, boxNumber) {
-  if (!boxNumber || !config.peerIp || !isPeerReachable()) return false;
-  try {
-    const peerBoxKey = getBoxKey(lotNumber, boxNumber);
-    if (!peerBoxKey) return false;
-
-    const isJag = isJaguarLot(lotNumber);
-    const targetClient = isJag ? 'Jaguar' : 'Mustang';
-    const targetStorage = config.clientProfiles?.[targetClient]?.storagePath || config.storagePath;
-    const destBoxDir = path.join(targetStorage, '_boxes', peerBoxKey);
-
-    const peerApiUrl = `http://${config.peerIp}:${config.peerPort || 3001}/api/sync/get-box-shots?lotNumber=${encodeURIComponent(lotNumber || '')}&boxNumber=${encodeURIComponent(boxNumber || '')}&client=${encodeURIComponent(targetClient)}`;
-    const apiRes = await fetch(peerApiUrl, {
-      headers: getLocalHeadersForPeer(),
-      signal: AbortSignal.timeout(1500)
-    }).catch(() => null);
-
-    if (!apiRes) {
-      markPeerFailure();
-      return false;
-    }
-    markPeerSuccess();
-
-    if (!apiRes.ok) return false;
-    const apiData = await apiRes.json().catch(() => null);
-    if (!apiData?.boxShots) return false;
-
-    let pulledAny = false;
-    if (apiData.boxShots.hasBoxShot && apiData.boxShots.boxShotUrl && !isValidImageFile(path.join(destBoxDir, 'shot_1_box_a.jpg'))) {
-      const imgRes = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}${apiData.boxShots.boxShotUrl}`, {
-        headers: getLocalHeadersForPeer(),
-        signal: AbortSignal.timeout(2000)
-      }).catch(() => null);
-      if (imgRes && imgRes.ok) {
-        const buf = Buffer.from(await imgRes.arrayBuffer());
-        if (buf.length > 1024) {
-          fs.ensureDirSync(destBoxDir);
-          await fs.writeFile(path.join(destBoxDir, 'shot_1_box_a.jpg'), buf);
-          if (config.storagePath && config.storagePath !== targetStorage) {
-            try {
-              const mDir = path.join(config.storagePath, '_boxes', peerBoxKey);
-              fs.ensureDirSync(mDir);
-              await fs.writeFile(path.join(mDir, 'shot_1_box_a.jpg'), buf);
-            } catch (e) {}
-          }
-          pulledAny = true;
-        }
-      }
-    }
-
-    if (apiData.boxShots.hasUnboxShot && apiData.boxShots.unboxShotUrl && !isValidImageFile(path.join(destBoxDir, 'shot_2_box_b.jpg'))) {
-      const imgRes2 = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}${apiData.boxShots.unboxShotUrl}`, {
-        headers: getLocalHeadersForPeer(),
-        signal: AbortSignal.timeout(2000)
-      }).catch(() => null);
-      if (imgRes2 && imgRes2.ok) {
-        const buf2 = Buffer.from(await imgRes2.arrayBuffer());
-        if (buf2.length > 1024) {
-          fs.ensureDirSync(destBoxDir);
-          await fs.writeFile(path.join(destBoxDir, 'shot_2_box_b.jpg'), buf2);
-          if (config.storagePath && config.storagePath !== targetStorage) {
-            try {
-              const mDir = path.join(config.storagePath, '_boxes', peerBoxKey);
-              fs.ensureDirSync(mDir);
-              await fs.writeFile(path.join(mDir, 'shot_2_box_b.jpg'), buf2);
-            } catch (e) {}
-          }
-          pulledAny = true;
-        }
-      }
-    }
-
-    if (pulledAny && apiData.boxShots.boxMeta) {
-      try {
-        await fs.writeJson(path.join(destBoxDir, 'box_meta.json'), apiData.boxShots.boxMeta, { spaces: 2 });
-      } catch (e) {}
-    }
-    if (pulledAny) invalidateBoxesDiskCache();
-    return pulledAny;
-  } catch (e) {
-    markPeerFailure();
-    return false;
+  if (!boxNumber) return false;
+  const targetPeers = getAllTargetPeers();
+  if (targetPeers.length === 0 && config.peerIp) {
+    targetPeers.push(`${config.peerIp}:${config.peerPort || 3001}`);
   }
+  if (targetPeers.length === 0) return false;
+
+  const peerBoxKey = getBoxKey(lotNumber, boxNumber);
+  if (!peerBoxKey) return false;
+
+  const isJag = isJaguarLot(lotNumber);
+  const targetClient = isJag ? 'Jaguar' : 'Mustang';
+  const targetStorage = config.clientProfiles?.[targetClient]?.storagePath || config.storagePath;
+  const destBoxDir = path.join(targetStorage, '_boxes', peerBoxKey);
+
+  for (const peerAddr of targetPeers) {
+    try {
+      const peerApiUrl = `http://${peerAddr}/api/sync/get-box-shots?lotNumber=${encodeURIComponent(lotNumber || '')}&boxNumber=${encodeURIComponent(boxNumber || '')}&client=${encodeURIComponent(targetClient)}`;
+      const apiRes = await fetch(peerApiUrl, {
+        headers: getLocalHeadersForPeer(),
+        signal: AbortSignal.timeout(3000)
+      }).catch(() => null);
+
+      if (!apiRes || !apiRes.ok) continue;
+
+      const apiData = await apiRes.json().catch(() => null);
+      if (!apiData?.boxShots) continue;
+
+      let pulledAny = false;
+      if (apiData.boxShots.hasBoxShot && apiData.boxShots.boxShotUrl && !isValidImageFile(path.join(destBoxDir, 'shot_1_box_a.jpg'))) {
+        const imgRes = await fetch(`http://${peerAddr}${apiData.boxShots.boxShotUrl}`, {
+          headers: getLocalHeadersForPeer(),
+          signal: AbortSignal.timeout(3500)
+        }).catch(() => null);
+        if (imgRes && imgRes.ok) {
+          const buf = Buffer.from(await imgRes.arrayBuffer());
+          if (buf.length > 1024) {
+            fs.ensureDirSync(destBoxDir);
+            await fs.writeFile(path.join(destBoxDir, 'shot_1_box_a.jpg'), buf);
+            if (config.storagePath && config.storagePath !== targetStorage) {
+              try {
+                const mDir = path.join(config.storagePath, '_boxes', peerBoxKey);
+                fs.ensureDirSync(mDir);
+                await fs.writeFile(path.join(mDir, 'shot_1_box_a.jpg'), buf);
+              } catch (e) {}
+            }
+            pulledAny = true;
+          }
+        }
+      }
+
+      if (apiData.boxShots.hasUnboxShot && apiData.boxShots.unboxShotUrl && !isValidImageFile(path.join(destBoxDir, 'shot_2_box_b.jpg'))) {
+        const imgRes2 = await fetch(`http://${peerAddr}${apiData.boxShots.unboxShotUrl}`, {
+          headers: getLocalHeadersForPeer(),
+          signal: AbortSignal.timeout(3500)
+        }).catch(() => null);
+        if (imgRes2 && imgRes2.ok) {
+          const buf2 = Buffer.from(await imgRes2.arrayBuffer());
+          if (buf2.length > 1024) {
+            fs.ensureDirSync(destBoxDir);
+            await fs.writeFile(path.join(destBoxDir, 'shot_2_box_b.jpg'), buf2);
+            if (config.storagePath && config.storagePath !== targetStorage) {
+              try {
+                const mDir = path.join(config.storagePath, '_boxes', peerBoxKey);
+                fs.ensureDirSync(mDir);
+                await fs.writeFile(path.join(mDir, 'shot_2_box_b.jpg'), buf2);
+              } catch (e) {}
+            }
+            pulledAny = true;
+          }
+        }
+      }
+
+      if (pulledAny && apiData.boxShots.boxMeta) {
+        try {
+          await fs.writeJson(path.join(destBoxDir, 'box_meta.json'), apiData.boxShots.boxMeta, { spaces: 2 });
+        } catch (e) {}
+      }
+      if (pulledAny) {
+        invalidateBoxesDiskCache();
+        return true;
+      }
+    } catch (e) {}
+  }
+  return false;
 }
 
 // Automatically inherit Shot 1 & 2 from local _boxes into an ISBN folder (purely local, 0ms)
@@ -4134,7 +4590,8 @@ app.post('/api/capture/save-shot', async (req, res) => {
 
     // If Shot 1 (Box) or Shot 2 (Unbox), save to box-level storage immediately before broadcasting
     if ((sNum === 1 || sNum === 2) && resolvedBox) {
-      await saveBoxShotToFile(resolvedLot, resolvedBox, sNum, buffer, blurScore);
+      const shotClient = req.body.client || (isJaguarLot(resolvedLot) ? 'Jaguar' : 'Mustang');
+      await saveBoxShotToFile(resolvedLot, resolvedBox, sNum, buffer, blurScore, shotClient);
     }
 
     const boxShotsData = (resolvedBox) ? getBoxShots(resolvedLot, resolvedBox) : null;
@@ -4239,7 +4696,7 @@ app.post('/api/capture/save-shot', async (req, res) => {
 
     if (isVerificationComplete && itemEff.isConfigured && itemEff.s3Enabled) {
       console.log(`[S3 Auto-Upload] Verification capture 100% complete for ${cleanIsbn} [${itemClient}] (${actualShotsCount} shots on disk). Directly sending all pictures to S3 (${itemEff.s3Bucket})...`);
-      enqueueS3Upload(cleanIsbn);
+      enqueueS3Upload(cleanIsbn, false, true);
     }
 
     const updatedParts = (partNumber !== null || (currentSession.existingParts && currentSession.existingParts.length > 0))
@@ -4428,8 +4885,10 @@ app.get('/api/boxes/list', async (req, res) => {
 
     // 1. Use fast cached _boxes index (0ms on cache hit, 3s TTL, invalidated on any box shot save/undo/sync)
     const idx = getCachedDiskBoxesIndex();
+    // 2. Fast cached metadata index for completed & cloud verified book counts
+    const metaIndex = getMetadataIndex();
 
-    // 2. Group manifest items into boxes in pure memory (0 disk calls per item)
+    // 3. Group manifest items into boxes in pure memory (0 disk calls per item)
     if (manifestData.items && manifestData.items.length > 0) {
       for (const item of manifestData.items) {
         const itemClient = item.client || (isJaguarLot(item.lotNumber, item.project) ? 'Jaguar' : 'Mustang');
@@ -4450,6 +4909,9 @@ app.get('/api/boxes/list', async (req, res) => {
             boxKey: key,
             totalBooks: 0,
             completedBooks: 0,
+            s3VerifiedBooks: 0,
+            isS3FullyVerified: false,
+            s3VerifiedPercent: 0,
             hasBoxShot: boxShots.hasBoxShot,
             hasUnboxShot: boxShots.hasUnboxShot,
             boxShotUrl: boxShots.boxShotUrl,
@@ -4462,11 +4924,17 @@ app.get('/api/boxes/list', async (req, res) => {
         }
 
         b.totalBooks++;
+        const cleanIsbn = sanitizeIsbn(item.isbn);
+        const meta = cleanIsbn ? (metaIndex.get(cleanIsbn) || metaIndex.get(getBaseIsbn(cleanIsbn))) : null;
+        if (meta) {
+          if (meta.isComplete) b.completedBooks++;
+          if (meta.cloudVerified) b.s3VerifiedBooks++;
+        }
         if (includeItems) b.items.push(item);
       }
     }
 
-    // 3. Also include any physical boxes stored on disk that weren't in the manifest
+    // 4. Also include any physical boxes stored on disk that weren't in the manifest
     for (const [entry, info] of idx.byExactKey.entries()) {
       if (!boxesMap.has(entry)) {
         const { entryLot, entryBox, boxShots } = info;
@@ -4480,6 +4948,9 @@ app.get('/api/boxes/list', async (req, res) => {
           boxKey: entry,
           totalBooks: 0,
           completedBooks: 0,
+          s3VerifiedBooks: 0,
+          isS3FullyVerified: false,
+          s3VerifiedPercent: 0,
           hasBoxShot: boxShots.hasBoxShot,
           hasUnboxShot: boxShots.hasUnboxShot,
           boxShotUrl: boxShots.boxShotUrl,
@@ -4490,6 +4961,17 @@ app.get('/api/boxes/list', async (req, res) => {
         if (includeItems) b.items = [];
         boxesMap.set(entry, b);
       }
+    }
+
+    // 5. Finalize box-level cloud verification status
+    for (const b of boxesMap.values()) {
+      b.isS3FullyVerified = Boolean(
+        b.totalBooks > 0 &&
+        b.s3VerifiedBooks >= b.totalBooks &&
+        b.hasBoxShot &&
+        b.hasUnboxShot
+      );
+      b.s3VerifiedPercent = b.totalBooks > 0 ? Math.round((b.s3VerifiedBooks / b.totalBooks) * 100) : 0;
     }
 
     const boxes = Array.from(boxesMap.values());
@@ -4614,8 +5096,9 @@ app.post('/api/boxes/save-shot', async (req, res) => {
 
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
+    const targetClient = client || (isJaguarLot(lotNumber) ? 'Jaguar' : 'Mustang');
 
-    const filename = await saveBoxShotToFile(lotNumber, boxNumber, sNum, buffer, blurScore);
+    const filename = await saveBoxShotToFile(lotNumber, boxNumber, sNum, buffer, blurScore, targetClient);
     const boxShots = getBoxShots(lotNumber, boxNumber);
 
     broadcastSession('BOX_SHOT_SAVED', {
@@ -4626,7 +5109,6 @@ app.post('/api/boxes/save-shot', async (req, res) => {
     });
 
     const isRep = Boolean(req.body.isReplication);
-    const targetClient = client || (isJaguarLot(lotNumber) ? 'Jaguar' : 'Mustang');
     setImmediate(async () => {
       try {
         if (!isRep && config.peerSyncEnabled) {
@@ -4978,14 +5460,15 @@ app.all('/api/sync/pull-boxes', async (req, res) => {
 
 app.post('/api/sync/receive-box-shot', async (req, res) => {
   try {
-    const { lotNumber, boxNumber, shotNumber, imageBase64, blurScore } = req.body;
+    const { lotNumber, boxNumber, shotNumber, imageBase64, blurScore, client } = req.body;
     const sNum = parseInt(shotNumber, 10);
     if (!boxNumber || !imageBase64 || (sNum !== 1 && sNum !== 2)) {
       return res.status(400).json({ error: 'Valid boxNumber and shotNumber required' });
     }
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
-    await saveBoxShotToFile(lotNumber, boxNumber, sNum, buffer, blurScore);
+    const targetClient = client || (isJaguarLot(lotNumber) ? 'Jaguar' : 'Mustang');
+    await saveBoxShotToFile(lotNumber, boxNumber, sNum, buffer, blurScore, targetClient);
     const boxShots = getBoxShots(lotNumber, boxNumber);
 
     // If current session on this PC is working on this box, update live session state too
@@ -5166,7 +5649,7 @@ app.post('/api/sync/receive-shot', async (req, res) => {
     const repItemClient = getItemClient(cleanIsbn, metadata);
     const repItemEff = getEffectiveS3Config({}, repItemClient);
     if (isRepComplete && repItemEff.isConfigured && repItemEff.s3Enabled) {
-      enqueueS3Upload(cleanIsbn);
+      enqueueS3Upload(cleanIsbn, false, true);
     }
 
     res.json({ success: true, replicated: true, isbn: cleanIsbn, shotNumber: sNum, isComplete: isRepComplete });
