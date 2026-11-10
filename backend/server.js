@@ -1141,7 +1141,7 @@ const PEER_FAILURE_COOLDOWN_MS = 5000;
 const discoveredPeers = new Set(); // "ip:port"
 
 function isPeerReachable() {
-  if (!config.peerIp) return false;
+  if (!config.peerSyncEnabled || !config.peerIp) return false;
   return (Date.now() - peerLastFailureTime) >= PEER_FAILURE_COOLDOWN_MS;
 }
 
@@ -1154,6 +1154,7 @@ function markPeerFailure() {
 }
 
 function getAllTargetPeers() {
+  if (!config.peerSyncEnabled) return [];
   const peers = new Set();
   if (config.peerIp) {
     peers.add(`${config.peerIp}:${config.peerPort || 3001}`);
@@ -1206,7 +1207,6 @@ function setupPeerDiscovery() {
             if (!config.peerIp || !isPeerReachable()) {
               config.peerIp = senderIp;
               config.peerPort = peerPort;
-              config.peerSyncEnabled = true;
               saveConfig();
               broadcastSession('PEER_CONNECTED', { peerIp: senderIp, peerPort });
             }
@@ -1225,9 +1225,9 @@ function setupPeerDiscovery() {
     console.warn('[UDP Discovery] Initialization notice:', err.message);
   }
 
-  // Periodic broadcast beacon every 4 seconds
+  // Periodic broadcast beacon every 4 seconds (only when sync is enabled)
   setInterval(() => {
-    if (!udpSocket) return;
+    if (!udpSocket || !config.peerSyncEnabled) return;
     try {
       const beacon = Buffer.from(JSON.stringify({
         app: 'JournalInventory',
@@ -1242,6 +1242,7 @@ function setupPeerDiscovery() {
 // Background Subnet Scanner fallback in case UDP broadcast is filtered by network router
 let isScanningSubnet = false;
 async function scanLocalSubnetForPeers() {
+  if (!config.peerSyncEnabled) return [];
   if (isScanningSubnet) return [];
   isScanningSubnet = true;
   const localIps = getNetworkIps();
@@ -1282,7 +1283,6 @@ async function scanLocalSubnetForPeers() {
           if (!config.peerIp || !isPeerReachable()) {
             config.peerIp = r;
             config.peerPort = PORT;
-            config.peerSyncEnabled = true;
             saveConfig();
             broadcastSession('PEER_CONNECTED', { peerIp: r, peerPort: PORT });
           }
@@ -1308,7 +1308,6 @@ app.use((req, res, next) => {
       if (!config.peerIp) {
         config.peerIp = cleanIp;
         config.peerPort = parseInt(headerPeerPort, 10) || 3001;
-        config.peerSyncEnabled = true;
         saveConfig();
       }
     }
@@ -1319,7 +1318,6 @@ app.use((req, res, next) => {
       discoveredPeers.add(`${remote}:${config.peerPort || 3001}`);
       if (!config.peerIp) {
         config.peerIp = remote;
-        config.peerSyncEnabled = true;
         saveConfig();
       }
     }
@@ -5173,7 +5171,7 @@ app.post('/api/capture/save-shot', async (req, res) => {
     });
 
     // Asynchronously replicate every shot taken to peer PC so both PCs immediately see each other's captures
-    if (!req.body.isReplication && (config.peerSyncEnabled || discoveredPeers.size > 0)) {
+    if (!req.body.isReplication && config.peerSyncEnabled) {
       setImmediate(() => {
         replicateToPeer({
           isbn: cleanIsbn,
@@ -5201,7 +5199,7 @@ app.post('/api/capture/save-shot', async (req, res) => {
         const isRep = Boolean(req.body.isReplication);
         setImmediate(async () => {
           try {
-            if (!isRep && (config.peerSyncEnabled || discoveredPeers.size > 0)) {
+            if (!isRep && config.peerSyncEnabled) {
               replicateBoxShotToPeer({
                 lotNumber: resolvedLot,
                 boxNumber: resolvedBox,
@@ -6018,6 +6016,7 @@ async function replicateBoxShotToPeer(boxShotData) {
 let isSyncingJournalsFromPeer = false;
 
 async function syncAllJournalsFromPeer(specificLot = null) {
+  if (!config.peerSyncEnabled) return 0;
   if (isSyncingJournalsFromPeer) return 0;
   isSyncingJournalsFromPeer = true;
   let syncedFilesCount = 0;
@@ -6185,6 +6184,42 @@ app.get('/api/sync/status', (req, res) => {
     discoveredPeers: Array.from(discoveredPeers),
     localIps: getNetworkIps()
   });
+});
+
+app.post('/api/sync/toggle', async (req, res) => {
+  try {
+    const { enabled } = req.body;
+    config.peerSyncEnabled = typeof enabled === 'boolean' ? enabled : !config.peerSyncEnabled;
+    saveConfig();
+
+    broadcastSession('PEER_SYNC_TOGGLED', {
+      peerSyncEnabled: config.peerSyncEnabled,
+      peerIp: config.peerIp || '',
+      peerPort: config.peerPort || 3001,
+      isReachable: isPeerReachable()
+    });
+
+    if (config.peerSyncEnabled) {
+      setImmediate(async () => {
+        if (config.peerIp) {
+          try {
+            const testRes = await fetch(`http://${config.peerIp}:${config.peerPort || 3001}/api/health`, { signal: AbortSignal.timeout(2000) });
+            if (testRes.ok) markPeerSuccess();
+          } catch (e) {}
+        }
+        syncAllJournalsFromPeer().catch(() => {});
+        syncAllBoxShotsFromPeer().catch(() => {});
+      });
+    }
+
+    res.json({
+      success: true,
+      peerSyncEnabled: config.peerSyncEnabled,
+      isReachable: isPeerReachable()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/sync/set-peer', async (req, res) => {
@@ -7150,15 +7185,19 @@ setTimeout(async () => {
   console.log('[System Daemon] Starting UDP auto-discovery for peer workstations...');
   setupPeerDiscovery();
 
-  console.log('[System Daemon] Scanning local network for peer workstations...');
-  scanLocalSubnetForPeers().catch(() => {});
+  if (config.peerSyncEnabled) {
+    console.log('[System Daemon] Scanning local network for peer workstations...');
+    scanLocalSubnetForPeers().catch(() => {});
+  }
 
   console.log('[System Daemon] Running initial metadata migration & cleanup...');
   await migrateAllLegacyMetadata();
 
-  console.log('[System Daemon] Syncing all photos and box shots from peer PC...');
-  await syncAllBoxShotsFromPeer();
-  await syncAllJournalsFromPeer();
+  if (config.peerSyncEnabled) {
+    console.log('[System Daemon] Syncing all photos and box shots from peer PC...');
+    await syncAllBoxShotsFromPeer();
+    await syncAllJournalsFromPeer();
+  }
 
   console.log('[System Daemon] Scanning for unuploaded journals on disk to automatically upload to S3...');
   await scanAllPendingJournalsForS3();
@@ -7166,6 +7205,7 @@ setTimeout(async () => {
 
 // Fast background peer photo & box sync every 6 seconds (protected by mutexes & circuit breaker)
 setInterval(() => {
+  if (!config.peerSyncEnabled) return;
   syncAllBoxShotsFromPeer().catch(() => {});
   syncAllJournalsFromPeer().catch(() => {});
 }, 6000);

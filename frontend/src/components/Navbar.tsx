@@ -65,6 +65,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [customPeerIp, setCustomPeerIp] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [isTogglingSync, setIsTogglingSync] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   const fetchPeerStatus = async () => {
@@ -83,6 +84,28 @@ export const Navbar: React.FC<NavbarProps> = ({
     const interval = setInterval(fetchPeerStatus, 4000);
     return () => clearInterval(interval);
   }, []);
+
+  const handleTogglePeerSync = async (enabled: boolean) => {
+    setIsTogglingSync(true);
+    setSyncMessage(null);
+    try {
+      const res = await fetch('/api/sync/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPeerState(prev => prev ? { ...prev, peerSyncEnabled: data.peerSyncEnabled, isReachable: data.isReachable } : null);
+        setSyncMessage(data.peerSyncEnabled ? 'LAN sync turned ON.' : 'LAN sync turned OFF.');
+      }
+      fetchPeerStatus();
+    } catch (e: any) {
+      setSyncMessage(`Toggle failed: ${e.message}`);
+    } finally {
+      setIsTogglingSync(false);
+    }
+  };
 
   const handleConnectPeer = async () => {
     if (!customPeerIp.trim()) return;
@@ -354,16 +377,36 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               type="button"
               onClick={() => setPeerModalOpen(!peerModalOpen)}
-              title={peerState?.isReachable ? `Connected to PC (${peerState.peerIp})` : 'LAN PC Sync Status'}
+              title={
+                !peerState?.peerSyncEnabled
+                  ? 'PC LAN Sync is OFF (click to configure)'
+                  : peerState?.isReachable
+                  ? `Connected to PC (${peerState.peerIp})`
+                  : 'Searching for peer PC...'
+              }
               className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
-                peerState?.isReachable
+                !peerState?.peerSyncEnabled
+                  ? 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'
+                  : peerState?.isReachable
                   ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800 shadow-xs'
                   : 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800'
               }`}
             >
-              <Network className={`w-3.5 h-3.5 ${peerState?.isReachable ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400 animate-pulse'}`} />
+              <Network
+                className={`w-3.5 h-3.5 ${
+                  !peerState?.peerSyncEnabled
+                    ? 'text-slate-400 dark:text-slate-500'
+                    : peerState?.isReachable
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-amber-600 dark:text-amber-400 animate-pulse'
+                }`}
+              />
               <span className="hidden md:inline">
-                {peerState?.isReachable ? `PC Sync (${peerState.peerIp})` : 'PC Sync: Searching...'}
+                {!peerState?.peerSyncEnabled
+                  ? 'PC Sync: OFF'
+                  : peerState?.isReachable
+                  ? `PC Sync (${peerState.peerIp})`
+                  : 'PC Sync: Searching...'}
               </span>
             </button>
 
@@ -377,64 +420,117 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <button onClick={() => setPeerModalOpen(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-white font-bold cursor-pointer">✕</button>
                 </div>
 
-                <div className={`p-2.5 rounded-xl flex items-center space-x-2 ${
-                  peerState?.isReachable ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
-                }`}>
-                  <div className={`w-2.5 h-2.5 rounded-full ${peerState?.isReachable ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500 animate-ping'}`} />
-                  <span className="font-bold">
-                    {peerState?.isReachable ? `Connected to ${peerState.peerIp}` : 'Looking for other PC on network...'}
-                  </span>
-                </div>
-
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 space-y-1">
-                  <div>This PC IP: <span className="font-mono font-bold text-slate-700 dark:text-slate-200">{peerState?.localIps?.[0]?.address || '127.0.0.1'}</span></div>
-                  <div>Captured pictures replicate across both PCs so all journals can be verified 100%.</div>
-                </div>
-
-                <div className="space-y-1.5 pt-1">
-                  <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase">Other PC IP Address</label>
-                  <div className="flex space-x-1.5">
-                    <input
-                      type="text"
-                      value={customPeerIp}
-                      onChange={(e) => setCustomPeerIp(e.target.value)}
-                      placeholder="e.g. 192.168.1.50"
-                      className="flex-1 px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg font-mono outline-none focus:ring-1 focus:ring-brand-500 text-slate-900 dark:text-white"
-                    />
-                    <button
-                      onClick={handleConnectPeer}
-                      disabled={isSyncing}
-                      className="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-lg transition-all cursor-pointer disabled:opacity-50"
-                    >
-                      Connect
-                    </button>
+                {/* ON / OFF Switch */}
+                <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60">
+                  <div>
+                    <div className="font-bold text-slate-800 dark:text-slate-200 flex items-center space-x-1.5">
+                      <span>Sync Status</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
+                        peerState?.peerSyncEnabled
+                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                          : 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                      }`}>
+                        {peerState?.peerSyncEnabled ? 'ON' : 'OFF'}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                      {peerState?.peerSyncEnabled
+                        ? 'Mirroring pictures across workstations'
+                        : 'Sync paused (local workstation only)'}
+                    </div>
                   </div>
+                  <button
+                    type="button"
+                    disabled={isTogglingSync}
+                    onClick={() => handleTogglePeerSync(!peerState?.peerSyncEnabled)}
+                    className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      peerState?.peerSyncEnabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                    } ${isTogglingSync ? 'opacity-50 cursor-wait' : ''}`}
+                    role="switch"
+                    aria-checked={Boolean(peerState?.peerSyncEnabled)}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                        peerState?.peerSyncEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
                 </div>
 
-                {syncMessage && (
-                  <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300 text-[11px] font-medium">
-                    {syncMessage}
+                {peerState?.peerSyncEnabled ? (
+                  <>
+                    <div className={`p-2.5 rounded-xl flex items-center space-x-2 ${
+                      peerState?.isReachable ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+                    }`}>
+                      <div className={`w-2.5 h-2.5 rounded-full ${peerState?.isReachable ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500 animate-ping'}`} />
+                      <span className="font-bold">
+                        {peerState?.isReachable ? `Connected to ${peerState.peerIp}` : 'Looking for other PC on network...'}
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400 space-y-1">
+                      <div>This PC IP: <span className="font-mono font-bold text-slate-700 dark:text-slate-200">{peerState?.localIps?.[0]?.address || '127.0.0.1'}</span></div>
+                      <div>Captured pictures replicate across both PCs so all journals can be verified 100%.</div>
+                    </div>
+
+                    <div className="space-y-1.5 pt-1">
+                      <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase">Other PC IP Address</label>
+                      <div className="flex space-x-1.5">
+                        <input
+                          type="text"
+                          value={customPeerIp}
+                          onChange={(e) => setCustomPeerIp(e.target.value)}
+                          placeholder="e.g. 192.168.1.50"
+                          className="flex-1 px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg font-mono outline-none focus:ring-1 focus:ring-brand-500 text-slate-900 dark:text-white"
+                        />
+                        <button
+                          onClick={handleConnectPeer}
+                          disabled={isSyncing}
+                          className="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white font-bold rounded-lg transition-all cursor-pointer disabled:opacity-50"
+                        >
+                          Connect
+                        </button>
+                      </div>
+                    </div>
+
+                    {syncMessage && (
+                      <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300 text-[11px] font-medium">
+                        {syncMessage}
+                      </div>
+                    )}
+
+                    <div className="flex items-center space-x-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                      <button
+                        onClick={handleSyncAll}
+                        disabled={isSyncing}
+                        className="flex-1 py-1.5 px-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg font-bold flex items-center justify-center space-x-1 transition-all cursor-pointer"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
+                        <span>Sync All</span>
+                      </button>
+                      <button
+                        onClick={handleScanSubnet}
+                        disabled={isScanning}
+                        className="py-1.5 px-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg font-bold transition-all cursor-pointer"
+                        title="Scan local WiFi/LAN for other PC"
+                      >
+                        <span>{isScanning ? 'Scanning...' : 'Scan LAN'}</span>
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 text-[11px] leading-relaxed border border-slate-200 dark:border-slate-700">
+                      <div className="font-bold text-slate-700 dark:text-slate-200 mb-1">LAN Sync is Paused</div>
+                      Captured pictures are saved locally on this PC only. Toggle the switch <strong>ON</strong> whenever you want to automatically mirror captures with PC 2 and run 100% lot verification.
+                    </div>
+                    {syncMessage && (
+                      <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300 text-[11px] font-medium">
+                        {syncMessage}
+                      </div>
+                    )}
                   </div>
                 )}
-
-                <div className="flex items-center space-x-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-                  <button
-                    onClick={handleSyncAll}
-                    disabled={isSyncing}
-                    className="flex-1 py-1.5 px-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg font-bold flex items-center justify-center space-x-1 transition-all cursor-pointer"
-                  >
-                    <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
-                    <span>Sync All</span>
-                  </button>
-                  <button
-                    onClick={handleScanSubnet}
-                    disabled={isScanning}
-                    className="py-1.5 px-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg font-bold transition-all cursor-pointer"
-                    title="Scan local WiFi/LAN for other PC"
-                  >
-                    <span>{isScanning ? 'Scanning...' : 'Scan LAN'}</span>
-                  </button>
-                </div>
               </div>
             )}
           </div>
