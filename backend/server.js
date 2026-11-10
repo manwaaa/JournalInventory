@@ -8,12 +8,14 @@ import os from 'os';
 import archiver from 'archiver';
 import dotenv from 'dotenv';
 import sharp from 'sharp';
+import dgram from 'dgram';
 
 import http from 'http';
 import https from 'https';
 import selfsigned from 'selfsigned';
 import { S3Client, PutObjectCommand, HeadBucketCommand, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import XLSX from 'xlsx';
 
 dotenv.config();
 
@@ -439,7 +441,7 @@ let config = {
   watermarkEnabled: true,
   watermarkStation: 'Station-01',
   blurCheckEnabled: true,
-  peerSyncEnabled: false,
+  peerSyncEnabled: true,
   peerIp: '',
   peerPort: 3001,
   enforceManifest: false,
@@ -1153,7 +1155,7 @@ function markPeerFailure() {
 
 function getAllTargetPeers() {
   const peers = new Set();
-  if (config.peerSyncEnabled && config.peerIp) {
+  if (config.peerIp) {
     peers.add(`${config.peerIp}:${config.peerPort || 3001}`);
   }
   for (const p of discoveredPeers) {
@@ -1171,6 +1173,129 @@ function getLocalHeadersForPeer() {
   };
 }
 
+// Proactive UDP Auto-Discovery Beacon & Listener on LAN port 3002
+const UDP_DISCOVERY_PORT = 3002;
+let udpSocket = null;
+
+function setupPeerDiscovery() {
+  try {
+    udpSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+
+    udpSocket.on('error', (err) => {
+      console.warn('[UDP Discovery] Socket error:', err.message);
+      try { udpSocket.close(); } catch (e) {}
+      udpSocket = null;
+    });
+
+    udpSocket.on('message', (msg, rinfo) => {
+      try {
+        const data = JSON.parse(msg.toString());
+        if (data && data.app === 'JournalInventory') {
+          const senderIp = rinfo.address;
+          const myIps = new Set(getNetworkIps().map(i => i.address));
+          if (!myIps.has(senderIp) && senderIp !== '127.0.0.1' && senderIp !== 'localhost') {
+            const peerPort = data.port || 3001;
+            const peerAddr = `${senderIp}:${peerPort}`;
+            const wasDiscovered = discoveredPeers.has(peerAddr);
+            discoveredPeers.add(peerAddr);
+
+            if (!wasDiscovered) {
+              console.log(`[UDP Discovery] Auto-discovered peer workstation: ${peerAddr}`);
+            }
+
+            if (!config.peerIp || !isPeerReachable()) {
+              config.peerIp = senderIp;
+              config.peerPort = peerPort;
+              config.peerSyncEnabled = true;
+              saveConfig();
+              broadcastSession('PEER_CONNECTED', { peerIp: senderIp, peerPort });
+            }
+          }
+        }
+      } catch (e) {}
+    });
+
+    udpSocket.bind(UDP_DISCOVERY_PORT, () => {
+      try {
+        udpSocket.setBroadcast(true);
+        console.log(`[UDP Discovery] Listening for peer workstations on UDP port ${UDP_DISCOVERY_PORT}...`);
+      } catch (e) {}
+    });
+  } catch (err) {
+    console.warn('[UDP Discovery] Initialization notice:', err.message);
+  }
+
+  // Periodic broadcast beacon every 4 seconds
+  setInterval(() => {
+    if (!udpSocket) return;
+    try {
+      const beacon = Buffer.from(JSON.stringify({
+        app: 'JournalInventory',
+        port: PORT,
+        host: os.hostname()
+      }));
+      udpSocket.send(beacon, 0, beacon.length, UDP_DISCOVERY_PORT, '255.255.255.255', () => {});
+    } catch (e) {}
+  }, 4000);
+}
+
+// Background Subnet Scanner fallback in case UDP broadcast is filtered by network router
+let isScanningSubnet = false;
+async function scanLocalSubnetForPeers() {
+  if (isScanningSubnet) return [];
+  isScanningSubnet = true;
+  const localIps = getNetworkIps();
+  if (localIps.length === 0) {
+    isScanningSubnet = false;
+    return [];
+  }
+
+  const primaryIp = localIps[0].address;
+  const subnetBase = primaryIp.substring(0, primaryIp.lastIndexOf('.'));
+  const myIps = new Set(localIps.map(i => i.address));
+  const foundPeers = [];
+
+  try {
+    const batchSize = 35;
+    for (let start = 1; start < 255; start += batchSize) {
+      const promises = [];
+      for (let i = start; i < start + batchSize && i < 255; i++) {
+        const targetIp = `${subnetBase}.${i}`;
+        if (myIps.has(targetIp)) continue;
+
+        promises.push(
+          fetch(`http://${targetIp}:${PORT}/api/health`, {
+            headers: getLocalHeadersForPeer(),
+            signal: AbortSignal.timeout(450)
+          }).then(res => {
+            if (res.ok) return targetIp;
+            return null;
+          }).catch(() => null)
+        );
+      }
+      const results = await Promise.all(promises);
+      for (const r of results) {
+        if (r) {
+          const peerAddr = `${r}:${PORT}`;
+          discoveredPeers.add(peerAddr);
+          foundPeers.push(r);
+          if (!config.peerIp || !isPeerReachable()) {
+            config.peerIp = r;
+            config.peerPort = PORT;
+            config.peerSyncEnabled = true;
+            saveConfig();
+            broadcastSession('PEER_CONNECTED', { peerIp: r, peerPort: PORT });
+          }
+        }
+      }
+    }
+  } catch (e) {
+  } finally {
+    isScanningSubnet = false;
+  }
+  return foundPeers;
+}
+
 // Auto-discover peer PC when it queries this workstation over LAN
 app.use((req, res, next) => {
   const headerPeerIp = req.headers['x-peer-ip'];
@@ -1184,6 +1309,7 @@ app.use((req, res, next) => {
         config.peerIp = cleanIp;
         config.peerPort = parseInt(headerPeerPort, 10) || 3001;
         config.peerSyncEnabled = true;
+        saveConfig();
       }
     }
   } else if (req.path.startsWith('/api/sync/') || (req.path === '/api/boxes/list' && req.query.all === 'true')) {
@@ -1194,6 +1320,7 @@ app.use((req, res, next) => {
       if (!config.peerIp) {
         config.peerIp = remote;
         config.peerSyncEnabled = true;
+        saveConfig();
       }
     }
   }
@@ -1494,6 +1621,24 @@ async function getOrGenerateThumbnail(dir, filename) {
       }
     }
     if (!isValidImageFile(originalPath)) {
+      // Check candidate peers to fetch original photo on the fly
+      const targetPeers = getAllTargetPeers();
+      for (const peerAddr of targetPeers) {
+        try {
+          const peerUrl = `http://${peerAddr}/proofs/${encodeURIComponent(dir)}/${encodeURIComponent(filename)}`;
+          const pRes = await fetch(peerUrl, { headers: getLocalHeadersForPeer(), signal: AbortSignal.timeout(2000) }).catch(() => null);
+          if (pRes && pRes.ok) {
+            const buf = Buffer.from(await pRes.arrayBuffer());
+            if (buf.length > 500) {
+              fs.ensureDirSync(path.dirname(originalPath));
+              fs.writeFileSync(originalPath, buf);
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+    if (!isValidImageFile(originalPath)) {
       return null;
     }
 
@@ -1627,34 +1772,33 @@ app.use('/proofs', (req, res, next) => {
       }
     }
 
-    // If not found locally, attempt to fetch from peer PC (e.g. PC 1) over LAN
-    if (config.peerIp && isPeerReachable()) {
-      try {
-        const peerUrl = `http://${config.peerIp}:${config.peerPort || 3001}/proofs${req.url}`;
-        const peerRes = await fetch(peerUrl, {
-          headers: getLocalHeadersForPeer(),
-          signal: AbortSignal.timeout(1500)
-        }).catch(() => null);
-        if (peerRes && peerRes.ok) {
-          markPeerSuccess();
-          const buffer = Buffer.from(await peerRes.arrayBuffer());
-          if (buffer.length > 100) {
-            // Save to local disk so future requests are instant
-            try {
-              const cleanPath = decodeURIComponent(req.path.split('?')[0]);
-              const localFilePath = path.join(config.storagePath, cleanPath);
-              fs.ensureDirSync(path.dirname(localFilePath));
-              fs.writeFileSync(localFilePath, buffer);
-            } catch (e) {}
+    // If not found locally, transparently fetch from peer PC (e.g. PC 1 / PC 2) over LAN and cache locally
+    const targetPeers = getAllTargetPeers();
+    if (targetPeers.length > 0) {
+      for (const peerAddr of targetPeers) {
+        try {
+          const peerUrl = `http://${peerAddr}/proofs${req.url}`;
+          const peerRes = await fetch(peerUrl, {
+            headers: getLocalHeadersForPeer(),
+            signal: AbortSignal.timeout(2500)
+          }).catch(() => null);
+          if (peerRes && peerRes.ok) {
+            markPeerSuccess();
+            const buffer = Buffer.from(await peerRes.arrayBuffer());
+            if (buffer.length > 100) {
+              // Save to local disk so future requests are instant
+              try {
+                const cleanPath = decodeURIComponent(req.path.split('?')[0]);
+                const localFilePath = path.join(config.storagePath, cleanPath);
+                fs.ensureDirSync(path.dirname(localFilePath));
+                fs.writeFileSync(localFilePath, buffer);
+              } catch (e) {}
 
-            res.set('Content-Type', peerRes.headers.get('content-type') || 'image/jpeg');
-            return res.send(buffer);
+              res.set('Content-Type', peerRes.headers.get('content-type') || 'image/jpeg');
+              return res.send(buffer);
+            }
           }
-        } else if (!peerRes) {
-          markPeerFailure();
-        }
-      } catch (err) {
-        markPeerFailure();
+        } catch (err) {}
       }
     }
     res.status(404).send('Proof image not found');
@@ -2267,6 +2411,7 @@ function getS3Client(effOrConfig = {}, clientName = null) {
 
   return new S3Client(clientOptions);
 }
+const createS3Client = getS3Client;
 
 // S3 Test Connection
 app.post('/api/s3/test-connection', async (req, res) => {
@@ -2420,11 +2565,41 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
       } catch (e) {}
     }
 
-    // Only upload valid photo image files (exclude json/zip/hidden/backup files like bak.* or .bak_*)
+    // Detect multi-part book sets
     const allFilesInFolder = await fs.readdir(folderPath);
     const partNum = getPartNumber(cleanIsbn);
     const partTag = partNum !== null ? `_part${partNum}`.toLowerCase() : null;
+    const existingParts = await findExistingParts(baseIsbn, allFilesInFolder);
+    const isMultiPart = partNum !== null || (existingParts && existingParts.length > 0);
 
+    // If upload is requested for base ISBN but the journal has parts, upload each part individually
+    if (partNum === null && existingParts && existingParts.length > 0) {
+      console.log(`[S3 Auto-Upload] Base ISBN ${cleanIsbn} has ${existingParts.length} parts. Uploading individual parts and purging un-parted duplicates...`);
+      const results = [];
+      for (const p of existingParts) {
+        if (p.isComplete || customConfig.forceUpload) {
+          try {
+            const r = await uploadIsbnToS3(p.identifier, customConfig);
+            results.push(r);
+          } catch (partErr) {
+            console.error(`[S3 Auto-Upload] Error uploading part ${p.identifier}:`, partErr.message);
+          }
+        }
+      }
+      return results[0] || { success: true, baseIsbn, partsUploaded: results.length };
+    }
+
+    // Clean up any stale un-parted duplicate image files on local disk if this is a multi-part book
+    if (isMultiPart) {
+      for (const f of allFilesInFolder) {
+        if (!/_part\d+/i.test(f) && !/_copy\d+/i.test(f) && /\.(jpe?g|png)$/i.test(f)) {
+          console.log(`[Storage Cleanup] Purging stale un-parted duplicate from local folder: ${f}`);
+          await fs.remove(path.join(folderPath, f)).catch(() => {});
+        }
+      }
+    }
+
+    // Only upload valid photo image files (exclude json/zip/hidden/backup files like bak.* or .bak_*)
     let imageFiles = allFilesInFolder.filter(filename => {
       if (!filename.match(/\.(jpg|jpeg|png)$/i)) return false;
       if (filename.startsWith('.')) return false;
@@ -2434,6 +2609,9 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
       }
       if (partTag) {
         return lower.includes(partTag);
+      }
+      if (isMultiPart) {
+        return /_part\d+/i.test(lower);
       }
       return true;
     });
@@ -2449,8 +2627,7 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     }
     // Also check if this is a base folder containing complete multi-part captures
     if (shotsCount < 7 && !partTag) {
-      const parts = await findExistingParts(baseIsbn);
-      if (parts.length > 0 && parts.every(p => p.isComplete || p.shotsCount >= 7)) {
+      if (existingParts.length > 0 && existingParts.every(p => p.isComplete || p.shotsCount >= 7)) {
         shotsCount = 7;
       }
     }
@@ -2499,7 +2676,7 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
     // In multi-part sets, all parts are stored in 1 single base ISBN folder, not separated folders
     const s3BaseFolderKey = `${s3FolderPrefix}${baseIsbn}`;
 
-    // 1. Inspect existing files on S3 to skip re-uploading pictures that already exist
+    // 1. Inspect existing files on S3 to skip re-uploading pictures that already exist and purge stale duplicate/un-parted files
     const existingS3Files = new Map(); // filename (lowercase) -> { size: number, key: string }
     try {
       const listRes = await s3.send(new ListObjectsV2Command({
@@ -2511,9 +2688,15 @@ async function uploadIsbnToS3(cleanIsbn, customConfig = {}) {
         for (const obj of listRes.Contents) {
           const objKey = obj.Key;
           const baseName = (objKey.split('/').pop() || '').toLowerCase();
-          // Only delete backup, temporary, or hidden files (.bak, bak., _bak, backup, .tmp)
-          if (baseName.includes('bak') || baseName.startsWith('.') || baseName.includes('backup') || baseName.endsWith('.tmp')) {
-            console.log(`[S3 Cleanup] Removing stale backup/temp file from S3: ${objKey}`);
+          
+          // Check if this object is a stale un-parted duplicate in a multi-part book folder
+          const isStaleUnpartedDuplicate = isMultiPart && 
+            !/_part\d+/i.test(baseName) && 
+            /\.(jpe?g|png)$/i.test(baseName);
+
+          // Delete backup, temporary, hidden files, and stale un-parted duplicates
+          if (isStaleUnpartedDuplicate || baseName.includes('bak') || baseName.startsWith('.') || baseName.includes('backup') || baseName.endsWith('.tmp')) {
+            console.log(`[S3 Cleanup] Removing stale duplicate/backup file from S3: ${objKey}`);
             await s3.send(new DeleteObjectCommand({
               Bucket: targetBucket,
               Key: objKey
@@ -3077,7 +3260,7 @@ app.post('/api/s3/audit-reconcile', async (req, res) => {
       return res.status(400).json({ error: `AWS S3 credentials not configured for client ${targetClient}. Please check Settings.` });
     }
 
-    const s3 = createS3Client(eff);
+    const s3 = getS3Client(eff);
     const targetBucket = eff.s3Bucket;
     const targetRegion = eff.s3Region;
     let basePrefix = eff.s3Prefix || '';
@@ -3168,6 +3351,24 @@ app.post('/api/s3/audit-reconcile', async (req, res) => {
       if (!s3FolderPrefix.endsWith('/')) s3FolderPrefix += '/';
       const s3BaseFolderKey = `${s3FolderPrefix}${baseIsbn}`;
 
+      // Purge any stale un-parted duplicate files on S3 if this journal has parts
+      const hasPartFiles = imageFiles.some(f => /_part\d+/i.test(f));
+      if (hasPartFiles && autoHeal) {
+        for (const [s3Key] of s3Objects.entries()) {
+          if (s3Key.startsWith(`${s3BaseFolderKey}/`)) {
+            const baseName = (s3Key.split('/').pop() || '').toLowerCase();
+            if (!/_part\d+/i.test(baseName) && (/\.(jpe?g|png)$/i.test(baseName) || baseName.includes('bak') || baseName.includes('backup') || baseName.endsWith('.tmp'))) {
+              console.log(`[S3 Self-Heal] Deleting stale duplicate/backup file from S3: ${s3Key}`);
+              await s3.send(new DeleteObjectCommand({
+                Bucket: targetBucket,
+                Key: s3Key
+              })).catch(() => {});
+              s3Objects.delete(s3Key);
+            }
+          }
+        }
+      }
+
       const missingOnS3 = [];
       const presentOnS3 = [];
 
@@ -3235,13 +3436,303 @@ app.post('/api/s3/audit-reconcile', async (req, res) => {
   }
 });
 
-// 1-Click Export S3 Delivery Certificate (CSV)
-app.get('/api/s3/export-delivery-certificate', async (req, res) => {
+// -------------------------------------------------------------
+// Jaguar QC & Delivery Certificate Generator (21-Column Client Standard)
+// -------------------------------------------------------------
+async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'captured', targetBox = '', client = 'Jaguar' }) {
+  const eff = getEffectiveS3Config({}, client);
+  const s3 = getS3Client(eff);
+  const targetBucket = eff.s3Bucket || 'innoscanjagjx1-s3';
+  const cleanTargetLot = targetLot || 'Lot-159J';
+  const basePrefix = `Phase-09/${cleanTargetLot}/`;
+
+  console.log(`[Jaguar QC Export] Scanning S3 bucket "${targetBucket}" under "${basePrefix}" (scope: ${scope})...`);
+
+  // 1. Paginated S3 listing
+  const s3Map = new Map();
+  if (eff.isConfigured) {
+    try {
+      let continuationToken = null;
+      do {
+        const listRes = await s3.send(new ListObjectsV2Command({
+          Bucket: targetBucket,
+          Prefix: basePrefix,
+          ContinuationToken: continuationToken
+        }));
+        if (listRes.Contents) {
+          for (const obj of listRes.Contents) {
+            const parts = obj.Key.split('/');
+            if (parts.length >= 5) {
+              const date = parts[2];
+              const isbn = parts[3];
+              const filename = parts[4];
+              if (!s3Map.has(isbn)) {
+                s3Map.set(isbn, {
+                  date,
+                  s3Path: `${targetBucket}/Phase-09/${cleanTargetLot}/${date}/${isbn}`,
+                  files: []
+                });
+              }
+              s3Map.get(isbn).files.push({ key: obj.Key, size: obj.Size || 0, filename });
+            }
+          }
+        }
+        continuationToken = listRes.IsTruncated ? listRes.NextContinuationToken : null;
+      } while (continuationToken);
+    } catch (s3Err) {
+      console.warn(`[Jaguar QC Export] S3 listing warning:`, s3Err.message);
+    }
+  }
+
+  // 2. Also check local folders in case local shots haven't finished S3 sync
+  try {
+    const folderMap = await getAllCandidateJournalFolders();
+    for (const [cleanIsbn, folderPath] of folderMap.entries()) {
+      const meta = readIsbnMetadata(cleanIsbn);
+      const baseIsbn = getBaseIsbn(cleanIsbn);
+      const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(cleanIsbn);
+      const itemLot = meta?.lotNumber || manifestMatch?.lotNumber || '';
+      if (!isMatchingBoxNumber(itemLot, cleanTargetLot)) continue;
+
+      if (!s3Map.has(cleanIsbn)) {
+        let localFiles = [];
+        try {
+          localFiles = fs.readdirSync(folderPath).filter(f => !f.startsWith('.'));
+        } catch (e) {}
+        if (localFiles.length >= 7) {
+          const dateStr = meta?.s3Upload?.uploadedAt ? meta.s3Upload.uploadedAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
+          s3Map.set(cleanIsbn, {
+            date: dateStr,
+            s3Path: `${targetBucket}/Phase-09/${cleanTargetLot}/${dateStr}/${cleanIsbn}`,
+            files: localFiles.map(f => ({ filename: f, size: 1000 }))
+          });
+        }
+      }
+    }
+  } catch (localErr) {
+    console.warn(`[Jaguar QC Export] Local folder scan warning:`, localErr.message);
+  }
+
+  // 3. Load manifest
+  let manifestItems = [];
+  try {
+    const allItems = manifestData.items || [];
+    manifestItems = allItems.filter(it => isMatchingBoxNumber(it.lotNumber || '', cleanTargetLot));
+  } catch (mErr) {
+    console.warn(`[Jaguar QC Export] Manifest read warning:`, mErr.message);
+  }
+
+  if (targetBox) {
+    manifestItems = manifestItems.filter(it => isMatchingBoxNumber(it.boxNumber || '', targetBox));
+  }
+
+  manifestItems.sort((a, b) => (parseInt(a.sNo, 10) || 0) - (parseInt(b.sNo, 10) || 0));
+
+  const HEADERS = [
+    'S.No.',
+    'Lot No.',
+    'Box No.',
+    'ISBN',
+    'Counts',
+    'Remarks',
+    'Order',
+    'Print ISSN',
+    'Journal name',
+    'Publisher',
+    'Publication Year',
+    'Volume',
+    'Issues',
+    'Parts',
+    'Noida Remarks Jaguar',
+    'Sub Remarks',
+    'Inventory Status  PH (Dropdown)',
+    'Inventory Remarks PH',
+    'S3 Path Image',
+    'All Images Are Complete',
+    'All Parts Are Complete'
+  ];
+
+  function buildRow(item, sNoVal) {
+    const cleanIsbn = String(item.isbn || '').trim();
+    const s3Data = s3Map.get(cleanIsbn);
+    const hasPartFiles = Boolean(s3Data && s3Data.files.some(f => /_part\d+/i.test(f.filename || f.key || '')));
+    const validFiles = (s3Data && hasPartFiles)
+      ? s3Data.files.filter(f => /_part\d+/i.test(f.filename || f.key || ''))
+      : (s3Data ? s3Data.files : []);
+    const isCaptured = Boolean(s3Data && validFiles.length >= 7);
+    const fileCount = validFiles.length;
+    let partsCount = 0;
+    if (hasPartFiles) {
+      const distinctParts = new Set();
+      for (const f of validFiles) {
+        const m = (f.filename || f.key || '').match(/_part(\d+)/i);
+        if (m) distinctParts.add(parseInt(m[1], 10));
+      }
+      partsCount = distinctParts.size || (fileCount >= 14 ? Math.floor(fileCount / 7) : 0);
+    } else {
+      partsCount = fileCount >= 14 ? Math.floor(fileCount / 7) : 0;
+    }
+
+    const boxNo = item.boxNumber ? (isNaN(item.boxNumber) ? item.boxNumber : Number(item.boxNumber)) : '';
+    const isbnVal = isNaN(cleanIsbn) ? cleanIsbn : Number(cleanIsbn);
+    const pubYear = item.publicationYear ? (isNaN(item.publicationYear) ? item.publicationYear : Number(item.publicationYear)) : '';
+    const volVal = item.volume ? (isNaN(item.volume) ? item.volume : Number(item.volume)) : '';
+    const issueVal = item.issues ? (isNaN(item.issues) ? item.issues : Number(item.issues)) : '';
+
+    return [
+      sNoVal,
+      cleanTargetLot,
+      boxNo,
+      isbnVal,
+      1,
+      item.reason || item.notes || null,
+      'Journals',
+      item.printIssn || '',
+      item.title || '',
+      item.publisher || '',
+      pubYear,
+      volVal,
+      issueVal,
+      partsCount,
+      'Jaguar Phase-09',
+      'uploaded to Magazine ILMS',
+      isCaptured ? 'Ok For Scanning' : 'Physical book not received',
+      null,
+      isCaptured ? s3Data.s3Path : '',
+      isCaptured ? 'Yes' : null,
+      isCaptured ? (partsCount > 0 ? 'Yes' : 'N/A') : null
+    ];
+  }
+
+  let itemsToExport = [];
+  if (scope === 'all' || scope === 'full') {
+    itemsToExport = manifestItems;
+  } else {
+    itemsToExport = manifestItems.filter(it => s3Map.has(String(it.isbn).trim()));
+    const manifestIsbns = new Set(manifestItems.map(it => String(it.isbn).trim()));
+    for (const [isbn, s3Data] of s3Map.entries()) {
+      if (!manifestIsbns.has(isbn)) {
+        itemsToExport.push({
+          sNo: String(itemsToExport.length + 1),
+          isbn: isbn,
+          lotNumber: cleanTargetLot,
+          boxNumber: '',
+          title: 'Additional Captured Journal',
+          publisher: '',
+          printIssn: '',
+          publicationYear: '',
+          volume: '',
+          issues: ''
+        });
+      }
+    }
+  }
+
+  const rows = [HEADERS];
+  let okCount = 0;
+  let missingCount = 0;
+
+  itemsToExport.forEach((it, idx) => {
+    const sNoVal = (scope === 'all' || scope === 'full') ? (parseInt(it.sNo, 10) || idx + 1) : (idx + 1);
+    const row = buildRow(it, sNoVal);
+    if (row[16] === 'Ok For Scanning') {
+      okCount++;
+    } else {
+      missingCount++;
+    }
+    rows.push(row);
+  });
+
+  const totalCount = itemsToExport.length;
+
+  const wb = XLSX.utils.book_new();
+
+  // 1. Packing_List
+  const wsPacking = XLSX.utils.aoa_to_sheet(rows);
+  XLSX.utils.book_append_sheet(wb, wsPacking, 'Packing_List');
+
+  // 2. Excess
+  const wsExcess = XLSX.utils.aoa_to_sheet([
+    ['ISBN', 'Print ISSN', 'Journal name', 'Publisher', 'Publication Year', 'Volume', 'Issues', 'Parts', 'Inventory Status  PH (Dropdown)', 'Inventory Remarks PH']
+  ]);
+  XLSX.utils.book_append_sheet(wb, wsExcess, 'Excess');
+
+  // 3. Summary
+  const summaryAoa = [
+    [],
+    ['Inventory Status', 'No. of books per inventory'],
+    ['Ok For Scanning', okCount],
+    ['Incomplete Part Set – No part number listed in the packing list but with part number in the physical copy', 0],
+    ['Others – Physical copy received but not found in ILMS', 0],
+    ['Physical book not received', missingCount],
+    ['Grand Total', totalCount]
+  ];
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryAoa);
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+
+  // 4. Drop down
+  const wsDropdown = XLSX.utils.aoa_to_sheet([
+    ['Counterfeit - authenticity or provenance cannot be verified'],
+    ['Duplicate - same title, volume and issue already sourced'],
+    ['Damaged, incomplete or unscannable (e.g. missing pages, water or mold damage)'],
+    ['Incorrect - not an approved title'],
+    ['Ok For Scanning'],
+    ['Incomplete Part Set – No part number listed in the packing list but with part number in the physical copy'],
+    ['Excess – Physical copy received but not listed in the packing list and ILMS'],
+    ['Others – Physical copy received but not found in ILMS'],
+    ['Physical book not received']
+  ]);
+  XLSX.utils.book_append_sheet(wb, wsDropdown, 'Drop down');
+
+  const filenameBase = (scope === 'all' || scope === 'full')
+    ? `${cleanTargetLot}_Book_Confirmation_and_Verification`
+    : `${cleanTargetLot}_Captured_Journals_QC_Verification`;
+
+  return {
+    wb,
+    rows,
+    filenameBase,
+    totalCount,
+    okCount,
+    missingCount
+  };
+}
+
+// 1-Click Export S3 Delivery Certificate & QC Verification (XLSX & CSV)
+app.get(['/api/s3/export-delivery-certificate', '/api/s3/export-qc-report'], async (req, res) => {
   try {
     const client = req.query.client || config.activeClient || 'Jaguar';
-    const targetLot = req.query.lotNumber || '';
+    const targetLot = req.query.lotNumber || 'Lot-159J';
     const targetBox = req.query.boxNumber || '';
+    const scope = (req.query.scope || 'captured').toLowerCase();
+    const isJaguar = client.toLowerCase() === 'jaguar' || targetLot.toLowerCase().includes('159') || targetLot.toLowerCase().includes('156');
+    const requestedFormat = (req.query.format || (isJaguar ? 'xlsx' : 'csv')).toLowerCase();
 
+    // If Jaguar client or Jaguar lot, export the official 21-column Book Confirmation and Verification document
+    if (isJaguar) {
+      const qcResult = await generateJaguarQcExport({
+        targetLot,
+        scope,
+        targetBox,
+        client: 'Jaguar'
+      });
+
+      if (requestedFormat === 'xlsx') {
+        const buffer = XLSX.write(qcResult.wb, { type: 'buffer', bookType: 'xlsx' });
+        const filename = `${qcResult.filenameBase}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        return res.status(200).send(buffer);
+      } else {
+        const csvContent = qcResult.rows.map(r => r.map(c => c === null || c === undefined ? '' : `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+        const filename = `${qcResult.filenameBase}.csv`;
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        return res.status(200).send(csvContent);
+      }
+    }
+
+    // Default Mustang delivery certificate format
     const folderMap = await getAllCandidateJournalFolders();
     const rows = [
       ['Client', 'Lot Number', 'Box Number', 'ISBN / Identifier', 'Title', 'Author', 'Publisher', 'Publication Year', 'Total Photos In Cloud', 'Cloud Verification Status', 'AWS S3 Bucket', 'S3 Folder URI', 'Verified At (UTC)']
@@ -3289,6 +3780,7 @@ app.get('/api/s3/export-delivery-certificate', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 app.post('/api/system/open-folder', (req, res) => {
   const { isbn, targetPath } = req.body;
@@ -4372,6 +4864,11 @@ app.post('/api/capture/convert-to-parts', async (req, res) => {
     const baseIsbn = getBaseIsbn(cleanIsbn);
     const folderPath = getFolderForIdentifier(baseIsbn);
 
+    // 1. Cancel pending S3 auto-upload for base ISBN
+    s3SyncQueue.delete(baseIsbn);
+    s3SyncQueue.delete(cleanIsbn);
+
+    // 2. Rename local files to _Part1, and remove any leftover un-parted duplicate files
     if (fs.existsSync(folderPath)) {
       const files = await fs.readdir(folderPath);
       for (const f of files) {
@@ -4380,9 +4877,15 @@ app.post('/api/capture/convert-to-parts', async (req, res) => {
           const baseWithoutExt = f.slice(0, -ext.length);
           const newName = `${baseWithoutExt}_Part1${ext}`;
           try {
-            await fs.rename(path.join(folderPath, f), path.join(folderPath, newName));
+            const oldPath = path.join(folderPath, f);
+            const newPath = path.join(folderPath, newName);
+            if (fs.existsSync(newPath)) {
+              await fs.remove(oldPath);
+            } else {
+              await fs.rename(oldPath, newPath);
+            }
           } catch (e) {
-            console.warn('[convertToParts] Rename failed:', e.message);
+            console.warn('[convertToParts] Rename/cleanup failed:', e.message);
           }
         } else if (f.startsWith(`${baseIsbn}_Part1_`)) {
           // Backward compatibility: Rename legacy ISBN_Part1_front cover.jpg -> ISBN_front cover_Part1.jpg
@@ -4418,6 +4921,66 @@ app.post('/api/capture/convert-to-parts', async (req, res) => {
       }
     }
     await saveIsbnMetadata(`${baseIsbn}_Part1`, part1Meta);
+
+    // Clean base metadata so it doesn't appear as a completed single book
+    if (oldMeta) {
+      const cleanedBaseMeta = { ...oldMeta };
+      delete cleanedBaseMeta.shots;
+      cleanedBaseMeta.isComplete = false;
+      cleanedBaseMeta.isMultiPart = true;
+      cleanedBaseMeta.totalParts = totalParts;
+      cleanedBaseMeta.updatedAt = new Date().toISOString();
+      await saveIsbnMetadata(baseIsbn, cleanedBaseMeta);
+    }
+
+    // 3. Immediately clean up un-parted duplicate files on S3 if S3 is configured
+    try {
+      const itemClient = getItemClient(baseIsbn, part1Meta);
+      const eff = getEffectiveS3Config({}, itemClient);
+      if (eff.isConfigured) {
+        const s3 = getS3Client(eff);
+        const captureDate = getIsbnCaptureDate(baseIsbn, folderPath, part1Meta);
+        let s3FolderPrefix = eff.s3Prefix || '';
+        const resolvedLot = part1Meta?.lotNumber || '';
+        if (/\{lot(?:number)?\}/i.test(s3FolderPrefix) && resolvedLot) {
+          s3FolderPrefix = s3FolderPrefix.replace(/\{lot(?:number)?\}/gi, resolvedLot);
+        }
+        if (/\{date\}/i.test(s3FolderPrefix)) {
+          s3FolderPrefix = s3FolderPrefix.replace(/\{date\}/gi, captureDate);
+        } else if (/\/\d{4}-\d{2}-\d{2}\/$/.test(s3FolderPrefix)) {
+          s3FolderPrefix = s3FolderPrefix.replace(/\/\d{4}-\d{2}-\d{2}\/$/, `/${captureDate}/`);
+        } else {
+          s3FolderPrefix = `${s3FolderPrefix}${captureDate}/`;
+        }
+        if (!s3FolderPrefix.endsWith('/')) s3FolderPrefix += '/';
+        const s3BaseFolderKey = `${s3FolderPrefix}${baseIsbn}`;
+
+        const listRes = await s3.send(new ListObjectsV2Command({
+          Bucket: eff.s3Bucket,
+          Prefix: `${s3BaseFolderKey}/`
+        }));
+
+        if (listRes.Contents && listRes.Contents.length > 0) {
+          for (const obj of listRes.Contents) {
+            const baseName = (obj.Key.split('/').pop() || '').toLowerCase();
+            if (!/_part\d+/i.test(baseName) && (/\.(jpe?g|png)$/i.test(baseName) || baseName.includes('bak') || baseName.includes('backup') || baseName.endsWith('.tmp'))) {
+              console.log(`[convertToParts] Deleting duplicate un-parted file from S3: ${obj.Key}`);
+              await s3.send(new DeleteObjectCommand({
+                Bucket: eff.s3Bucket,
+                Key: obj.Key
+              })).catch(() => {});
+            }
+          }
+        }
+      }
+    } catch (s3CleanErr) {
+      console.warn('[convertToParts] S3 un-parted duplicate cleanup warning:', s3CleanErr.message);
+    }
+
+    // 4. Enqueue Part 1 for immediate upload if complete
+    if (part1Meta.isComplete || Object.keys(part1Meta.shots || {}).length >= 7) {
+      enqueueS3Upload(`${baseIsbn}_Part1`, false, true);
+    }
 
     const existingParts = await findExistingParts(baseIsbn);
     res.json({
@@ -4609,6 +5172,21 @@ app.post('/api/capture/save-shot', async (req, res) => {
       boxShots: boxShotsData
     });
 
+    // Asynchronously replicate every shot taken to peer PC so both PCs immediately see each other's captures
+    if (!req.body.isReplication && (config.peerSyncEnabled || discoveredPeers.size > 0)) {
+      setImmediate(() => {
+        replicateToPeer({
+          isbn: cleanIsbn,
+          shotNumber: sNum,
+          imageBase64,
+          operatorName,
+          bookDetails,
+          blurScore,
+          metadata
+        });
+      });
+    }
+
     if (sNum === 1 || sNum === 2) {
       broadcastSession('BOX_SHOT_SAVED', {
         lotNumber: resolvedLot,
@@ -4623,7 +5201,7 @@ app.post('/api/capture/save-shot', async (req, res) => {
         const isRep = Boolean(req.body.isReplication);
         setImmediate(async () => {
           try {
-            if (!isRep && config.peerSyncEnabled) {
+            if (!isRep && (config.peerSyncEnabled || discoveredPeers.size > 0)) {
               replicateBoxShotToPeer({
                 lotNumber: resolvedLot,
                 boxNumber: resolvedBox,
@@ -4646,18 +5224,6 @@ app.post('/api/capture/save-shot', async (req, res) => {
           } catch (e) {}
         });
       }
-    } else if (!req.body.isReplication && config.peerSyncEnabled) {
-      setImmediate(() => {
-        replicateToPeer({
-          isbn: cleanIsbn,
-          shotNumber: sNum,
-          imageBase64,
-          operatorName,
-          bookDetails,
-          blurScore,
-          metadata
-        });
-      });
     }
 
     if (config.autoOpenExplorer && totalShots >= 7) {
@@ -5449,6 +6015,221 @@ async function replicateBoxShotToPeer(boxShotData) {
 // -------------------------------------------------------------
 // Multi-PC Peer Synchronization Endpoints
 // -------------------------------------------------------------
+let isSyncingJournalsFromPeer = false;
+
+async function syncAllJournalsFromPeer(specificLot = null) {
+  if (isSyncingJournalsFromPeer) return 0;
+  isSyncingJournalsFromPeer = true;
+  let syncedFilesCount = 0;
+  try {
+    const peers = getAllTargetPeers();
+    if (peers.length === 0) return 0;
+
+    for (const peerAddr of peers) {
+      try {
+        const query = specificLot ? `?lot=${encodeURIComponent(specificLot)}` : '';
+        const manifestUrl = `http://${peerAddr}/api/sync/journal-manifest${query}`;
+        const res = await fetch(manifestUrl, {
+          headers: getLocalHeadersForPeer(),
+          signal: AbortSignal.timeout(6000)
+        }).catch(() => null);
+
+        if (!res || !res.ok) continue;
+        const data = await res.json().catch(() => null);
+        const peerJournals = data?.journals || [];
+        if (!peerJournals || peerJournals.length === 0) continue;
+
+        for (const pj of peerJournals) {
+          const cleanIsbn = sanitizeIsbn(pj.isbn);
+          const folderPath = getFolderForIdentifier(cleanIsbn);
+
+          // Update or merge metadata
+          if (pj.metadata) {
+            const localMeta = readIsbnMetadata(cleanIsbn);
+            if (!localMeta || (pj.metadata.updatedAt && (!localMeta.updatedAt || pj.metadata.updatedAt > localMeta.updatedAt))) {
+              saveIsbnMetadata(cleanIsbn, { ...(localMeta || {}), ...pj.metadata });
+            }
+          }
+
+          // Check each shot 1 to 7
+          if (pj.shots) {
+            for (const [shotNumStr, shotInfo] of Object.entries(pj.shots)) {
+              const sNum = parseInt(shotNumStr, 10);
+              const filename = shotInfo.filename || getShotFilename(sNum, cleanIsbn);
+              const targetFile = path.join(folderPath, filename);
+
+              let needsDownload = false;
+              if (!isValidImageFile(targetFile)) {
+                needsDownload = true;
+              } else if (shotInfo.size) {
+                try {
+                  const st = fs.statSync(targetFile);
+                  if (st.size < 1024) needsDownload = true;
+                } catch (e) {
+                  needsDownload = true;
+                }
+              }
+
+              if (needsDownload) {
+                const shotDownloadUrl = `http://${peerAddr}/proofs/${encodeURIComponent(cleanIsbn)}/${encodeURIComponent(filename)}`;
+                const dlRes = await fetch(shotDownloadUrl, {
+                  headers: getLocalHeadersForPeer(),
+                  signal: AbortSignal.timeout(6000)
+                }).catch(() => null);
+
+                if (dlRes && dlRes.ok) {
+                  const buf = Buffer.from(await dlRes.arrayBuffer());
+                  if (buf.length > 1024) {
+                    fs.ensureDirSync(folderPath);
+                    await fs.writeFile(targetFile, buf);
+                    syncedFilesCount++;
+
+                    // Also propagate box shot if shot 1 or 2
+                    if (sNum === 1 || sNum === 2) {
+                      const peerLot = pj.metadata?.lotNumber || pj.lotNumber;
+                      const peerBox = pj.metadata?.boxNumber || pj.boxNumber;
+                      if (peerBox) {
+                        await saveBoxShotToFile(peerLot, peerBox, sNum, buf, shotInfo.blurScore);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[PeerSync] Journal sync error with ${peerAddr}:`, err.message);
+      }
+    }
+  } finally {
+    isSyncingJournalsFromPeer = false;
+  }
+  return syncedFilesCount;
+}
+
+app.get('/api/sync/journal-manifest', async (req, res) => {
+  try {
+    const targetLot = req.query.lot ? normalizeLotString(req.query.lot) : null;
+    const folderMap = await getAllCandidateJournalFolders();
+    const journals = [];
+
+    for (const [entryName, folderPath] of folderMap.entries()) {
+      const meta = readIsbnMetadata(entryName);
+      if (targetLot) {
+        const itemLotNorm = normalizeLotString(meta?.lotNumber);
+        if (itemLotNorm !== targetLot) continue;
+      }
+
+      const allFiles = await fs.readdir(folderPath).catch(() => []);
+      const shots = {};
+      for (let s = 1; s <= 7; s++) {
+        const found = findShotFileInFolder(folderPath, s, entryName, allFiles);
+        if (found) {
+          try {
+            const st = fs.statSync(path.join(folderPath, found));
+            shots[s] = { filename: found, size: st.size };
+          } catch (e) {
+            shots[s] = { filename: found, size: 0 };
+          }
+        }
+      }
+
+      if (Object.keys(shots).length > 0) {
+        journals.push({
+          isbn: entryName,
+          lotNumber: meta?.lotNumber || '',
+          boxNumber: meta?.boxNumber || '',
+          shots,
+          metadata: meta
+        });
+      }
+    }
+
+    res.json({ success: true, count: journals.length, journals });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.all('/api/sync/pull-all', async (req, res) => {
+  try {
+    const boxCount = await syncAllBoxShotsFromPeer();
+    const journalCount = await syncAllJournalsFromPeer();
+    broadcastSession('JOURNALS_SYNCED', { boxCount, journalCount, total: boxCount + journalCount });
+    res.json({ success: true, count: boxCount + journalCount, boxCount, journalCount });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/sync/pull-lot', async (req, res) => {
+  try {
+    const { lotNumber } = req.body;
+    if (!lotNumber) return res.status(400).json({ error: 'lotNumber is required' });
+    const count = await syncAllJournalsFromPeer(lotNumber);
+    await syncAllBoxShotsFromPeer();
+    broadcastSession('JOURNALS_SYNCED', { lotNumber, count });
+    res.json({ success: true, lotNumber, count });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/sync/status', (req, res) => {
+  res.json({
+    peerSyncEnabled: Boolean(config.peerSyncEnabled),
+    peerIp: config.peerIp || '',
+    peerPort: config.peerPort || 3001,
+    isReachable: isPeerReachable(),
+    discoveredPeers: Array.from(discoveredPeers),
+    localIps: getNetworkIps()
+  });
+});
+
+app.post('/api/sync/set-peer', async (req, res) => {
+  try {
+    const { peerIp, peerPort = 3001 } = req.body;
+    if (!peerIp) return res.status(400).json({ error: 'peerIp is required' });
+    const cleanIp = String(peerIp).trim();
+    config.peerIp = cleanIp;
+    config.peerPort = parseInt(peerPort, 10) || 3001;
+    config.peerSyncEnabled = true;
+    discoveredPeers.add(`${cleanIp}:${config.peerPort}`);
+    saveConfig();
+
+    let reachable = false;
+    try {
+      const testRes = await fetch(`http://${cleanIp}:${config.peerPort}/api/health`, { signal: AbortSignal.timeout(3000) });
+      reachable = testRes.ok;
+      if (reachable) markPeerSuccess();
+    } catch (e) {
+      markPeerFailure();
+    }
+
+    if (reachable) {
+      setImmediate(() => {
+        syncAllJournalsFromPeer().catch(() => {});
+        syncAllBoxShotsFromPeer().catch(() => {});
+      });
+    }
+
+    broadcastSession('PEER_CONNECTED', { peerIp: cleanIp, peerPort: config.peerPort, reachable });
+    res.json({ success: true, peerIp: cleanIp, peerPort: config.peerPort, reachable });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/sync/scan-peers', async (req, res) => {
+  try {
+    const found = await scanLocalSubnetForPeers();
+    res.json({ success: true, count: found.length, peers: Array.from(discoveredPeers), localIps: getNetworkIps() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.all('/api/sync/pull-boxes', async (req, res) => {
   try {
     const synced = await syncAllBoxShotsFromPeer();
@@ -5695,6 +6476,248 @@ app.get('/api/capture/zip/:isbn', async (req, res) => {
 });
 
 // -------------------------------------------------------------
+// Lot-Level 100% Completeness Audit & Strict Export Gate
+// -------------------------------------------------------------
+async function auditLotCompleteness(lotNumber, autoPullFromPeer = false) {
+  const normTarget = normalizeLotString(lotNumber);
+
+  if (autoPullFromPeer) {
+    try {
+      await syncAllJournalsFromPeer(lotNumber);
+    } catch (e) {}
+  }
+
+  // 1. Gather all manifest items for this lot
+  let manifestItems = [];
+  if (manifestData && Array.isArray(manifestData.items)) {
+    manifestItems = manifestData.items.filter(i => {
+      const itemLotNorm = normalizeLotString(i.lotNumber);
+      return itemLotNorm === normTarget;
+    });
+  }
+
+  // 2. Gather all candidate folders on disk
+  const folderMap = await getAllCandidateJournalFolders();
+  const processedIdentifiers = new Set();
+  const auditedItems = [];
+  let completedCount = 0;
+
+  for (const mItem of manifestItems) {
+    const cleanIsbn = sanitizeIsbn(mItem.isbn);
+    processedIdentifiers.add(cleanIsbn);
+    const folderPath = getFolderForIdentifier(cleanIsbn);
+    let meta = readIsbnMetadata(cleanIsbn);
+
+    let shotsFound = {};
+    let shotCount = 0;
+    let missingShots = [];
+
+    if (fs.existsSync(folderPath)) {
+      const allFiles = await fs.readdir(folderPath).catch(() => []);
+      for (let s = 1; s <= 7; s++) {
+        const found = findShotFileInFolder(folderPath, s, cleanIsbn, allFiles);
+        if (found) {
+          shotsFound[s] = found;
+          shotCount++;
+        } else {
+          missingShots.push(s);
+        }
+      }
+    } else {
+      missingShots = [1, 2, 3, 4, 5, 6, 7];
+    }
+
+    const hasFrontCover = Boolean(shotsFound[3]);
+    const hasSpine = Boolean(shotsFound[4]);
+    const hasTitlePage = Boolean(shotsFound[5]);
+    const hasEditionNotice = Boolean(shotsFound[6]);
+    const hasBackCover = Boolean(shotsFound[7]);
+    const hasAllBookShots = hasFrontCover && hasSpine && hasTitlePage && hasEditionNotice && hasBackCover;
+    const isComplete = shotCount >= 7 || hasAllBookShots;
+    if (isComplete) completedCount++;
+
+    auditedItems.push({
+      isbn: cleanIsbn,
+      title: mItem.title || meta?.bookDetails?.title || '',
+      authors: mItem.author || meta?.bookDetails?.authors || '',
+      boxNumber: mItem.boxNumber || meta?.boxNumber || '',
+      lotNumber: mItem.lotNumber || lotNumber,
+      shotCount,
+      shotsFound,
+      missingShots,
+      isComplete,
+      folderExists: fs.existsSync(folderPath)
+    });
+  }
+
+  // Also check any captured items on disk for this lot that weren't in manifestItems
+  for (const [entryName, folderPath] of folderMap.entries()) {
+    if (processedIdentifiers.has(entryName)) continue;
+    const meta = readIsbnMetadata(entryName);
+    const itemLotNorm = normalizeLotString(meta?.lotNumber);
+    if (itemLotNorm === normTarget) {
+      processedIdentifiers.add(entryName);
+      const allFiles = await fs.readdir(folderPath).catch(() => []);
+      let shotsFound = {};
+      let shotCount = 0;
+      let missingShots = [];
+      for (let s = 1; s <= 7; s++) {
+        const found = findShotFileInFolder(folderPath, s, entryName, allFiles);
+        if (found) {
+          shotsFound[s] = found;
+          shotCount++;
+        } else {
+          missingShots.push(s);
+        }
+      }
+      const hasFrontCover = Boolean(shotsFound[3]);
+      const hasSpine = Boolean(shotsFound[4]);
+      const hasTitlePage = Boolean(shotsFound[5]);
+      const hasEditionNotice = Boolean(shotsFound[6]);
+      const hasBackCover = Boolean(shotsFound[7]);
+      const hasAllBookShots = hasFrontCover && hasSpine && hasTitlePage && hasEditionNotice && hasBackCover;
+      const isComplete = shotCount >= 7 || hasAllBookShots;
+      if (isComplete) completedCount++;
+      auditedItems.push({
+        isbn: entryName,
+        title: meta?.bookDetails?.title || '',
+        authors: meta?.bookDetails?.authors || '',
+        boxNumber: meta?.boxNumber || '',
+        lotNumber: meta?.lotNumber || lotNumber,
+        shotCount,
+        shotsFound,
+        missingShots,
+        isComplete,
+        folderExists: true
+      });
+    }
+  }
+
+  const totalJournals = auditedItems.length;
+  const incompleteItems = auditedItems.filter(i => !i.isComplete);
+  const is100Percent = totalJournals > 0 && incompleteItems.length === 0;
+  const completionPercentage = totalJournals > 0 ? Math.round((completedCount / totalJournals) * 100) : 0;
+
+  return {
+    lotNumber,
+    totalJournals,
+    completedJournals: completedCount,
+    incompleteCount: incompleteItems.length,
+    is100Percent,
+    completionPercentage,
+    incompleteItems,
+    items: auditedItems
+  };
+}
+
+app.get('/api/lot/audit/:lotNumber', async (req, res) => {
+  try {
+    const lotNumber = req.params.lotNumber;
+    const autoPull = req.query.pull !== 'false';
+    const audit = await auditLotCompleteness(lotNumber, autoPull);
+    res.json({ success: true, ...audit });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/lot/verify', async (req, res) => {
+  try {
+    const { lotNumber, pull = true } = req.body;
+    if (!lotNumber) return res.status(400).json({ error: 'lotNumber is required' });
+    const audit = await auditLotCompleteness(lotNumber, pull);
+    res.json({ success: true, ...audit });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/lot/export-zip/:lotNumber', async (req, res) => {
+  try {
+    const lotNumber = req.params.lotNumber;
+    const strict = req.query.strict !== 'false';
+    const bypass = req.query.bypass === 'true';
+
+    const audit = await auditLotCompleteness(lotNumber, true);
+
+    if (audit.totalJournals === 0) {
+      return res.status(404).json({ error: 'NO_JOURNALS_FOUND', message: `No journals found for Lot "${lotNumber}".` });
+    }
+
+    if (strict && !bypass && !audit.is100Percent) {
+      return res.status(400).json({
+        error: 'INCOMPLETE_LOT',
+        message: `Transmission Blocked: Lot "${lotNumber}" is only ${audit.completionPercentage}% complete (${audit.completedJournals}/${audit.totalJournals} journals). Strict rule requires 100% completion before transmitting.`,
+        audit
+      });
+    }
+
+    const cleanLotName = String(lotNumber).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filename = `Lot_${cleanLotName}_100Percent_Verified_${new Date().toISOString().slice(0, 10)}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    archive.on('error', (err) => {
+      console.error('[Lot Zip Export Error]:', err);
+      if (!res.headersSent) res.status(500).send({ error: err.message });
+    });
+    archive.pipe(res);
+
+    const csvRows = [
+      ['Lot Number', 'Box Number', 'ISBN / Identifier', 'Journal Title', 'Authors', 'Shot 1 (Box A)', 'Shot 2 (Box B)', 'Shot 3 (Front Cover)', 'Shot 4 (Spine)', 'Shot 5 (Title Page)', 'Shot 6 (Edition Notice)', 'Shot 7 (Back Cover)', 'Verification Status', 'Verified Date']
+    ];
+
+    for (const item of audit.items) {
+      const folderPath = getFolderForIdentifier(item.isbn);
+      if (fs.existsSync(folderPath)) {
+        const allFiles = await fs.readdir(folderPath).catch(() => []);
+        const imageFiles = allFiles.filter(f => f.match(/\.(jpg|jpeg|png)$/i) && !f.startsWith('.'));
+        for (const img of imageFiles) {
+          archive.file(path.join(folderPath, img), { name: `${cleanLotName}/${item.isbn}/${img}` });
+        }
+      }
+
+      csvRows.push([
+        item.lotNumber,
+        item.boxNumber,
+        item.isbn,
+        item.title,
+        item.authors,
+        item.shotsFound[1] || 'Missing',
+        item.shotsFound[2] || 'Missing',
+        item.shotsFound[3] || 'Missing',
+        item.shotsFound[4] || 'Missing',
+        item.shotsFound[5] || 'Missing',
+        item.shotsFound[6] || 'Missing',
+        item.shotsFound[7] || 'Missing',
+        item.isComplete ? '100% COMPLETE & VERIFIED' : 'INCOMPLETE',
+        new Date().toISOString()
+      ]);
+    }
+
+    const csvContent = csvRows.map(row => row.map(escapeCsv).join(',')).join('\n');
+    archive.append(csvContent, { name: `${cleanLotName}/AUDIT_CERTIFICATE_100_PERCENT.csv` });
+
+    const summaryJson = JSON.stringify({
+      lotNumber,
+      exportedAt: new Date().toISOString(),
+      totalJournals: audit.totalJournals,
+      completedJournals: audit.completedJournals,
+      complianceStatus: audit.is100Percent ? '100% PASS' : 'SUPERVISOR_BYPASS_INCOMPLETE',
+      operator: 'Verification Images System'
+    }, null, 2);
+    archive.append(summaryJson, { name: `${cleanLotName}/AUDIT_SUMMARY.json` });
+
+    await archive.finalize();
+  } catch (err) {
+    console.error('Failed to export lot zip:', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
 // Gallery, History & CSV Export Endpoints (7 Shots)
 // -------------------------------------------------------------
 function escapeCsv(val) {
@@ -5746,14 +6769,91 @@ app.get('/api/gallery/export-csv', async (req, res) => {
       let meta = readIsbnMetadata(dir.name);
 
       let stat = null;
+      let folderFiles = [];
       try {
         stat = await fs.stat(folderPath);
+        folderFiles = await fs.readdir(folderPath);
       } catch (e) {}
+
+      // Multi-part detection: only check if filenames contain _PartN
+      const hasPartFiles = folderFiles.some(f => /_part\d+/i.test(f));
+      const existingParts = hasPartFiles ? await findExistingParts(dir.name, folderFiles) : [];
+
+      if (existingParts.length > 0) {
+        for (const p of existingParts) {
+          const pMeta = readIsbnMetadata(p.identifier) || meta;
+          const shotsStatus = {};
+          let shotsCount = 0;
+          for (let s = 1; s <= 7; s++) {
+            const foundFile = findShotFileInFolder(folderPath, s, p.identifier, folderFiles);
+            if (foundFile) {
+              shotsStatus[s] = foundFile;
+              shotsCount++;
+            } else {
+              shotsStatus[s] = 'Missing';
+            }
+          }
+
+          const baseIsbn = pMeta?.isbn || getBaseIsbn(dir.name);
+          const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(dir.name);
+
+          let lotNum = pMeta?.lotNumber || meta?.lotNumber;
+          if (!lotNum || lotNum === 'Unassigned' || lotNum === 'Unassigned Lot' || (lotNum === 'Lot-1' && manifestMatch?.lotNumber && manifestMatch.lotNumber !== 'Lot-1')) {
+            if (manifestMatch?.lotNumber) lotNum = manifestMatch.lotNumber;
+          }
+          if (!lotNum) lotNum = 'Unassigned Lot';
+
+          let boxNum = pMeta?.boxNumber || meta?.boxNumber;
+          if (!boxNum || boxNum === 'Unassigned' || boxNum === 'Unassigned Box') {
+            if (manifestMatch?.boxNumber) boxNum = manifestMatch.boxNumber;
+          }
+          if (!boxNum) boxNum = '';
+
+          const title = pMeta?.bookDetails?.title || meta?.bookDetails?.title || manifestMatch?.title || '';
+          const authors = pMeta?.bookDetails?.authors || meta?.bookDetails?.authors || manifestMatch?.author || '';
+          const publisher = pMeta?.bookDetails?.publisher || meta?.bookDetails?.publisher || manifestMatch?.publisher || '';
+          const year = pMeta?.bookDetails?.publishYear || meta?.bookDetails?.publishYear || manifestMatch?.publicationYear || '';
+          const operator = pMeta?.operator || meta?.operator || 'Inventory Operator';
+          const station = pMeta?.station || meta?.station || config.watermarkStation || '';
+          const createdAt = pMeta?.createdAt ? new Date(pMeta.createdAt).toLocaleString() : (meta?.createdAt ? new Date(meta.createdAt).toLocaleString() : '');
+          const modifiedAt = stat?.mtime ? new Date(stat.mtime).toLocaleString() : '';
+
+          const row = [
+            p.identifier,
+            lotNum,
+            boxNum,
+            baseIsbn,
+            '1',
+            `Part ${p.partNumber}`,
+            title,
+            authors,
+            publisher,
+            year,
+            'Processable',
+            shotsStatus[1],
+            shotsStatus[2],
+            shotsStatus[3],
+            shotsStatus[4],
+            shotsStatus[5],
+            shotsStatus[6],
+            shotsStatus[7],
+            shotsCount >= 7 ? 'Complete (7/7)' : `Partial (${shotsCount}/7)`,
+            operator,
+            station,
+            createdAt,
+            modifiedAt,
+            folderPath
+          ];
+
+          rows.push(row.map(escapeCsv).join(','));
+        }
+        continue;
+      }
 
       const shotsStatus = {};
       let shotsCount = 0;
       for (let s = 1; s <= 7; s++) {
-        const foundFile = findShotFileInFolder(folderPath, s, dir.name);
+        const foundFile = findShotFileInFolder(folderPath, s, dir.name, folderFiles);
         if (foundFile) {
           shotsStatus[s] = foundFile;
           shotsCount++;
@@ -6044,21 +7144,31 @@ if (sslOptions && !process.env.RENDER) {
 }
 
 // -------------------------------------------------------------
-// Auto-Startup Daemon: Cleanup Metadata, Sync Peer Boxes & Auto-Upload
+// Auto-Startup Daemon: Cleanup Metadata, Auto-Discover Peers & Sync
 // -------------------------------------------------------------
 setTimeout(async () => {
+  console.log('[System Daemon] Starting UDP auto-discovery for peer workstations...');
+  setupPeerDiscovery();
+
+  console.log('[System Daemon] Scanning local network for peer workstations...');
+  scanLocalSubnetForPeers().catch(() => {});
+
   console.log('[System Daemon] Running initial metadata migration & cleanup...');
   await migrateAllLegacyMetadata();
-  console.log('[System Daemon] Syncing all box shots from peer PC...');
+
+  console.log('[System Daemon] Syncing all photos and box shots from peer PC...');
   await syncAllBoxShotsFromPeer();
+  await syncAllJournalsFromPeer();
+
   console.log('[System Daemon] Scanning for unuploaded journals on disk to automatically upload to S3...');
   await scanAllPendingJournalsForS3();
 }, 3000);
 
-// Fast background peer box sync every 4 seconds (protected by isSyncingFromPeer mutex & circuit breaker)
+// Fast background peer photo & box sync every 6 seconds (protected by mutexes & circuit breaker)
 setInterval(() => {
   syncAllBoxShotsFromPeer().catch(() => {});
-}, 4000);
+  syncAllJournalsFromPeer().catch(() => {});
+}, 6000);
 
 // Background S3 scan every 60 seconds (protected by isScanningS3 mutex & event-loop yielding)
 setInterval(() => {

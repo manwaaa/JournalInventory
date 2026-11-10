@@ -29,8 +29,15 @@ import {
   LayoutGrid,
   Maximize2,
   ShieldCheck,
-  Award
+  Award,
+  Network,
+  FileArchive,
+  ShieldAlert,
+  AlertTriangle,
+  Lock,
+  Unlock
 } from 'lucide-react';
+import confetti from 'canvas-confetti';
 import { ProofItem, SHOT_DEFINITIONS } from '../types';
 
 export const getShotUrl = (item: ProofItem | null | undefined, shotNumber: number): string | null => {
@@ -90,6 +97,17 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
   const [copiedS3Id, setCopiedS3Id] = useState<string | null>(null);
   const [isAuditingS3, setIsAuditingS3] = useState(false);
   const [isExportingCert, setIsExportingCert] = useState(false);
+  const [showQcMenu, setShowQcMenu] = useState(false);
+  const [isSyncingPeer, setIsSyncingPeer] = useState(false);
+  const [syncingLots, setSyncingLots] = useState<Record<string, boolean>>({});
+  const [lotAuditModal, setLotAuditModal] = useState<{
+    isOpen: boolean;
+    lotNumber: string;
+    auditData: any | null;
+    loading: boolean;
+    bypassStrict: boolean;
+    syncing: boolean;
+  } | null>(null);
   const [selectedPhotoModal, setSelectedPhotoModal] = useState<{
     isbn: string;
     shots: Record<string, string | null>;
@@ -299,17 +317,28 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
     }
   };
 
-  const handleExportDeliveryCertificate = async () => {
+  const handleExportDeliveryCertificate = async (overrideScope?: 'captured' | 'all', overrideFormat?: 'xlsx' | 'csv') => {
     setIsExportingCert(true);
     try {
-      const clientName = activeClient || 'Mustang';
-      const res = await fetch(`/api/s3/export-delivery-certificate?client=${encodeURIComponent(clientName)}`);
-      if (!res.ok) throw new Error('Failed to generate S3 delivery certificate');
+      const clientName = activeClient || 'Jaguar';
+      const lotParam = lotQuery.trim() || 'Lot-159J';
+      const scope = overrideScope || 'captured';
+      const format = overrideFormat || (clientName.toLowerCase() === 'jaguar' ? 'xlsx' : 'csv');
+
+      const res = await fetch(`/api/s3/export-delivery-certificate?client=${encodeURIComponent(clientName)}&lotNumber=${encodeURIComponent(lotParam)}&scope=${scope}&format=${format}`);
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to generate S3 delivery certificate / QC verification file');
+      }
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `S3_Delivery_Certificate_${clientName}_${new Date().toISOString().slice(0, 10)}.csv`;
+      const extension = format === 'xlsx' ? 'xlsx' : 'csv';
+      const filePrefix = scope === 'all'
+        ? `${lotParam}_Book_Confirmation_and_Verification`
+        : `${lotParam}_Captured_Journals_QC_Verification`;
+      a.download = `${filePrefix}.${extension}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -359,6 +388,74 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
       window.removeEventListener('scroll', handleScroll);
     };
   }, [activeActionMenu]);
+
+  const handleSyncAllFromPeer = async () => {
+    setIsSyncingPeer(true);
+    try {
+      const res = await fetch('/api/sync/pull-all', { method: 'POST' });
+      const data = await res.json();
+      await fetchItems();
+      alert(`PC Sync Complete! Synced ${data.count || 0} pictures and boxes across both PCs.`);
+    } catch (err: any) {
+      alert(`Sync failed: ${err.message}`);
+    } finally {
+      setIsSyncingPeer(false);
+    }
+  };
+
+  const handleSyncLot = async (lotName: string) => {
+    setSyncingLots(prev => ({ ...prev, [lotName]: true }));
+    try {
+      const res = await fetch('/api/sync/pull-lot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lotNumber: lotName })
+      });
+      const data = await res.json();
+      await fetchItems();
+      if (lotAuditModal && lotAuditModal.isOpen && lotAuditModal.lotNumber === lotName) {
+        const auditRes = await fetch(`/api/lot/audit/${encodeURIComponent(lotName)}?pull=false`);
+        if (auditRes.ok) {
+          const newAudit = await auditRes.json();
+          setLotAuditModal(prev => prev ? { ...prev, auditData: newAudit } : null);
+        }
+      }
+    } catch (err: any) {
+      alert(`Lot sync failed: ${err.message}`);
+    } finally {
+      setSyncingLots(prev => ({ ...prev, [lotName]: false }));
+    }
+  };
+
+  const handleExportLotZip = async (lotName: string, bypass = false) => {
+    try {
+      const res = await fetch(`/api/lot/audit/${encodeURIComponent(lotName)}?pull=true`);
+      if (!res.ok) throw new Error('Failed to audit lot completeness');
+      const audit = await res.json();
+
+      if (audit.is100Percent || bypass) {
+        confetti({
+          particleCount: 100,
+          spread: 70,
+          origin: { y: 0.6 }
+        });
+        const url = `/api/lot/export-zip/${encodeURIComponent(lotName)}?strict=true${bypass ? '&bypass=true' : ''}`;
+        window.location.href = url;
+        if (lotAuditModal?.isOpen) setLotAuditModal(null);
+      } else {
+        setLotAuditModal({
+          isOpen: true,
+          lotNumber: lotName,
+          auditData: audit,
+          loading: false,
+          bypassStrict: false,
+          syncing: false
+        });
+      }
+    } catch (err: any) {
+      alert(`Error auditing lot: ${err.message}`);
+    }
+  };
 
   const handleExportCsv = async () => {
     try {
@@ -557,15 +654,73 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
               <span>{isAuditingS3 ? 'Auditing S3...' : 'Audit S3 (QC)'}</span>
             </button>
 
-            {/* Export S3 Delivery Certificate Button */}
+            {/* Export S3 Delivery Certificate Button with Dropdown Options */}
+            <div className="relative inline-flex items-center">
+              <button
+                onClick={() => handleExportDeliveryCertificate('captured', 'xlsx')}
+                disabled={isExportingCert}
+                title="Download Client QC Book Confirmation & Verification (.xlsx) for captured journals"
+                className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-l-xl text-xs font-bold text-purple-900 bg-gradient-to-b from-purple-50 to-violet-50 hover:from-purple-100 hover:to-violet-100 border border-r-0 border-purple-200/80 transition-all shadow-sm cursor-pointer disabled:opacity-50"
+              >
+                <Award className="w-4 h-4 text-purple-600" />
+                <span>{isExportingCert ? 'Generating...' : 'QC Delivery (Excel)'}</span>
+              </button>
+              <button
+                onClick={() => setShowQcMenu(!showQcMenu)}
+                disabled={isExportingCert}
+                title="Export options: Captured Only, Full Manifest, or CSV"
+                className="px-1.5 py-2 rounded-r-xl text-xs font-bold text-purple-900 bg-gradient-to-b from-purple-50 to-violet-50 hover:from-purple-100 hover:to-violet-100 border border-purple-200/80 transition-all shadow-sm cursor-pointer disabled:opacity-50"
+              >
+                <ChevronDown className="w-3.5 h-3.5 text-purple-600" />
+              </button>
+
+              {showQcMenu && (
+                <div 
+                  className="absolute right-0 top-full mt-1.5 w-72 bg-white rounded-xl shadow-xl border border-purple-100 py-1.5 z-50 text-xs"
+                  onClick={() => setShowQcMenu(false)}
+                >
+                  <div className="px-3 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Client QC Verification Formats</div>
+                  <button
+                    onClick={() => handleExportDeliveryCertificate('captured', 'xlsx')}
+                    className="w-full text-left px-3 py-2 hover:bg-purple-50 text-slate-700 flex flex-col cursor-pointer"
+                  >
+                    <span className="font-bold text-purple-900">QC Excel (.xlsx) - Captured Only</span>
+                    <span className="text-[10px] text-slate-500">Only journals captured & verified on S3</span>
+                  </button>
+                  <button
+                    onClick={() => handleExportDeliveryCertificate('all', 'xlsx')}
+                    className="w-full text-left px-3 py-2 hover:bg-purple-50 text-slate-700 flex flex-col cursor-pointer"
+                  >
+                    <span className="font-bold text-purple-900">QC Excel (.xlsx) - Full Manifest</span>
+                    <span className="text-[10px] text-slate-500">Complete packing list with all items & capture status</span>
+                  </button>
+                  <div className="my-1 border-t border-slate-100"></div>
+                  <button
+                    onClick={() => handleExportDeliveryCertificate('captured', 'csv')}
+                    className="w-full text-left px-3 py-2 hover:bg-purple-50 text-slate-700 flex flex-col cursor-pointer"
+                  >
+                    <span className="font-bold text-slate-700">QC CSV (.csv) - Captured Only</span>
+                    <span className="text-[10px] text-slate-500">Raw 21-column CSV delivery format</span>
+                  </button>
+                  <button
+                    onClick={() => handleExportDeliveryCertificate('all', 'csv')}
+                    className="w-full text-left px-3 py-2 hover:bg-purple-50 text-slate-700 flex flex-col cursor-pointer"
+                  >
+                    <span className="font-bold text-slate-700">QC CSV (.csv) - Full Manifest</span>
+                    <span className="text-[10px] text-slate-500">Complete 21-column CSV packing list</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
             <button
-              onClick={handleExportDeliveryCertificate}
-              disabled={isExportingCert}
-              title="Download 100% Cloud Delivery Certificate CSV for client verification"
-              className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-bold text-purple-900 bg-gradient-to-b from-purple-50 to-violet-50 hover:from-purple-100 hover:to-violet-100 border border-purple-200/80 transition-all shadow-sm cursor-pointer"
+              onClick={handleSyncAllFromPeer}
+              disabled={isSyncingPeer}
+              title="Synchronize captured pictures and box photos between PC 1 and PC 2"
+              className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-bold text-sky-900 bg-gradient-to-b from-sky-50 to-blue-50 hover:from-sky-100 hover:to-blue-100 border border-sky-200/80 transition-all shadow-sm cursor-pointer disabled:opacity-50"
             >
-              <Award className="w-4 h-4 text-purple-600" />
-              <span>{isExportingCert ? 'Generating...' : 'Delivery Certificate'}</span>
+              <Network className={`w-4 h-4 ${isSyncingPeer ? 'animate-spin text-sky-600' : 'text-sky-600'}`} />
+              <span>{isSyncingPeer ? 'Syncing PCs...' : 'Sync PC 1 ↔ PC 2'}</span>
             </button>
 
             <button
@@ -773,6 +928,33 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
                       title="Collapse all boxes in this lot"
                     >
                       Close All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); handleSyncLot(lotName); }}
+                      disabled={syncingLots[lotName]}
+                      className="flex items-center space-x-1 px-2 py-0.5 text-[10px] font-bold rounded-md bg-white/15 hover:bg-white/25 text-white transition-colors cursor-pointer disabled:opacity-50"
+                      title={`Pull all captured pictures for ${lotName} from peer PC`}
+                    >
+                      <Network className={`w-3 h-3 ${syncingLots[lotName] ? 'animate-spin' : ''}`} />
+                      <span>{syncingLots[lotName] ? 'Syncing...' : 'Sync Lot'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); handleExportLotZip(lotName); }}
+                      className={`flex items-center space-x-1 px-2.5 py-0.5 text-[10px] font-bold rounded-md transition-all shadow-xs cursor-pointer ${
+                        completedCount === totalBooks && totalBooks > 0
+                          ? 'bg-emerald-500 hover:bg-emerald-400 text-white ring-1 ring-white/40'
+                          : 'bg-amber-400 hover:bg-amber-300 text-slate-900 font-extrabold'
+                      }`}
+                      title={completedCount === totalBooks && totalBooks > 0 ? `Export 100% Complete ZIP for ${lotName}` : `Strict Audit & Export for ${lotName} (100% required)`}
+                    >
+                      <FileArchive className="w-3 h-3" />
+                      <span>
+                        {completedCount === totalBooks && totalBooks > 0
+                          ? 'Export Lot ZIP (100%)'
+                          : `Export Lot ZIP (${completedCount}/${totalBooks})`}
+                      </span>
                     </button>
                   </div>
                   <span className="px-3 py-0.5 text-xs font-bold rounded-full bg-white/20 text-white backdrop-blur-sm border border-white/20">
@@ -1609,6 +1791,165 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
               <Trash2 className="w-4 h-4 shrink-0" />
               <span>Delete Record</span>
             </button>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* Pre-Transmission 100% Completeness Gate Modal */}
+      {/* ------------------------------------------------------------- */}
+      {lotAuditModal && lotAuditModal.isOpen && createPortal(
+        <div className="fixed inset-0 z-[99999] bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full border border-slate-200 overflow-hidden animate-scale-up">
+            {/* Header */}
+            <div className={`p-5 text-white flex items-center justify-between ${
+              lotAuditModal.auditData?.is100Percent
+                ? 'bg-gradient-to-r from-emerald-600 to-teal-600'
+                : 'bg-gradient-to-r from-amber-600 via-rose-600 to-red-600'
+            }`}>
+              <div className="flex items-center space-x-3">
+                <div className="p-2 rounded-xl bg-white/20">
+                  {lotAuditModal.auditData?.is100Percent ? (
+                    <ShieldCheck className="w-6 h-6 text-white" />
+                  ) : (
+                    <ShieldAlert className="w-6 h-6 text-white" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold">
+                    {lotAuditModal.auditData?.is100Percent ? '100% Lot Verification Passed' : 'Strict 100% Rule — Transmission Blocked'}
+                  </h3>
+                  <p className="text-xs text-white/80">
+                    Lot: <span className="font-mono font-bold text-white">{lotAuditModal.lotNumber}</span> • Verification Quality Gate
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setLotAuditModal(null)}
+                className="p-1.5 rounded-xl bg-white/10 hover:bg-white/25 text-white transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+              {/* Progress Bar & Summary */}
+              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold">
+                  <span className="text-slate-700">Lot Verification Progress</span>
+                  <span className={`font-mono ${lotAuditModal.auditData?.is100Percent ? 'text-emerald-700' : 'text-rose-700'}`}>
+                    {lotAuditModal.auditData?.completedJournals} / {lotAuditModal.auditData?.totalJournals} Journals Ready ({lotAuditModal.auditData?.completionPercentage}%)
+                  </span>
+                </div>
+                <div className="w-full h-3 bg-slate-200 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-500 ${
+                      lotAuditModal.auditData?.is100Percent ? 'bg-emerald-500' : 'bg-gradient-to-r from-amber-500 to-rose-500'
+                    }`}
+                    style={{ width: `${lotAuditModal.auditData?.completionPercentage || 0}%` }}
+                  />
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  {lotAuditModal.auditData?.is100Percent
+                    ? 'All journals in this lot have all required proof pictures captured and verified. Safe to transmit!'
+                    : 'Our strict rule requires 100% of journals to be fully photographed before export or transmission. Missing shots are listed below:'}
+                </p>
+              </div>
+
+              {/* Incomplete Checklist */}
+              {!lotAuditModal.auditData?.is100Percent && lotAuditModal.auditData?.incompleteItems?.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                    <span>Incomplete Journals ({lotAuditModal.auditData.incompleteItems.length})</span>
+                    <span className="text-[11px] text-slate-400">Click Capture to take missing photos</span>
+                  </div>
+                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-2xl overflow-hidden bg-white max-h-56 overflow-y-auto">
+                    {lotAuditModal.auditData.incompleteItems.map((item: any) => (
+                      <div key={item.isbn} className="p-3 hover:bg-slate-50 flex items-center justify-between gap-3 text-xs">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center space-x-2">
+                            <span className="font-mono font-bold text-slate-900">{item.isbn}</span>
+                            {item.boxNumber && (
+                              <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-bold text-[10px]">
+                                Box: {item.boxNumber}
+                              </span>
+                            )}
+                          </div>
+                          {item.title && <p className="text-[11px] text-slate-500 truncate">{item.title}</p>}
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {item.missingShots?.map((s: number) => (
+                              <span key={s} className="px-1.5 py-0.5 rounded bg-rose-50 text-rose-700 font-mono text-[10px] font-bold border border-rose-200">
+                                Missing Shot {s}: {SHOT_DEFINITIONS.find(d => d.shotNumber === s)?.label || `Shot ${s}`}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setLotAuditModal(null);
+                            if (onSelectIsbnForCapture) onSelectIsbnForCapture(item.isbn);
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-brand-50 hover:bg-brand-100 text-brand-700 font-bold text-xs shrink-0 transition-colors cursor-pointer"
+                        >
+                          Capture
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Supervisor Emergency Bypass Checkbox */}
+              {!lotAuditModal.auditData?.is100Percent && (
+                <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200 text-xs flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="bypassStrict"
+                    checked={lotAuditModal.bypassStrict}
+                    onChange={(e) => setLotAuditModal(prev => prev ? { ...prev, bypassStrict: e.target.checked } : null)}
+                    className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-amber-300 cursor-pointer"
+                  />
+                  <label htmlFor="bypassStrict" className="text-amber-900 font-medium cursor-pointer text-[11px]">
+                    Supervisor Emergency Override: Allow partial export anyway (Will include an INCOMPLETE audit warning report).
+                  </label>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3">
+              <button
+                onClick={() => handleSyncLot(lotAuditModal.lotNumber)}
+                disabled={syncingLots[lotAuditModal.lotNumber]}
+                className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 font-bold rounded-xl border border-slate-200 text-xs flex items-center space-x-1.5 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <Network className={`w-3.5 h-3.5 ${syncingLots[lotAuditModal.lotNumber] ? 'animate-spin' : 'text-sky-600'}`} />
+                <span>{syncingLots[lotAuditModal.lotNumber] ? 'Syncing from Peer PC...' : 'Sync Missing from PC 2'}</span>
+              </button>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => setLotAuditModal(null)}
+                  className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-xl text-xs transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={() => handleExportLotZip(lotAuditModal.lotNumber, lotAuditModal.bypassStrict)}
+                  disabled={!lotAuditModal.auditData?.is100Percent && !lotAuditModal.bypassStrict}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold text-white transition-all shadow-md flex items-center space-x-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                    lotAuditModal.auditData?.is100Percent || lotAuditModal.bypassStrict
+                      ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-500/25'
+                      : 'bg-slate-400'
+                  }`}
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download Lot ZIP</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>,
         document.body

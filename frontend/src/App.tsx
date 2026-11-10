@@ -558,11 +558,16 @@ export function App() {
     const prevIsbn = activeIsbnRef.current || activeIsbn;
     const prevStep = currentStepRef.current || currentStep;
     if (prevIsbn && prevStep === 'COMPLETE' && prevIsbn !== clean) {
-      fetch('/api/s3/upload-isbn', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isbn: prevIsbn, client: activeClient })
-      }).catch(err => console.error('[S3 Upload Previous on Rescan] Error:', err));
+      const prevBase = prevIsbn.replace(/(_Copy\d+|_Part\d+)+$/i, '');
+      const cleanBase = clean.replace(/(_Copy\d+|_Part\d+)+$/i, '');
+      const isConvertingToPart = prevBase === cleanBase && !prevIsbn.includes('_Part') && (Boolean(targetIdentifier?.includes('_Part')) || partNumber !== undefined);
+      if (!isConvertingToPart) {
+        fetch('/api/s3/upload-isbn', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isbn: prevIsbn, client: activeClient })
+        }).catch(err => console.error('[S3 Upload Previous on Rescan] Error:', err));
+      }
     }
 
     try {

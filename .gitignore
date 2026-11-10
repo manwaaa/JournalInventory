@@ -8,3 +8,5 @@ config.json
 certs/
 backend/certs/
 scratch/
+exports/
+*.xlsx
