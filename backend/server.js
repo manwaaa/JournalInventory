@@ -7150,6 +7150,17 @@ if (fs.existsSync(FRONTEND_DIST)) {
 
 // Start HTTP server
 const httpServer = http.createServer(app);
+httpServer.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n[CRITICAL ERROR] Port ${PORT} is already occupied by another running instance!`);
+    console.error(`To release port ${PORT} on Windows, run this in CMD or PowerShell:`);
+    console.error(`  taskkill /F /IM node.exe`);
+    console.error(`Then start again: npm run dev\n`);
+    process.exit(1);
+  } else {
+    console.error('[HTTP Server Error]', err);
+  }
+});
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`====================================================`);
   console.log(`  VERIFICATION IMAGES SERVER`);
