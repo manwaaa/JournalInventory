@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   Cloud, 
   Folder, 
@@ -23,7 +24,10 @@ import {
   HardDrive,
   ZoomIn,
   ZoomOut,
-  RotateCw
+  RotateCw,
+  RotateCcw,
+  ChevronLeft,
+  Download
 } from 'lucide-react';
 
 interface S3DateNode {
@@ -121,9 +125,75 @@ export const S3CloudExplorer: React.FC<S3CloudExplorerProps> = ({
 
   // Inspector Modal
   const [inspectModalItem, setInspectModalItem] = useState<S3JournalItem | null>(null);
-  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [rotation, setRotation] = useState(0);
+
+  // Exact inspection arrangement: Front -> Back -> Title -> Spine -> Edition -> Box A -> Box B
+  const getShotRank = (filename: string): number => {
+    const fn = filename.toLowerCase();
+    // 1. Front (Front Cover)
+    if (fn.includes('front cover') || fn.includes('front_cover') || fn.includes('shot_3') || fn.includes('shot3') || fn.includes('3_front') || (fn.includes('front') && !fn.includes('matter'))) return 1;
+    // 2. Back (Back Cover)
+    if (fn.includes('back cover') || fn.includes('back_cover') || fn.includes('shot_7') || fn.includes('shot7') || fn.includes('7_back') || fn.includes('back')) return 2;
+    // 3. Title (Title Page)
+    if (fn.includes('title page') || fn.includes('title_page') || fn.includes('shot_5') || fn.includes('shot5') || fn.includes('5_title') || fn.includes('title')) return 3;
+    // 4. Spine
+    if (fn.includes('spine') || fn.includes('shot_4') || fn.includes('shot4') || fn.includes('4_spine')) return 4;
+    // 5. Edition (Edition Notice / Front Matter)
+    if (fn.includes('edition notice') || fn.includes('edition_notice') || fn.includes('front_matter') || fn.includes('front matter') || fn.includes('shot_6') || fn.includes('shot6') || fn.includes('6_edition') || fn.includes('edition')) return 5;
+    // 6. Box A
+    if (fn.includes('box a') || fn.includes('box_a') || fn.includes('shot_1') || fn.includes('shot1') || fn.includes('1_box') || fn.endsWith('box.jpg') || fn.includes('_box.jpg')) return 6;
+    // 7. Box B (Box B / Unbox)
+    if (fn.includes('box b') || fn.includes('box_b') || fn.includes('shot_2') || fn.includes('shot2') || fn.includes('2_box') || fn.includes('unbox')) return 7;
+    return 99;
+  };
+
+  const getShotFriendlyName = (filename: string, idx: number) => {
+    const rank = getShotRank(filename);
+    switch (rank) {
+      case 1: return 'Front';
+      case 2: return 'Back';
+      case 3: return 'Title';
+      case 4: return 'Spine';
+      case 5: return 'Edition';
+      case 6: return 'Box A';
+      case 7: return 'Box B';
+      default: return `Shot ${idx + 1}`;
+    }
+  };
+
+  // Filter only valid image proofs and strictly arrange them as: Front, Back, Title, Spine, Edition, Box A, Box B
+  const imageFiles = useMemo(() => {
+    if (!inspectModalItem?.files) return [];
+    const imgs = inspectModalItem.files.filter(f => /\.(jpe?g|png|webp|gif|bmp)$/i.test(f.filename));
+    return [...imgs].sort((a, b) => getShotRank(a.filename) - getShotRank(b.filename));
+  }, [inspectModalItem]);
+
+  // Modal & Lightbox keyboard navigation (ArrowLeft / ArrowRight / Escape)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (lightboxIndex !== null) {
+          setLightboxIndex(null);
+        } else if (inspectModalItem !== null) {
+          setInspectModalItem(null);
+        }
+      } else if (lightboxIndex !== null && imageFiles.length > 0) {
+        if (e.key === 'ArrowLeft') {
+          setLightboxIndex(prev => (prev !== null && prev > 0 ? prev - 1 : imageFiles.length - 1));
+          setZoomLevel(1);
+          setRotation(0);
+        } else if (e.key === 'ArrowRight') {
+          setLightboxIndex(prev => (prev !== null && prev < imageFiles.length - 1 ? prev + 1 : 0));
+          setZoomLevel(1);
+          setRotation(0);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [lightboxIndex, inspectModalItem, imageFiles.length]);
 
   // 1. Fetch Tree
   const fetchTree = async (forceRefresh = false) => {
@@ -877,9 +947,15 @@ export const S3CloudExplorer: React.FC<S3CloudExplorerProps> = ({
       </div>
 
       {/* Inspect Shots Modal (7-Shot Live Lightbox) */}
-      {inspectModalItem && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+      {inspectModalItem && createPortal(
+        <div 
+          className="fixed inset-0 z-[9990] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setInspectModalItem(null)}
+        >
+          <div 
+            className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Modal Header */}
             <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
               <div>
@@ -897,114 +973,250 @@ export const S3CloudExplorer: React.FC<S3CloudExplorerProps> = ({
               <button
                 onClick={() => setInspectModalItem(null)}
                 className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                title="Close (Esc)"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Modal Body: 7 Shot Thumbnails Grid */}
+            {/* Modal Body: Shot Thumbnails Grid */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                {inspectModalItem.files.map((f, i) => {
-                  const proxyUrl = `/api/s3/image-proxy?bucket=${encodeURIComponent(activeBucket)}&key=${encodeURIComponent(f.key)}`;
-                  return (
-                    <div 
-                      key={f.key}
-                      onClick={() => {
-                        setLightboxImage(proxyUrl);
-                        setZoomLevel(1);
-                        setRotation(0);
-                      }}
-                      className="group bg-slate-50 dark:bg-slate-800/80 rounded-2xl p-2 border border-slate-200 dark:border-slate-700/80 hover:border-brand-500 dark:hover:border-blue-500 transition-all cursor-pointer flex flex-col"
-                    >
-                      <div className="aspect-square rounded-xl bg-slate-200 dark:bg-slate-700 overflow-hidden relative mb-2">
-                        <img
-                          src={proxyUrl}
-                          alt={f.filename}
-                          loading="lazy"
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                        />
-                        <div className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px] font-mono">
-                          Shot {i + 1}
+              {imageFiles.length === 0 ? (
+                <div className="flex flex-col items-center justify-center p-12 text-slate-400">
+                  <AlertCircle className="w-10 h-10 mb-2 opacity-60 text-amber-500" />
+                  <span className="text-sm font-bold text-slate-700 dark:text-slate-200">No Image Proofs Found</span>
+                  <span className="text-xs text-slate-400 mt-1">This S3 folder does not contain compatible image formats.</span>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {imageFiles.map((f, i) => {
+                    const proxyUrl = `/api/s3/image-proxy?bucket=${encodeURIComponent(activeBucket)}&key=${encodeURIComponent(f.key)}`;
+                    const shotName = getShotFriendlyName(f.filename, i);
+                    return (
+                      <div 
+                        key={f.key}
+                        onClick={() => {
+                          setLightboxIndex(i);
+                          setZoomLevel(1);
+                          setRotation(0);
+                        }}
+                        className="group bg-slate-50 dark:bg-slate-800/80 rounded-2xl p-2.5 border border-slate-200 dark:border-slate-700/80 hover:border-brand-500 dark:hover:border-blue-500 hover:shadow-lg transition-all cursor-pointer flex flex-col"
+                      >
+                        <div className="aspect-square rounded-xl bg-slate-200 dark:bg-slate-700 overflow-hidden relative mb-2 flex items-center justify-center">
+                          <img
+                            src={proxyUrl}
+                            alt={f.filename}
+                            loading="lazy"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                            onError={(e) => {
+                              // On error, show clean fallback badge
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/70 backdrop-blur-xs text-white text-[10px] font-bold">
+                            {shotName}
+                          </div>
+                          <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <span className="px-3 py-1 rounded-xl bg-black/80 text-white text-xs font-bold flex items-center space-x-1.5 backdrop-blur-sm shadow-md">
+                              <ZoomIn className="w-3.5 h-3.5" />
+                              <span>Inspect HD</span>
+                            </span>
+                          </div>
+                        </div>
+                        <div className="text-[11px] font-bold text-slate-800 dark:text-slate-200 truncate" title={f.filename}>
+                          {f.filename}
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex justify-between items-center">
+                          <span className="font-semibold text-brand-600 dark:text-blue-400">{shotName}</span>
+                          <span>{(f.size / 1024).toFixed(1)} KB</span>
                         </div>
                       </div>
-                      <div className="text-[11px] font-bold text-slate-800 dark:text-slate-200 truncate">
-                        {f.filename}
-                      </div>
-                      <div className="text-[10px] text-slate-400 font-mono">
-                        {(f.size / 1024).toFixed(1)} KB
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Modal Footer */}
-            <div className="p-3 bg-slate-50 dark:bg-slate-800/60 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
-              <div className="font-mono text-slate-500 text-[11px] truncate max-w-md">
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/60 border-t border-slate-200 dark:border-slate-800 flex items-center text-xs">
+              <div className="font-mono text-slate-500 text-[11px] truncate select-all">
                 URI: {inspectModalItem.s3Path}
               </div>
-              <button
-                onClick={() => setInspectModalItem(null)}
-                className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-white font-bold rounded-xl cursor-pointer"
-              >
-                Close
-              </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {/* Full-Screen Zoom Lightbox */}
-      {lightboxImage && (
-        <div 
-          className="fixed inset-0 z-60 bg-black/90 flex flex-col items-center justify-center p-4 select-none"
-          onClick={() => setLightboxImage(null)}
-        >
-          <div className="absolute top-4 right-4 flex items-center space-x-2 z-10" onClick={e => e.stopPropagation()}>
-            <button
-              onClick={() => setZoomLevel(z => Math.min(3, z + 0.25))}
-              className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-              title="Zoom In"
-            >
-              <ZoomIn className="w-5 h-5" />
-            </button>
-            <button
-              onClick={() => setZoomLevel(z => Math.max(0.5, z - 0.25))}
-              className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-              title="Zoom Out"
-            >
-              <ZoomOut className="w-5 h-5" />
-            </button>
-            <button
-              onClick={() => setRotation(r => (r + 90) % 360)}
-              className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-              title="Rotate"
-            >
-              <RotateCw className="w-5 h-5" />
-            </button>
-            <button
-              onClick={() => setLightboxImage(null)}
-              className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-              title="Close"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
+      {/* Full-Screen High-Resolution Photo Lightbox Inspector */}
+      {lightboxIndex !== null && imageFiles[lightboxIndex] && (() => {
+        const activeFile = imageFiles[lightboxIndex];
+        const activeProxyUrl = `/api/s3/image-proxy?bucket=${encodeURIComponent(activeBucket)}&key=${encodeURIComponent(activeFile.key)}`;
+        const shotName = getShotFriendlyName(activeFile.filename, lightboxIndex);
 
-          <img
-            src={lightboxImage}
-            alt="High Res Proof"
-            style={{
-              transform: `scale(${zoomLevel}) rotate(${rotation}deg)`,
-              transition: 'transform 0.2s ease-out'
-            }}
-            onClick={e => e.stopPropagation()}
-            className="max-h-[85vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
-          />
-        </div>
-      )}
+        const handlePrev = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          setLightboxIndex(prev => (prev !== null && prev > 0 ? prev - 1 : imageFiles.length - 1));
+          setZoomLevel(1);
+          setRotation(0);
+        };
+
+        const handleNext = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          setLightboxIndex(prev => (prev !== null && prev < imageFiles.length - 1 ? prev + 1 : 0));
+          setZoomLevel(1);
+          setRotation(0);
+        };
+
+        const handleDownload = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          const a = document.createElement('a');
+          a.href = activeProxyUrl;
+          a.download = activeFile.filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        };
+
+        return createPortal(
+          <div 
+            className="fixed inset-0 z-[99999] bg-black/95 backdrop-blur-md flex flex-col items-center justify-between p-4 select-none animate-in fade-in duration-200"
+            onClick={() => setLightboxIndex(null)}
+          >
+            {/* Top Toolbar */}
+            <div className="w-full max-w-7xl flex items-center justify-between text-white z-20" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center space-x-3">
+                <span className="px-3 py-1 rounded-full bg-blue-600/90 text-white text-xs font-bold font-mono">
+                  Shot {lightboxIndex + 1} of {imageFiles.length}
+                </span>
+                <span className="font-extrabold text-sm sm:text-base text-white">
+                  {shotName}
+                </span>
+                <span className="hidden md:inline text-xs text-slate-400 font-mono">
+                  • {activeFile.filename} ({(activeFile.size / 1024).toFixed(1)} KB)
+                </span>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => setZoomLevel(z => Math.min(3.5, z + 0.25))}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer transition-colors"
+                  title="Zoom In (+)"
+                >
+                  <ZoomIn className="w-5 h-5" />
+                </button>
+                <button
+                  onClick={() => setZoomLevel(z => Math.max(0.5, z - 0.25))}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer transition-colors"
+                  title="Zoom Out (-)"
+                >
+                  <ZoomOut className="w-5 h-5" />
+                </button>
+                <button
+                  onClick={() => { setZoomLevel(1); setRotation(0); }}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer transition-colors"
+                  title="Reset Zoom & Rotation"
+                >
+                  <RotateCcw className="w-5 h-5" />
+                </button>
+                <button
+                  onClick={() => setRotation(r => (r + 90) % 360)}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer transition-colors"
+                  title="Rotate 90°"
+                >
+                  <RotateCw className="w-5 h-5" />
+                </button>
+                <button
+                  onClick={handleDownload}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer transition-colors"
+                  title="Download Image"
+                >
+                  <Download className="w-5 h-5" />
+                </button>
+                <button
+                  onClick={() => setLightboxIndex(null)}
+                  className="p-2 rounded-xl bg-rose-600/80 hover:bg-rose-600 text-white cursor-pointer transition-colors ml-2"
+                  title="Close (Esc)"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Central Stage with Next/Previous Buttons */}
+            <div className="relative flex-1 w-full flex items-center justify-center overflow-hidden my-2" onClick={e => e.stopPropagation()}>
+              {/* Prev Button */}
+              {imageFiles.length > 1 && (
+                <button
+                  onClick={handlePrev}
+                  className="absolute left-2 sm:left-4 z-20 p-3 rounded-full bg-white/10 hover:bg-white/25 text-white backdrop-blur-md transition-all cursor-pointer shadow-lg hover:scale-110 active:scale-95"
+                  title="Previous Shot (Left Arrow)"
+                >
+                  <ChevronLeft className="w-6 h-6 sm:w-8 sm:h-8" />
+                </button>
+              )}
+
+              {/* Main Image */}
+              <img
+                src={activeProxyUrl}
+                alt={activeFile.filename}
+                style={{
+                  transform: `scale(${zoomLevel}) rotate(${rotation}deg)`,
+                  transition: 'transform 0.15s ease-out'
+                }}
+                className="max-h-[80vh] max-w-[85vw] object-contain rounded-xl shadow-2xl cursor-grab active:cursor-grabbing"
+              />
+
+              {/* Next Button */}
+              {imageFiles.length > 1 && (
+                <button
+                  onClick={handleNext}
+                  className="absolute right-2 sm:right-4 z-20 p-3 rounded-full bg-white/10 hover:bg-white/25 text-white backdrop-blur-md transition-all cursor-pointer shadow-lg hover:scale-110 active:scale-95"
+                  title="Next Shot (Right Arrow)"
+                >
+                  <ChevronRight className="w-6 h-6 sm:w-8 sm:h-8" />
+                </button>
+              )}
+            </div>
+
+            {/* Bottom Filmstrip Thumbnails Navigation */}
+            <div className="w-full max-w-4xl flex items-center justify-center space-x-2 py-2 overflow-x-auto z-20" onClick={e => e.stopPropagation()}>
+              {imageFiles.map((f, idx) => {
+                const isActive = idx === lightboxIndex;
+                const thumbProxy = `/api/s3/image-proxy?bucket=${encodeURIComponent(activeBucket)}&key=${encodeURIComponent(f.key)}`;
+                const sName = getShotFriendlyName(f.filename, idx);
+                return (
+                  <button
+                    key={f.key}
+                    onClick={() => {
+                      setLightboxIndex(idx);
+                      setZoomLevel(1);
+                      setRotation(0);
+                    }}
+                    className={`h-12 w-12 sm:h-14 sm:w-14 rounded-xl overflow-hidden border-2 transition-all cursor-pointer shrink-0 relative ${
+                      isActive 
+                        ? 'border-brand-500 scale-105 ring-2 ring-brand-400/50 shadow-lg' 
+                        : 'border-white/30 opacity-60 hover:opacity-100 hover:border-white'
+                    }`}
+                    title={sName}
+                  >
+                    <img
+                      src={thumbProxy}
+                      alt={f.filename}
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute bottom-0 inset-x-0 bg-black/80 text-[8px] sm:text-[9px] text-center text-white font-mono truncate px-0.5">
+                      {sName}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>,
+          document.body
+        );
+      })()}
     </div>
   );
 };

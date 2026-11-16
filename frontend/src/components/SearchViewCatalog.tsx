@@ -48,6 +48,15 @@ export const getShotUrl = (item: ProofItem | null | undefined, shotNumber: numbe
   if (item.shots && item.shots[strKey]) return item.shots[strKey];
   const urlField = (item as any)[`shot${shotNumber}Url`];
   if (urlField) return urlField;
+
+  // S3 Cloud Fallback: if journal has S3 verification or files, construct the proof path
+  if (item.isbn && (item.metadata?.s3Upload || item.isComplete || (item.shotsCount && item.shotsCount > 0))) {
+    const shotDef = SHOT_DEFINITIONS.find(d => d.shotNumber === shotNumber);
+    if (shotDef) {
+      const fn = `${item.isbn}_${shotDef.label.toLowerCase()}.jpg`;
+      return `/proofs/${encodeURIComponent(item.isbn)}/${encodeURIComponent(fn)}`;
+    }
+  }
   return null;
 };
 
@@ -123,22 +132,33 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!lightboxData) return;
+      const order = [3, 7, 5, 4, 6, 1, 2]; // Front (3), Back (7), Title (5), Spine (4), Edition (6), Box A (1), Box B (2)
       if (e.key === 'Escape') {
         setLightboxData(null);
       } else if (e.key === 'ArrowLeft') {
-        setLightboxData(prev => prev ? {
-          ...prev,
-          currentShotNumber: prev.currentShotNumber > 1 ? prev.currentShotNumber - 1 : 7,
-          zoomLevel: 1,
-          rotation: 0
-        } : null);
+        setLightboxData(prev => {
+          if (!prev) return null;
+          const currIdx = order.indexOf(prev.currentShotNumber);
+          const prevIdx = currIdx > 0 ? currIdx - 1 : order.length - 1;
+          return {
+            ...prev,
+            currentShotNumber: order[prevIdx],
+            zoomLevel: 1,
+            rotation: 0
+          };
+        });
       } else if (e.key === 'ArrowRight') {
-        setLightboxData(prev => prev ? {
-          ...prev,
-          currentShotNumber: prev.currentShotNumber < 7 ? prev.currentShotNumber + 1 : 1,
-          zoomLevel: 1,
-          rotation: 0
-        } : null);
+        setLightboxData(prev => {
+          if (!prev) return null;
+          const currIdx = order.indexOf(prev.currentShotNumber);
+          const nextIdx = currIdx < order.length - 1 ? currIdx + 1 : 0;
+          return {
+            ...prev,
+            currentShotNumber: order[nextIdx],
+            zoomLevel: 1,
+            rotation: 0
+          };
+        });
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -1339,7 +1359,10 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
 
             {/* 7 Shots Grid */}
             <div className="p-4 sm:p-6 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 flex-1">
-              {SHOT_DEFINITIONS.map((def) => {
+              {[...SHOT_DEFINITIONS].sort((a, b) => {
+                const order = [3, 7, 5, 4, 6, 1, 2]; // Front (3), Back (7), Title (5), Spine (4), Edition (6), Box A (1), Box B (2)
+                return order.indexOf(a.shotNumber) - order.indexOf(b.shotNumber);
+              }).map((def) => {
                 const shotUrl = getShotUrl(selectedPhotoModal.item, def.shotNumber);
 
                 return (
@@ -1456,14 +1479,18 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
 
         const handlePrev = (e: React.MouseEvent) => {
           e.stopPropagation();
-          const prevShot = lightboxData.currentShotNumber > 1 ? lightboxData.currentShotNumber - 1 : 7;
-          setLightboxData(prev => prev ? { ...prev, currentShotNumber: prevShot, zoomLevel: 1, rotation: 0 } : null);
+          const order = [3, 7, 5, 4, 6, 1, 2]; // Front (3), Back (7), Title (5), Spine (4), Edition (6), Box A (1), Box B (2)
+          const currIdx = order.indexOf(lightboxData.currentShotNumber);
+          const prevIdx = currIdx > 0 ? currIdx - 1 : order.length - 1;
+          setLightboxData(prev => prev ? { ...prev, currentShotNumber: order[prevIdx], zoomLevel: 1, rotation: 0 } : null);
         };
 
         const handleNext = (e: React.MouseEvent) => {
           e.stopPropagation();
-          const nextShot = lightboxData.currentShotNumber < 7 ? lightboxData.currentShotNumber + 1 : 1;
-          setLightboxData(prev => prev ? { ...prev, currentShotNumber: nextShot, zoomLevel: 1, rotation: 0 } : null);
+          const order = [3, 7, 5, 4, 6, 1, 2];
+          const currIdx = order.indexOf(lightboxData.currentShotNumber);
+          const nextIdx = currIdx < order.length - 1 ? currIdx + 1 : 0;
+          setLightboxData(prev => prev ? { ...prev, currentShotNumber: order[nextIdx], zoomLevel: 1, rotation: 0 } : null);
         };
 
         const handleZoomIn = (e: React.MouseEvent) => {
@@ -1640,7 +1667,10 @@ export const SearchViewCatalog: React.FC<SearchViewCatalogProps> = ({
               className="p-3 bg-slate-900/95 border-t border-white/10 flex items-center justify-center gap-2 overflow-x-auto z-10"
               onClick={(e) => e.stopPropagation()}
             >
-              {SHOT_DEFINITIONS.map((d) => {
+              {[...SHOT_DEFINITIONS].sort((a, b) => {
+                const order = [3, 7, 5, 4, 6, 1, 2]; // Front (3), Back (7), Title (5), Spine (4), Edition (6), Box A (1), Box B (2)
+                return order.indexOf(a.shotNumber) - order.indexOf(b.shotNumber);
+              }).map((d) => {
                 const thumbUrl = getShotUrl(lightboxData.item, d.shotNumber);
                 const isSelected = d.shotNumber === lightboxData.currentShotNumber;
 

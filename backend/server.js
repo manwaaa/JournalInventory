@@ -1799,6 +1799,69 @@ app.use('/proofs', (req, res, next) => {
         } catch (err) {}
       }
     }
+    // If not found locally or on peer, transparently fetch from AWS S3 cloud and cache locally
+    try {
+      const cleanReqParts = cleanReqPath.split(/[\\\/]/);
+      if (cleanReqParts.length >= 2) {
+        const identifier = cleanReqParts[0];
+        const reqFilename = cleanReqParts.slice(1).join('/');
+        const activeClient = config.activeClient || 'Mustang';
+        const isMustang = activeClient === 'Mustang';
+        const eff = getEffectiveS3Config({}, activeClient);
+        const s3 = getS3Client(eff);
+
+        if (eff.isConfigured && s3) {
+          const candidateKeys = [];
+          if (isMustang) {
+            candidateKeys.push(`innoscanmussgp1/JournalVerificationImages/${identifier}/${reqFilename}`);
+            candidateKeys.push(`innoscanmussgp1/${identifier}/${reqFilename}`);
+          } else {
+            for (const [, cache] of s3ExplorerCaches.entries()) {
+              if (cache?.isbns?.has(identifier)) {
+                const s3Item = cache.isbns.get(identifier);
+                const matchingFile = s3Item.files?.find(f => f.filename.toLowerCase() === reqFilename.toLowerCase());
+                if (matchingFile && matchingFile.key) {
+                  candidateKeys.unshift(matchingFile.key);
+                }
+              }
+            }
+            const dateStr = new Date().toISOString().slice(0, 10);
+            candidateKeys.push(`Phase-09/Lot-159J/${dateStr}/${identifier}/${reqFilename}`);
+            candidateKeys.push(`Phase-09/Lot-156J/${dateStr}/${identifier}/${reqFilename}`);
+          }
+
+          for (const s3Key of candidateKeys) {
+            try {
+              const s3Obj = await s3.send(new GetObjectCommand({
+                Bucket: eff.s3Bucket,
+                Key: s3Key
+              }));
+              if (s3Obj && s3Obj.Body) {
+                const bytes = await s3Obj.Body.transformToByteArray();
+                const buffer = Buffer.from(bytes);
+                if (buffer.length > 100) {
+                  // Save to local disk so future requests are instantaneous
+                  try {
+                    const localFilePath = path.join(config.storagePath, identifier, reqFilename);
+                    fs.ensureDirSync(path.dirname(localFilePath));
+                    fs.writeFileSync(localFilePath, buffer);
+                  } catch (e) {}
+
+                  res.set('Content-Type', s3Obj.ContentType || 'image/jpeg');
+                  res.set('Cache-Control', 'public, max-age=86400');
+                  return res.send(buffer);
+                }
+              }
+            } catch (s3Err) {
+              // Try next candidate key
+            }
+          }
+        }
+      }
+    } catch (s3FallbackErr) {
+      console.warn('[/proofs S3 Fallback Error]:', s3FallbackErr.message);
+    }
+
     res.status(404).send('Proof image not found');
   });
 });
@@ -3616,8 +3679,8 @@ async function loadS3ExplorerData({ targetBucket = 'innoscanjagjx1-s3', basePref
       }
     }
 
-    // Merge local folders if needed for Jaguar
-    if (!isMustang) {
+    // Merge local folders if needed for Jaguar Lot-159J
+    if (!isMustang && prefix.includes('Lot-159J')) {
       try {
         const folderMap = await getAllCandidateJournalFolders();
         for (const [cleanIsbn, folderPath] of folderMap.entries()) {
@@ -3707,6 +3770,7 @@ async function loadS3ExplorerData({ targetBucket = 'innoscanjagjx1-s3', basePref
         isbns: Array.from(isbns.entries()),
         stats: result.stats
       };
+      fs.mkdirSync(path.dirname(cachePath), { recursive: true });
       fs.writeFileSync(cachePath, JSON.stringify(serialized), 'utf8');
       console.log(`[S3 Explorer Engine] Persisted disk cache for ${safeKey} (${isbns.size} journals).`);
     } catch (saveErr) {
@@ -3771,7 +3835,7 @@ async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'capture
     'Issues',
     'Parts',
     'Noida Remarks Jaguar',
-    'Inventory Status  PH (Dropdown)',
+    'Inventory Status PH (Dropdown)',
     'Front Cover Image (Client)',
     'Back Cover Image (Internal)',
     'Title Page Image (Client)',
@@ -3886,19 +3950,49 @@ async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'capture
 
   const wb = XLSX.utils.book_new();
 
-  // 1. Packing_List
+  // 1. Packing_List with customized column spacing and alignment
   const wsPacking = XLSX.utils.aoa_to_sheet(rows);
+  wsPacking['!cols'] = [
+    { wch: 8 },   // S.No.
+    { wch: 12 },  // Lot No.
+    { wch: 12 },  // Box No.
+    { wch: 16 },  // ISBN
+    { wch: 8 },   // Counts
+    { wch: 24 },  // Order
+    { wch: 14 },  // Print ISSN
+    { wch: 45 },  // Journal name
+    { wch: 35 },  // Publisher
+    { wch: 18 },  // Publication Year
+    { wch: 10 },  // Volume
+    { wch: 12 },  // Issues
+    { wch: 8 },   // Parts
+    { wch: 24 },  // Noida Remarks Jaguar
+    { wch: 32 },  // Inventory Status PH (Dropdown)
+    { wch: 26 },  // Front Cover Image (Client)
+    { wch: 26 },  // Back Cover Image (Internal)
+    { wch: 24 },  // Title Page Image (Client)
+    { wch: 20 },  // Spine Image (Client)
+    { wch: 26 },  // Edition Notice Image (Client)
+    { wch: 22 },  // Box A Image (Internal)
+    { wch: 22 },  // Box B Image (Internal)
+    { wch: 75 },  // S3 Path Image
+    { wch: 24 },  // All Images Are Complete
+    { wch: 24 }   // All Parts Are Complete
+  ];
   XLSX.utils.book_append_sheet(wb, wsPacking, 'Packing_List');
 
   // 2. Excess
-  const wsExcess = XLSX.utils.aoa_to_sheet([
+  const excessRows = [
     ['ISBN', 'Print ISSN', 'Journal name', 'Publisher', 'Publication Year', 'Volume', 'Issues', 'Parts', 'Inventory Status  PH (Dropdown)', 'Inventory Remarks PH']
-  ]);
+  ];
+  const wsExcess = XLSX.utils.aoa_to_sheet(excessRows);
+  wsExcess['!cols'] = [
+    { wch: 16 }, { wch: 14 }, { wch: 45 }, { wch: 35 }, { wch: 18 }, { wch: 10 }, { wch: 12 }, { wch: 8 }, { wch: 32 }, { wch: 30 }
+  ];
   XLSX.utils.book_append_sheet(wb, wsExcess, 'Excess');
 
   // 3. Summary
-  const summaryAoa = [
-    [],
+  const summaryRows = [
     ['Inventory Status', 'No. of books per inventory'],
     ['Ok For Scanning', okCount],
     ['Incomplete Part Set – No part number listed in the packing list but with part number in the physical copy', 0],
@@ -3906,11 +4000,18 @@ async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'capture
     ['Physical book not received', missingCount],
     ['Grand Total', totalCount]
   ];
+  const summaryAoa = [
+    [],
+    ...summaryRows
+  ];
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryAoa);
+  wsSummary['!cols'] = [
+    { wch: 85 }, { wch: 25 }
+  ];
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
 
   // 4. Drop down
-  const wsDropdown = XLSX.utils.aoa_to_sheet([
+  const dropdownRows = [
     ['Counterfeit - authenticity or provenance cannot be verified'],
     ['Duplicate - same title, volume and issue already sourced'],
     ['Damaged, incomplete or unscannable (e.g. missing pages, water or mold damage)'],
@@ -3920,7 +4021,11 @@ async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'capture
     ['Excess – Physical copy received but not listed in the packing list and ILMS'],
     ['Others – Physical copy received but not found in ILMS'],
     ['Physical book not received']
-  ]);
+  ];
+  const wsDropdown = XLSX.utils.aoa_to_sheet(dropdownRows);
+  wsDropdown['!cols'] = [
+    { wch: 85 }
+  ];
   XLSX.utils.book_append_sheet(wb, wsDropdown, 'Drop down');
 
   const dateSuffix = targetDate && targetDate !== 'all' ? `_${targetDate}` : '';
@@ -3931,6 +4036,9 @@ async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'capture
   return {
     wb,
     rows,
+    excessRows,
+    summaryRows,
+    dropdownRows,
     filenameBase,
     totalCount,
     okCount,
@@ -4136,26 +4244,89 @@ app.post('/api/s3/explorer/refresh', async (req, res) => {
   }
 });
 
-// 4. Image Proxy & Presigned Streamer
+// 4. Image Proxy & Direct Streamer (High-Speed Streaming + Local Disk Cache Fallback)
 app.get('/api/s3/image-proxy', async (req, res) => {
   try {
-    const key = req.query.key;
-    const bucket = req.query.bucket || 'innoscanjagjx1-s3';
+    let key = req.query.key;
+    if (!key) return res.status(400).send('Missing key parameter');
+    key = decodeURIComponent(key);
+
+    const bucket = req.query.bucket || (config.activeClient === 'Jaguar' ? 'innoscanjagjx1-s3' : 'innoscanmussgp1-s3');
     const isMustang = bucket.includes('mussgp') || bucket.includes('mustang');
     const client = req.query.client || (isMustang ? 'Mustang' : 'Jaguar');
+    const filename = path.basename(key);
 
-    if (!key) return res.status(400).send('Missing key parameter');
+    // 1. Check local disk storage first (0ms instantaneous delivery)
+    const keyParts = key.split('/');
+    const identifier = keyParts.length >= 2 ? keyParts[keyParts.length - 2] : '';
+    if (identifier) {
+      const candidateLocalDirs = [
+        config.storagePath,
+        ...(config.clientProfiles ? Object.values(config.clientProfiles).map(p => p.storagePath) : [])
+      ].filter(Boolean);
 
+      for (const baseDir of candidateLocalDirs) {
+        const localCandidate = path.join(baseDir, identifier, filename);
+        if (isValidImageFile(localCandidate)) {
+          res.setHeader('Cache-Control', 'public, max-age=604800');
+          return res.sendFile(localCandidate);
+        }
+      }
+    }
+
+    // 2. Check local disk cache directory
+    const cacheDir = path.join(__dirname, 'data', 's3_image_cache');
+    const safeCacheKey = `${bucket}_${key}`.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const cachedFilePath = path.join(cacheDir, safeCacheKey);
+    if (fs.existsSync(cachedFilePath) && isValidImageFile(cachedFilePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=604800');
+      return res.sendFile(cachedFilePath);
+    }
+
+    // 3. Optional redirect mode if explicitly requested (?redirect=true)
+    if (req.query.redirect === 'true') {
+      const eff = getEffectiveS3Config({}, client);
+      const s3 = getS3Client(eff);
+      if (s3) {
+        const presigned = await getSignedUrl(s3, new GetObjectCommand({
+          Bucket: bucket,
+          Key: key
+        }), { expiresIn: 3600 });
+        return res.redirect(presigned);
+      }
+    }
+
+    // 4. Stream directly from AWS S3 (High-resolution, ultra-fast, no CORS/browser network restrictions)
     const eff = getEffectiveS3Config({}, client);
     const s3 = getS3Client(eff);
+    if (!s3 || !eff.isConfigured) {
+      return res.status(503).send('S3 credentials not configured for client: ' + client);
+    }
 
-    const presigned = await getSignedUrl(s3, new GetObjectCommand({
+    const s3Obj = await s3.send(new GetObjectCommand({
       Bucket: bucket,
       Key: key
-    }), { expiresIn: 3600 });
+    }));
 
-    res.redirect(presigned);
+    if (!s3Obj || !s3Obj.Body) {
+      return res.status(404).send('Image object body not available from S3');
+    }
+
+    const bytes = await s3Obj.Body.transformToByteArray();
+    const buffer = Buffer.from(bytes);
+
+    // Asynchronously save to local disk cache so subsequent views are 0ms instant
+    fs.ensureDir(cacheDir).then(() => {
+      fs.writeFile(cachedFilePath, buffer).catch(() => {});
+    }).catch(() => {});
+
+    const contentType = s3Obj.ContentType || (filename.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg');
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    res.setHeader('Content-Length', buffer.length);
+    return res.send(buffer);
   } catch (err) {
+    console.error('[S3 Image Proxy Error]:', err.message);
     res.status(500).send('Could not fetch S3 image: ' + err.message);
   }
 });
@@ -4189,7 +4360,21 @@ app.get(['/api/s3/export-delivery-certificate', '/api/s3/export-qc-report'], asy
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
         return res.status(200).send(buffer);
       } else {
-        const csvContent = qcResult.rows.map(r => r.map(c => c === null || c === undefined ? '' : `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+        const formatCsvField = (val) => {
+          if (val === null || val === undefined) return '';
+          const s = String(val);
+          if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+            return `"${s.replace(/"/g, '""')}"`;
+          }
+          return s;
+        };
+
+        const packingCsv = qcResult.rows.map(r => r.map(formatCsvField).join(',')).join('\r\n');
+        const excessCsv = (qcResult.excessRows || []).map(r => r.map(formatCsvField).join(',')).join('\r\n');
+        const summaryCsv = (qcResult.summaryRows || []).map(r => r.map(formatCsvField).join(',')).join('\r\n');
+        const dropdownCsv = (qcResult.dropdownRows || []).map(r => r.map(formatCsvField).join(',')).join('\r\n');
+
+        const csvContent = `${packingCsv}\r\n${excessCsv}\r\n,\r\n${summaryCsv}\r\n${dropdownCsv}\r\n`;
         const filename = `${qcResult.filenameBase}.csv`;
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -5161,6 +5346,34 @@ app.post('/api/capture/init-isbn', async (req, res) => {
       if (alreadyExists && foundFile) {
         existingShots[s] = foundFile;
         shotsFoundCount++;
+      }
+    }
+
+    // If local folder has missing shots, check S3 cache so operators can review/inspect S3 photos
+    if (shotsFoundCount < 7) {
+      for (const [, cache] of s3ExplorerCaches.entries()) {
+        const s3Item = cache?.isbns?.get(activeIdentifier) || cache?.isbns?.get(baseIsbnOnly);
+        if (s3Item && s3Item.files && s3Item.files.length > 0) {
+          for (let s = 1; s <= 7; s++) {
+            if (!existingShots[s]) {
+              const s3Match = s3Item.files.find(f => {
+                const fn = f.filename.toLowerCase();
+                if (s === 1 && (fn.includes('box a') || fn.includes('box_a') || fn.endsWith('box.jpg') || fn.includes('_box.jpg'))) return true;
+                if (s === 2 && (fn.includes('box b') || fn.includes('box_b') || fn.includes('unbox'))) return true;
+                if (s === 3 && (fn.includes('front cover') || fn.includes('front_cover') || fn.includes('3_front'))) return true;
+                if (s === 4 && (fn.includes('spine') || fn.includes('4_spine'))) return true;
+                if (s === 5 && (fn.includes('title page') || fn.includes('title_page') || fn.includes('5_title'))) return true;
+                if (s === 6 && (fn.includes('edition notice') || fn.includes('edition_notice') || fn.includes('6_edition') || fn.includes('front_matter'))) return true;
+                if (s === 7 && (fn.includes('back cover') || fn.includes('back_cover') || fn.includes('7_back'))) return true;
+                return false;
+              });
+              if (s3Match) {
+                existingShots[s] = s3Match.filename;
+                shotsFoundCount++;
+              }
+            }
+          }
+        }
       }
     }
 
@@ -7436,151 +7649,284 @@ app.get('/api/gallery/export-csv', async (req, res) => {
 
 app.get('/api/gallery/list', async (req, res) => {
   try {
+    const activeClient = config.activeClient || 'Mustang';
+    const isMustang = activeClient === 'Mustang';
+    const targetBucket = isMustang ? 'innoscanmussgp1-s3' : 'innoscanjagjx1-s3';
+    const prefix = isMustang ? 'innoscanmussgp1/JournalVerificationImages/' : 'Phase-09/Lot-159J/';
+    const s3Data = await loadS3ExplorerData({ targetBucket, basePrefix: prefix, forceRefresh: false, client: activeClient }).catch(() => null);
+
     const folderMap = await getAllCandidateJournalFolders();
-    if (folderMap.size === 0) {
-      return res.json({ items: [] });
-    }
-
-    const dirEntries = Array.from(folderMap.entries()).map(([name, fullPath]) => ({ name, fullPath }));
-
     const items = [];
-    let processedCount = 0;
-    for (const dir of dirEntries) {
-      processedCount++;
-      if (processedCount % 40 === 0) {
-        await new Promise(r => setImmediate(r));
-      }
+    const processedIsbns = new Set();
 
-      const folderPath = dir.fullPath;
-      let metadata = readIsbnMetadata(dir.name);
+    if (folderMap.size > 0) {
+      const dirEntries = Array.from(folderMap.entries()).map(([name, fullPath]) => ({ name, fullPath }));
+      let processedCount = 0;
+      for (const dir of dirEntries) {
+        processedIsbns.add(dir.name);
+        processedCount++;
+        if (processedCount % 40 === 0) {
+          await new Promise(r => setImmediate(r));
+        }
 
-      let stat = null;
-      let folderFiles = [];
-      try {
-        stat = await fs.stat(folderPath);
-        folderFiles = await fs.readdir(folderPath);
-      } catch (e) {}
+        const folderPath = dir.fullPath;
+        let metadata = readIsbnMetadata(dir.name);
 
-      // Multi-part detection: only check if filenames contain _PartN
-      const hasPartFiles = folderFiles.some(f => /_part\d+/i.test(f));
-      const existingParts = hasPartFiles ? await findExistingParts(dir.name, folderFiles) : [];
-      if (existingParts.length > 0) {
-        for (const p of existingParts) {
-          const pMeta = readIsbnMetadata(p.identifier) || metadata;
-          const pShots = {};
-          let pCount = 0;
-          for (let s = 1; s <= 7; s++) {
-            const foundFile = findShotFileInFolder(folderPath, s, p.identifier, folderFiles);
-            if (foundFile) {
-              pShots[s] = `/proofs/${encodeURIComponent(dir.name)}/${encodeURIComponent(foundFile)}`;
-              pCount++;
-            } else {
-              pShots[s] = null;
+        let stat = null;
+        let folderFiles = [];
+        try {
+          stat = await fs.stat(folderPath);
+          folderFiles = await fs.readdir(folderPath);
+        } catch (e) {}
+
+        // Multi-part detection: only check if filenames contain _PartN
+        const hasPartFiles = folderFiles.some(f => /_part\d+/i.test(f));
+        const existingParts = hasPartFiles ? await findExistingParts(dir.name, folderFiles) : [];
+        if (existingParts.length > 0) {
+          for (const p of existingParts) {
+            const pMeta = readIsbnMetadata(p.identifier) || metadata;
+            const pShots = {};
+            let pCount = 0;
+            for (let s = 1; s <= 7; s++) {
+              const foundFile = findShotFileInFolder(folderPath, s, p.identifier, folderFiles);
+              if (foundFile) {
+                pShots[s] = `/proofs/${encodeURIComponent(dir.name)}/${encodeURIComponent(foundFile)}`;
+                pCount++;
+              } else {
+                pShots[s] = null;
+              }
+            }
+
+            const baseIsbn = dir.name;
+            const manifestMatch = findManifestItem(baseIsbn);
+            items.push({
+              isbn: p.identifier,
+              baseIsbn,
+              lotNumber: pMeta?.lotNumber || metadata?.lotNumber || manifestMatch?.lotNumber || 'Unassigned Lot',
+              boxNumber: pMeta?.boxNumber || metadata?.boxNumber || manifestMatch?.boxNumber || '',
+              copyNumber: 1,
+              partNumber: p.partNumber,
+              totalParts: Math.max(existingParts.length, pMeta?.totalParts || 3),
+              folderPath,
+              shotsCount: pCount,
+              isComplete: pCount >= 7,
+              shots: pShots,
+              shot1Url: pShots[1],
+              shot2Url: pShots[2],
+              shot3Url: pShots[3],
+              shot4Url: pShots[4],
+              shot5Url: pShots[5],
+              shot6Url: pShots[6],
+              shot7Url: pShots[7],
+              modifiedAt: stat ? stat.mtime.toISOString() : null,
+              metadata: pMeta || metadata
+            });
+          }
+          continue;
+        }
+
+        const shots = {};
+        let shotsCount = 0;
+        for (let s = 1; s <= 7; s++) {
+          const foundFile = findShotFileInFolder(folderPath, s, dir.name, folderFiles);
+          if (foundFile) {
+            shots[s] = `/proofs/${encodeURIComponent(dir.name)}/${encodeURIComponent(foundFile)}`;
+            shotsCount++;
+          } else {
+            shots[s] = null;
+          }
+        }
+
+        // Self-heal with S3 proofs if local directory has missing shots
+        if (shotsCount < 7 && s3Data && s3Data.isbns) {
+          const s3Item = s3Data.isbns.get(dir.name) || s3Data.isbns.get(getBaseIsbn(dir.name));
+          if (s3Item && s3Item.files) {
+            for (let s = 1; s <= 7; s++) {
+              if (!shots[s]) {
+                const s3Match = s3Item.files.find(f => {
+                  const fn = f.filename.toLowerCase();
+                  if (s === 1 && (fn.includes('box a') || fn.includes('box_a') || fn.endsWith('box.jpg') || fn.includes('_box.jpg'))) return true;
+                  if (s === 2 && (fn.includes('box b') || fn.includes('box_b') || fn.includes('unbox'))) return true;
+                  if (s === 3 && (fn.includes('front cover') || fn.includes('front_cover') || fn.includes('3_front'))) return true;
+                  if (s === 4 && (fn.includes('spine') || fn.includes('4_spine'))) return true;
+                  if (s === 5 && (fn.includes('title page') || fn.includes('title_page') || fn.includes('5_title'))) return true;
+                  if (s === 6 && (fn.includes('edition notice') || fn.includes('edition_notice') || fn.includes('6_edition') || fn.includes('front_matter'))) return true;
+                  if (s === 7 && (fn.includes('back cover') || fn.includes('back_cover') || fn.includes('7_back'))) return true;
+                  return false;
+                });
+                if (s3Match) {
+                  shots[s] = `/proofs/${encodeURIComponent(dir.name)}/${encodeURIComponent(s3Match.filename)}`;
+                  shotsCount++;
+                }
+              }
             }
           }
-
-          const baseIsbn = dir.name;
-          const manifestMatch = findManifestItem(baseIsbn);
-          items.push({
-            isbn: p.identifier,
-            baseIsbn,
-            lotNumber: pMeta?.lotNumber || metadata?.lotNumber || manifestMatch?.lotNumber || 'Unassigned Lot',
-            boxNumber: pMeta?.boxNumber || metadata?.boxNumber || manifestMatch?.boxNumber || '',
-            copyNumber: 1,
-            partNumber: p.partNumber,
-            totalParts: Math.max(existingParts.length, pMeta?.totalParts || 3),
-            folderPath,
-            shotsCount: pCount,
-            isComplete: pCount >= 7,
-            shots: pShots,
-            shot1Url: pShots[1],
-            shot2Url: pShots[2],
-            shot3Url: pShots[3],
-            shot4Url: pShots[4],
-            shot5Url: pShots[5],
-            shot6Url: pShots[6],
-            shot7Url: pShots[7],
-            modifiedAt: stat ? stat.mtime.toISOString() : null,
-            metadata: pMeta || metadata
-          });
         }
-        continue;
-      }
 
-      const shots = {};
-      let shotsCount = 0;
-      for (let s = 1; s <= 7; s++) {
-        const foundFile = findShotFileInFolder(folderPath, s, dir.name, folderFiles);
-        if (foundFile) {
-          shots[s] = `/proofs/${encodeURIComponent(dir.name)}/${encodeURIComponent(foundFile)}`;
-          shotsCount++;
-        } else {
-          shots[s] = null;
+        const copyMatch = dir.name.match(/_Copy(\d+)$/i);
+        const copyNumber = metadata?.copyNumber || (copyMatch ? parseInt(copyMatch[1], 10) : 1);
+        const baseIsbn = metadata?.isbn || getBaseIsbn(dir.name);
+        const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(dir.name);
+
+        // Robust Lot Resolution:
+        let lotNumber = metadata?.lotNumber;
+        if (!lotNumber || lotNumber === 'Unassigned' || lotNumber === 'Unassigned Lot' || (lotNumber === 'Lot-1' && manifestMatch?.lotNumber && manifestMatch.lotNumber !== 'Lot-1')) {
+          if (manifestMatch?.lotNumber) {
+            lotNumber = manifestMatch.lotNumber;
+          }
         }
-      }
+        if (!lotNumber) lotNumber = 'Unassigned Lot';
 
-      const copyMatch = dir.name.match(/_Copy(\d+)$/i);
-      const copyNumber = metadata?.copyNumber || (copyMatch ? parseInt(copyMatch[1], 10) : 1);
-      const baseIsbn = metadata?.isbn || getBaseIsbn(dir.name);
-      const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(dir.name);
-
-      // Robust Lot Resolution:
-      let lotNumber = metadata?.lotNumber;
-      if (!lotNumber || lotNumber === 'Unassigned' || lotNumber === 'Unassigned Lot' || (lotNumber === 'Lot-1' && manifestMatch?.lotNumber && manifestMatch.lotNumber !== 'Lot-1')) {
-        if (manifestMatch?.lotNumber) {
-          lotNumber = manifestMatch.lotNumber;
+        // Robust Box Resolution:
+        let boxNumber = metadata?.boxNumber;
+        if (!boxNumber || boxNumber === 'Unassigned' || boxNumber === 'Unassigned Box') {
+          if (manifestMatch?.boxNumber) {
+            boxNumber = manifestMatch.boxNumber;
+          }
         }
-      }
-      if (!lotNumber) lotNumber = 'Unassigned Lot';
+        if (!boxNumber) boxNumber = '';
 
-      // Robust Box Resolution:
-      let boxNumber = metadata?.boxNumber;
-      if (!boxNumber || boxNumber === 'Unassigned' || boxNumber === 'Unassigned Box') {
-        if (manifestMatch?.boxNumber) {
-          boxNumber = manifestMatch.boxNumber;
+        // Auto self-heal metadata on disk if it was missing Lot or Box
+        if (metadata && (metadata.lotNumber !== lotNumber || metadata.boxNumber !== boxNumber || (!metadata.bookDetails && manifestMatch?.title))) {
+          metadata.lotNumber = lotNumber;
+          metadata.boxNumber = boxNumber;
+          if (!metadata.bookDetails && manifestMatch?.title) {
+            metadata.bookDetails = {
+              title: manifestMatch.title,
+              authors: manifestMatch.author || '',
+              publisher: manifestMatch.publisher || '',
+              publishYear: manifestMatch.publicationYear || '',
+              printIssn: manifestMatch.printIssn || '',
+              volume: manifestMatch.volume || '',
+              issues: manifestMatch.issues || '',
+              source: 'Manifest'
+            };
+          }
+          saveIsbnMetadata(dir.name, metadata).catch(() => {});
         }
-      }
-      if (!boxNumber) boxNumber = '';
 
-      // Auto self-heal metadata on disk if it was missing Lot or Box
-      if (metadata && (metadata.lotNumber !== lotNumber || metadata.boxNumber !== boxNumber || (!metadata.bookDetails && manifestMatch?.title))) {
-        metadata.lotNumber = lotNumber;
-        metadata.boxNumber = boxNumber;
-        if (!metadata.bookDetails && manifestMatch?.title) {
-          metadata.bookDetails = {
-            title: manifestMatch.title,
-            authors: manifestMatch.author || '',
-            publisher: manifestMatch.publisher || '',
-            publishYear: manifestMatch.publicationYear || '',
-            printIssn: manifestMatch.printIssn || '',
-            volume: manifestMatch.volume || '',
-            issues: manifestMatch.issues || '',
-            source: 'Manifest'
-          };
+        items.push({
+          isbn: dir.name,
+          baseIsbn,
+          lotNumber,
+          boxNumber,
+          copyNumber,
+          folderPath,
+          shotsCount,
+          isComplete: shotsCount >= 7,
+          shots,
+          shot1Url: shots[1],
+          shot2Url: shots[2],
+          shot3Url: shots[3],
+          shot4Url: shots[4],
+          shot5Url: shots[5],
+          shot6Url: shots[6],
+          shot7Url: shots[7],
+          modifiedAt: stat ? stat.mtime : null,
+          metadata
+        });
+      }
+    }
+
+    // Merge S3 Cloud Explorer journals if local storage has fewer items
+    if (items.length < 50) {
+      const activeClient = config.activeClient || 'Mustang';
+      const isMustang = activeClient === 'Mustang';
+      const targetBucket = isMustang ? 'innoscanmussgp1-s3' : 'innoscanjagjx1-s3';
+      const prefix = isMustang ? 'innoscanmussgp1/JournalVerificationImages/' : 'Phase-09/Lot-159J/';
+
+      try {
+        const s3Data = await loadS3ExplorerData({ targetBucket, basePrefix: prefix, forceRefresh: false, client: activeClient });
+        if (s3Data && s3Data.isbns && s3Data.isbns.size > 0) {
+          const manifestMap = new Map();
+          for (const item of (manifestData.items || [])) {
+            if (item.isbn) manifestMap.set(String(item.isbn).trim(), item);
+          }
+
+          let s3Count = 0;
+          for (const [isbn, s3Item] of s3Data.isbns.entries()) {
+            if (processedIsbns.has(isbn)) continue;
+            processedIsbns.add(isbn);
+            s3Count++;
+            if (s3Count % 50 === 0) {
+              await new Promise(r => setImmediate(r));
+            }
+
+            const m = manifestMap.get(isbn) || {};
+            const shots = {};
+            let shotsCount = 0;
+
+            for (let s = 1; s <= 7; s++) {
+              const expectedName = getShotFilename(s, isbn);
+              const foundFile = s3Item.files?.find(f => {
+                const fn = f.filename.toLowerCase();
+                if (s === 1 && (fn.includes('box a') || fn.includes('box_a') || fn.endsWith('box.jpg') || fn.includes('_box.jpg'))) return true;
+                if (s === 2 && (fn.includes('box b') || fn.includes('box_b') || fn.includes('unbox'))) return true;
+                if (s === 3 && (fn.includes('front cover') || fn.includes('front_cover') || fn.includes('3_front'))) return true;
+                if (s === 4 && (fn.includes('spine') || fn.includes('4_spine'))) return true;
+                if (s === 5 && (fn.includes('title page') || fn.includes('title_page') || fn.includes('5_title'))) return true;
+                if (s === 6 && (fn.includes('edition notice') || fn.includes('edition_notice') || fn.includes('6_edition') || fn.includes('front_matter'))) return true;
+                if (s === 7 && (fn.includes('back cover') || fn.includes('back_cover') || fn.includes('7_back'))) return true;
+                return false;
+              });
+
+              if (foundFile) {
+                shots[s] = `/proofs/${encodeURIComponent(isbn)}/${encodeURIComponent(foundFile.filename)}`;
+                shotsCount++;
+              } else {
+                shots[s] = `/proofs/${encodeURIComponent(isbn)}/${encodeURIComponent(expectedName)}`;
+              }
+            }
+
+            const title = m.title || m.journalName || (isMustang ? 'Mustang Journal Proof' : 'Jaguar Journal Proof');
+            const lotNumber = m.lotNumber || (isMustang ? 'JournalVerificationImages' : 'Lot-159J');
+            const boxNumber = m.boxNumber || '';
+
+            items.push({
+              isbn,
+              baseIsbn: isbn,
+              lotNumber,
+              boxNumber,
+              copyNumber: 1,
+              folderPath: s3Item.s3Path,
+              shotsCount,
+              isComplete: shotsCount >= 7,
+              shots,
+              shot1Url: shots[1],
+              shot2Url: shots[2],
+              shot3Url: shots[3],
+              shot4Url: shots[4],
+              shot5Url: shots[5],
+              shot6Url: shots[6],
+              shot7Url: shots[7],
+              modifiedAt: s3Item.date,
+              metadata: {
+                isbn,
+                lotNumber,
+                boxNumber,
+                bookDetails: {
+                  title,
+                  authors: m.author || '',
+                  publisher: m.publisher || '',
+                  publishYear: m.publicationYear || '',
+                  printIssn: m.printIssn || '',
+                  volume: m.volume || '',
+                  issues: m.issues || '',
+                  source: 'AWS S3 & Manifest'
+                },
+                s3Upload: {
+                  cloudVerified: shotsCount >= 7,
+                  fileCount: s3Item.files?.length || shotsCount,
+                  s3FolderUri: `s3://${targetBucket}/${s3Item.s3Path}`,
+                  uploadedAt: s3Item.date
+                }
+              }
+            });
+          }
         }
-        saveIsbnMetadata(dir.name, metadata).catch(() => {});
+      } catch (s3Err) {
+        console.warn('[/api/gallery/list S3 Integration Warning]:', s3Err.message);
       }
-
-      items.push({
-        isbn: dir.name,
-        baseIsbn,
-        lotNumber,
-        boxNumber,
-        copyNumber,
-        folderPath,
-        shotsCount,
-        isComplete: shotsCount >= 7,
-        shots,
-        shot1Url: shots[1],
-        shot2Url: shots[2],
-        shot3Url: shots[3],
-        shot4Url: shots[4],
-        shot5Url: shots[5],
-        shot6Url: shots[6],
-        shot7Url: shots[7],
-        modifiedAt: stat ? stat.mtime : null,
-        metadata
-      });
     }
 
     items.sort((a, b) => new Date(b.modifiedAt || 0) - new Date(a.modifiedAt || 0));

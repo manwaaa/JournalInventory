@@ -179,6 +179,7 @@ async function buildCache({ bucket, prefix, clientName }) {
 
   const safeKey = `${bucket}_${prefix}`.replace(/[^a-zA-Z0-9_-]/g, '_');
   const cachePath = path.join(__dirname, '../data', `s3_cache_${safeKey}.json`);
+  fs.mkdirSync(path.dirname(cachePath), { recursive: true });
   fs.writeFileSync(cachePath, JSON.stringify(cacheObj), 'utf8');
   console.log(`[Cache Builder] Saved cache to ${cachePath} (${(fs.statSync(cachePath).size / 1024 / 1024).toFixed(2)} MB). Complete: ${completeJournals}, Incomplete: ${incompleteJournals}.`);
 }
