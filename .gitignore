@@ -10,3 +10,5 @@ backend/certs/
 scratch/
 exports/
 *.xlsx
+backend/data/
+

@@ -413,7 +413,7 @@ const DEFAULT_CLIENT_PROFILES = {
     s3Region: process.env.AWS_REGION || 'ap-southeast-1',
     s3AccessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
     s3SecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-    s3Prefix: 'innoscanmussgp1/JournalVerificationImages/',
+    s3Prefix: 'innoscanmussgp1/',
     s3CustomEndpoint: process.env.AWS_S3_ENDPOINT || ''
   },
   Jaguar: {
@@ -450,7 +450,7 @@ let config = {
   s3Region: process.env.AWS_REGION || 'ap-southeast-1',
   s3AccessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
   s3SecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-  s3Prefix: 'innoscanmussgp1/JournalVerificationImages/',
+  s3Prefix: 'innoscanmussgp1/',
   s3CustomEndpoint: process.env.AWS_S3_ENDPOINT || ''
 };
 
@@ -3435,89 +3435,319 @@ app.post('/api/s3/audit-reconcile', async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// Jaguar QC & Delivery Certificate Generator (21-Column Client Standard)
+// S3 Cloud Explorer & Automated QC Verification Engine
 // -------------------------------------------------------------
-async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'captured', targetBox = '', client = 'Jaguar' }) {
-  const eff = getEffectiveS3Config({}, client);
+const KNOWN_S3_BUCKETS = [
+  'innoscanjagjx1-s3',
+  'innoscanmussgp1-s3'
+];
+
+const s3ExplorerCaches = new Map();
+const activeExplorerFetches = new Map();
+
+function verifyJournalShots(files = [], expectedParts = 1) {
+  const filenames = files.map(f => (typeof f === 'string' ? f : f.filename || f.key || '').toLowerCase());
+  
+  // Real shot presence checks (no fake shortcuts)
+  const frontCover = filenames.some(f => f.includes('front cover') || f.includes('front_cover') || f.includes('shot_3') || f.includes('3_front'));
+  const backCover = filenames.some(f => f.includes('back cover') || f.includes('back_cover') || f.includes('shot_7') || f.includes('7_back'));
+  const titlePage = filenames.some(f => f.includes('title page') || f.includes('title_page') || f.includes('shot_5') || f.includes('5_title'));
+  const spine = filenames.some(f => f.includes('spine') || f.includes('shot_4') || f.includes('4_spine'));
+  const editionNotice = filenames.some(f => f.includes('edition notice') || f.includes('edition_notice') || f.includes('front_matter') || f.includes('shot_6') || f.includes('6_edition'));
+  const boxA = filenames.some(f => f.includes('box a') || f.includes('box_a') || f.includes('shot_1') || f.includes('1_box') || f.endsWith('box.jpg') || f.includes('_box.jpg'));
+  const boxB = filenames.some(f => f.includes('box b') || f.includes('box_b') || f.includes('unbox') || f.includes('shot_2') || f.includes('2_box'));
+
+  // Multipart detection
+  const distinctParts = new Set();
+  for (const f of filenames) {
+    const m = f.match(/_part(\d+)/i);
+    if (m) distinctParts.add(parseInt(m[1], 10));
+  }
+  const actualParts = distinctParts.size || (files.length >= 14 ? Math.floor(files.length / 7) : 1);
+  const targetParts = Math.max(expectedParts || 1, actualParts);
+
+  const imageFiles = filenames.filter(f => !f.endsWith('.json') && !f.startsWith('.') && !f.includes('.bak'));
+  const expectedShotsCount = targetParts * 7;
+  const hasRequiredCount = imageFiles.length >= expectedShotsCount;
+  const allShotsPresent = Boolean(frontCover && backCover && titlePage && spine && editionNotice && boxA && boxB);
+
+  // A journal is genuinely complete IF AND ONLY IF all 7 shots are found AND file count meets required parts
+  const allComplete = Boolean(allShotsPresent && hasRequiredCount);
+  const allPartsComplete = Boolean(actualParts >= targetParts && allComplete);
+
+  return {
+    frontCover: Boolean(frontCover),
+    backCover: Boolean(backCover),
+    titlePage: Boolean(titlePage),
+    spine: Boolean(spine),
+    editionNotice: Boolean(editionNotice),
+    boxA: Boolean(boxA),
+    boxB: Boolean(boxB),
+    allComplete,
+    allPartsComplete,
+    actualParts,
+    expectedParts: targetParts,
+    filesCount: imageFiles.length,
+    expectedCount: expectedShotsCount
+  };
+}
+
+async function loadS3ExplorerData({ targetBucket = 'innoscanjagjx1-s3', basePrefix = '', forceRefresh = false, client = null } = {}) {
+  const isMustang = targetBucket.includes('mussgp') || targetBucket.includes('mustang');
+  const clientName = client || (isMustang ? 'Mustang' : 'Jaguar');
+  const eff = getEffectiveS3Config({}, clientName);
   const s3 = getS3Client(eff);
-  const targetBucket = eff.s3Bucket || 'innoscanjagjx1-s3';
-  const cleanTargetLot = targetLot || 'Lot-159J';
-  const basePrefix = `Phase-09/${cleanTargetLot}/`;
+  const bucket = targetBucket || eff.s3Bucket || 'innoscanjagjx1-s3';
+  
+  let prefix = basePrefix !== undefined && basePrefix !== '' ? basePrefix : '';
+  if (!prefix || prefix === 'innoscanmussgp1/') {
+    prefix = isMustang ? 'innoscanmussgp1/JournalVerificationImages/' : 'Phase-09/Lot-159J/';
+  }
 
-  console.log(`[Jaguar QC Export] Scanning S3 bucket "${targetBucket}" under "${basePrefix}" (scope: ${scope})...`);
+  const safeKey = `${bucket}_${prefix}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const cachePath = path.join(__dirname, 'data', `s3_cache_${safeKey}.json`);
 
-  // 1. Paginated S3 listing
-  const s3Map = new Map();
-  if (eff.isConfigured) {
+  // 1. Check in-memory cache
+  const memCached = s3ExplorerCaches.get(safeKey);
+  const now = Date.now();
+  if (memCached && !forceRefresh && (now - memCached.timestamp < 3600000)) { // 1 hr TTL
+    return memCached;
+  }
+
+  // 2. Check on-disk cache if not forcing refresh
+  if (!forceRefresh && fs.existsSync(cachePath)) {
     try {
-      let continuationToken = null;
-      do {
-        const listRes = await s3.send(new ListObjectsV2Command({
-          Bucket: targetBucket,
-          Prefix: basePrefix,
-          ContinuationToken: continuationToken
-        }));
-        if (listRes.Contents) {
-          for (const obj of listRes.Contents) {
-            const parts = obj.Key.split('/');
-            if (parts.length >= 5) {
-              const date = parts[2];
-              const isbn = parts[3];
-              const filename = parts[4];
-              if (!s3Map.has(isbn)) {
-                s3Map.set(isbn, {
+      const diskData = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+      if (diskData && diskData.isbns) {
+        const restored = {
+          timestamp: diskData.timestamp || now,
+          bucket: diskData.bucket || bucket,
+          prefix: diskData.prefix || prefix,
+          dates: diskData.dates || [],
+          isbns: new Map(diskData.isbns),
+          stats: diskData.stats || {}
+        };
+        s3ExplorerCaches.set(safeKey, restored);
+        console.log(`[S3 Explorer Engine] Loaded disk cache for ${safeKey} (${restored.isbns.size} journals).`);
+        return restored;
+      }
+    } catch (diskErr) {
+      console.warn(`[S3 Explorer Engine] Failed reading disk cache for ${safeKey}:`, diskErr.message);
+    }
+  }
+
+  // 3. Deduplicate active in-flight fetches
+  if (activeExplorerFetches.has(safeKey)) {
+    return await activeExplorerFetches.get(safeKey);
+  }
+
+  const fetchPromise = (async () => {
+    console.log(`[S3 Explorer Engine] Fetching S3 listing for bucket "${bucket}", prefix "${prefix}"...`);
+
+    const isbns = new Map();
+    const dateCounts = new Map();
+    let totalObjects = 0;
+
+    if (eff.isConfigured && s3) {
+      try {
+        let continuationToken = null;
+        do {
+          const listRes = await s3.send(new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: prefix,
+            ContinuationToken: continuationToken
+          }));
+
+          if (listRes.Contents) {
+            for (const obj of listRes.Contents) {
+              totalObjects++;
+              const parts = obj.Key.split('/');
+              let date = 'All';
+              let isbn = '';
+              let filename = '';
+
+              if (parts.length >= 5 && parts[0].toLowerCase().startsWith('phase')) {
+                date = parts[2];
+                isbn = parts[3];
+                filename = parts.slice(4).join('/');
+              } else if (parts.length >= 4 && parts[0] === 'innoscanmussgp1' && parts[1] === 'JournalVerificationImages') {
+                isbn = parts[2];
+                filename = parts.slice(3).join('/');
+                date = obj.LastModified ? (typeof obj.LastModified.toISOString === 'function' ? obj.LastModified.toISOString().slice(0, 10) : String(obj.LastModified).slice(0, 10)) : 'All';
+              } else if (parts.length >= 3 && parts[0] === 'innoscanmussgp1') {
+                isbn = parts[1];
+                filename = parts.slice(2).join('/');
+                date = obj.LastModified ? (typeof obj.LastModified.toISOString === 'function' ? obj.LastModified.toISOString().slice(0, 10) : String(obj.LastModified).slice(0, 10)) : 'All';
+              } else if (parts.length >= 3) {
+                filename = parts[parts.length - 1];
+                isbn = parts[parts.length - 2];
+                date = parts[parts.length - 3] || 'All';
+              } else if (parts.length === 2 && parts[1]) {
+                isbn = parts[1].replace(/\.[^/.]+$/, '');
+                filename = parts[1];
+                date = 'All';
+              }
+
+              if (!isbn || !filename || filename.startsWith('.') || filename.includes('.bak')) {
+                continue;
+              }
+
+              dateCounts.set(date, (dateCounts.get(date) || 0) + 1);
+
+              if (!isbns.has(isbn)) {
+                isbns.set(isbn, {
+                  isbn,
                   date,
-                  s3Path: `${targetBucket}/Phase-09/${cleanTargetLot}/${date}/${isbn}`,
+                  s3Path: `${bucket}/${parts.slice(0, parts.length - 1).join('/')}`,
                   files: []
                 });
               }
-              s3Map.get(isbn).files.push({ key: obj.Key, size: obj.Size || 0, filename });
+              isbns.get(isbn).files.push({
+                filename,
+                size: obj.Size || 0,
+                key: obj.Key
+              });
+            }
+          }
+          continuationToken = listRes.IsTruncated ? listRes.NextContinuationToken : null;
+        } while (continuationToken);
+      } catch (err) {
+        console.warn('[S3 Explorer Engine] S3 list warning:', err.message);
+      }
+    }
+
+    // Merge local folders if needed for Jaguar
+    if (!isMustang) {
+      try {
+        const folderMap = await getAllCandidateJournalFolders();
+        for (const [cleanIsbn, folderPath] of folderMap.entries()) {
+          if (!isbns.has(cleanIsbn)) {
+            let localFiles = [];
+            try {
+              localFiles = fs.readdirSync(folderPath).filter(f => !f.startsWith('.'));
+            } catch (e) {}
+            if (localFiles.length >= 7) {
+              const dateStr = new Date().toISOString().slice(0, 10);
+              isbns.set(cleanIsbn, {
+                isbn: cleanIsbn,
+                date: dateStr,
+                s3Path: `${bucket}/Phase-09/Lot-159J/${dateStr}/${cleanIsbn}`,
+                files: localFiles.map(f => ({ filename: f, size: 50000, key: `Phase-09/Lot-159J/${dateStr}/${cleanIsbn}/${f}` }))
+              });
             }
           }
         }
-        continuationToken = listRes.IsTruncated ? listRes.NextContinuationToken : null;
-      } while (continuationToken);
-    } catch (s3Err) {
-      console.warn(`[Jaguar QC Export] S3 listing warning:`, s3Err.message);
-    }
-  }
-
-  // 2. Also check local folders in case local shots haven't finished S3 sync
-  try {
-    const folderMap = await getAllCandidateJournalFolders();
-    for (const [cleanIsbn, folderPath] of folderMap.entries()) {
-      const meta = readIsbnMetadata(cleanIsbn);
-      const baseIsbn = getBaseIsbn(cleanIsbn);
-      const manifestMatch = findManifestItem(baseIsbn) || findManifestItem(cleanIsbn);
-      const itemLot = meta?.lotNumber || manifestMatch?.lotNumber || '';
-      if (!isMatchingBoxNumber(itemLot, cleanTargetLot)) continue;
-
-      if (!s3Map.has(cleanIsbn)) {
-        let localFiles = [];
-        try {
-          localFiles = fs.readdirSync(folderPath).filter(f => !f.startsWith('.'));
-        } catch (e) {}
-        if (localFiles.length >= 7) {
-          const dateStr = meta?.s3Upload?.uploadedAt ? meta.s3Upload.uploadedAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
-          s3Map.set(cleanIsbn, {
-            date: dateStr,
-            s3Path: `${targetBucket}/Phase-09/${cleanTargetLot}/${dateStr}/${cleanIsbn}`,
-            files: localFiles.map(f => ({ filename: f, size: 1000 }))
-          });
-        }
+      } catch (localErr) {
+        console.warn('[S3 Explorer Engine] Local folder merge warning:', localErr.message);
       }
     }
-  } catch (localErr) {
-    console.warn(`[Jaguar QC Export] Local folder scan warning:`, localErr.message);
-  }
 
-  // 3. Load manifest
+    // Compute stats
+    let completeJournals = 0;
+    let incompleteJournals = 0;
+    let multiPartJournals = 0;
+
+    for (const [isbn, data] of isbns.entries()) {
+      const hasPartFiles = Boolean(data.files.some(f => /_part\d+/i.test(f.filename || f.key || '')));
+      let partsCount = 1;
+      if (hasPartFiles) {
+        const distinctParts = new Set();
+        for (const f of data.files) {
+          const m = (f.filename || f.key || '').match(/_part(\d+)/i);
+          if (m) distinctParts.add(parseInt(m[1], 10));
+        }
+        partsCount = distinctParts.size || (data.files.length >= 14 ? Math.floor(data.files.length / 7) : 1);
+      } else if (data.files.length >= 14) {
+        partsCount = Math.floor(data.files.length / 7);
+      }
+      data.partsCount = partsCount;
+
+      const shots = verifyJournalShots(data.files, partsCount);
+      data.shots = shots;
+
+      if (partsCount > 1) multiPartJournals++;
+      if (shots.allComplete) {
+        completeJournals++;
+      } else {
+        incompleteJournals++;
+      }
+    }
+
+    const sortedDates = Array.from(dateCounts.keys()).sort().reverse().map(d => ({
+      date: d,
+      journalCount: Array.from(isbns.values()).filter(i => i.date === d).length,
+      objectCount: dateCounts.get(d) || 0
+    }));
+
+    const result = {
+      timestamp: Date.now(),
+      bucket,
+      prefix,
+      dates: sortedDates,
+      isbns,
+      stats: {
+        totalJournals: isbns.size,
+        completeJournals,
+        incompleteJournals,
+        multiPartJournals,
+        totalObjects,
+        lastUpdated: new Date().toISOString()
+      }
+    };
+
+    s3ExplorerCaches.set(safeKey, result);
+
+    // Save to disk cache asynchronously
+    try {
+      const serialized = {
+        timestamp: result.timestamp,
+        bucket,
+        prefix,
+        dates: sortedDates,
+        isbns: Array.from(isbns.entries()),
+        stats: result.stats
+      };
+      fs.writeFileSync(cachePath, JSON.stringify(serialized), 'utf8');
+      console.log(`[S3 Explorer Engine] Persisted disk cache for ${safeKey} (${isbns.size} journals).`);
+    } catch (saveErr) {
+      console.warn(`[S3 Explorer Engine] Disk cache write failed:`, saveErr.message);
+    }
+
+    return result;
+  })();
+
+  activeExplorerFetches.set(safeKey, fetchPromise);
+  try {
+    return await fetchPromise;
+  } finally {
+    activeExplorerFetches.delete(safeKey);
+  }
+}
+
+// -------------------------------------------------------------
+// S3 QC & Delivery Certificate Generator (Exact 25-Column Client Standard)
+// -------------------------------------------------------------
+async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'captured', targetBox = '', targetDate = '', client = 'Jaguar' }) {
+  const isMustang = client.toLowerCase() === 'mustang' || targetLot.toLowerCase().includes('journalverificationimages') || targetLot.toLowerCase().includes('mustang');
+  const bucket = isMustang ? 'innoscanmussgp1-s3' : 'innoscanjagjx1-s3';
+  const cleanTargetLot = targetLot || (isMustang ? 'JournalVerificationImages' : 'Lot-159J');
+  const basePrefix = isMustang ? 'innoscanmussgp1/JournalVerificationImages/' : `Phase-09/${cleanTargetLot}/`;
+  const explorerData = await loadS3ExplorerData({ targetBucket: bucket, basePrefix, forceRefresh: false, client: isMustang ? 'Mustang' : 'Jaguar' });
+  const s3Map = explorerData.isbns;
+
+  console.log(`[QC Export 25-Col] Building export for ${cleanTargetLot} (${client}, scope: ${scope}, date: ${targetDate || 'ALL'})...`);
+
+  // Load manifest
   let manifestItems = [];
   try {
     const allItems = manifestData.items || [];
-    manifestItems = allItems.filter(it => isMatchingBoxNumber(it.lotNumber || '', cleanTargetLot));
+    if (isMustang) {
+      manifestItems = allItems.filter(it => (it.client || '').toLowerCase() === 'mustang' || (it.reason || '').toLowerCase().includes('mustang') || (it.notes || '').toLowerCase().includes('mustang'));
+    } else {
+      manifestItems = allItems.filter(it => isMatchingBoxNumber(it.lotNumber || '', cleanTargetLot));
+    }
   } catch (mErr) {
-    console.warn(`[Jaguar QC Export] Manifest read warning:`, mErr.message);
+    console.warn(`[QC Export] Manifest read warning:`, mErr.message);
   }
 
   if (targetBox) {
@@ -3532,7 +3762,6 @@ async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'capture
     'Box No.',
     'ISBN',
     'Counts',
-    'Remarks',
     'Order',
     'Print ISSN',
     'Journal name',
@@ -3542,89 +3771,101 @@ async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'capture
     'Issues',
     'Parts',
     'Noida Remarks Jaguar',
-    'Sub Remarks',
     'Inventory Status  PH (Dropdown)',
-    'Inventory Remarks PH',
+    'Front Cover Image (Client)',
+    'Back Cover Image (Internal)',
+    'Title Page Image (Client)',
+    'Spine Image (Client)',
+    'Edition Notice Image (Client)',
+    'Box A Image (Internal)',
+    'Box B Image (Internal)',
     'S3 Path Image',
     'All Images Are Complete',
     'All Parts Are Complete'
   ];
 
-  function buildRow(item, sNoVal) {
+  function buildRow(item, sNoVal, s3Entry) {
     const cleanIsbn = String(item.isbn || '').trim();
-    const s3Data = s3Map.get(cleanIsbn);
-    const hasPartFiles = Boolean(s3Data && s3Data.files.some(f => /_part\d+/i.test(f.filename || f.key || '')));
-    const validFiles = (s3Data && hasPartFiles)
-      ? s3Data.files.filter(f => /_part\d+/i.test(f.filename || f.key || ''))
-      : (s3Data ? s3Data.files : []);
-    const isCaptured = Boolean(s3Data && validFiles.length >= 7);
-    const fileCount = validFiles.length;
-    let partsCount = 0;
-    if (hasPartFiles) {
-      const distinctParts = new Set();
-      for (const f of validFiles) {
-        const m = (f.filename || f.key || '').match(/_part(\d+)/i);
-        if (m) distinctParts.add(parseInt(m[1], 10));
-      }
-      partsCount = distinctParts.size || (fileCount >= 14 ? Math.floor(fileCount / 7) : 0);
-    } else {
-      partsCount = fileCount >= 14 ? Math.floor(fileCount / 7) : 0;
-    }
+    const data = s3Entry || s3Map.get(cleanIsbn);
+    const files = data ? data.files : [];
+    const expectedParts = parseInt(item.parts, 10) || (data ? data.partsCount : 1) || 1;
+    const shots = verifyJournalShots(files, expectedParts);
+    const isCaptured = Boolean(data && files.length > 0);
 
+    const partsVal = data?.partsCount || expectedParts || 1;
     const boxNo = item.boxNumber ? (isNaN(item.boxNumber) ? item.boxNumber : Number(item.boxNumber)) : '';
     const isbnVal = isNaN(cleanIsbn) ? cleanIsbn : Number(cleanIsbn);
     const pubYear = item.publicationYear ? (isNaN(item.publicationYear) ? item.publicationYear : Number(item.publicationYear)) : '';
     const volVal = item.volume ? (isNaN(item.volume) ? item.volume : Number(item.volume)) : '';
     const issueVal = item.issues ? (isNaN(item.issues) ? item.issues : Number(item.issues)) : '';
+    const orderVal = item.order || (isMustang ? 'Mustang Order' : 'Jag Journals Order 2');
 
     return [
       sNoVal,
-      cleanTargetLot,
+      item.lotNumber || cleanTargetLot,
       boxNo,
       isbnVal,
       1,
-      item.reason || item.notes || null,
-      'Journals',
+      orderVal,
       item.printIssn || '',
-      item.title || '',
+      item.title || item.journalName || (isMustang ? 'Mustang Journal Proofs' : ''),
       item.publisher || '',
       pubYear,
       volVal,
       issueVal,
-      partsCount,
-      'Jaguar Phase-09',
-      'uploaded to Magazine ILMS',
-      isCaptured ? 'Ok For Scanning' : 'Physical book not received',
-      null,
-      isCaptured ? s3Data.s3Path : '',
-      isCaptured ? 'Yes' : null,
-      isCaptured ? (partsCount > 0 ? 'Yes' : 'N/A') : null
+      partsVal,
+      isMustang ? 'Mustang Verification' : 'Jaguar Phase-09',
+      shots.allComplete ? 'Ok For Scanning' : (isCaptured ? 'Incomplete (Missing Shots)' : 'Physical book not received'),
+      shots.frontCover ? 'Y' : 'N',
+      shots.backCover ? 'Y' : 'N',
+      shots.titlePage ? 'Y' : 'N',
+      shots.spine ? 'Y' : 'N',
+      shots.editionNotice ? 'Y' : 'N',
+      shots.boxA ? 'Y' : 'N',
+      shots.boxB ? 'Y' : 'N',
+      isCaptured ? (data?.s3Path || '') : '',
+      shots.allComplete ? 'Y' : 'N',
+      shots.allPartsComplete ? 'Y' : 'N'
     ];
   }
 
   let itemsToExport = [];
   if (scope === 'all' || scope === 'full') {
     itemsToExport = manifestItems;
+    if (targetDate && targetDate !== 'all') {
+      itemsToExport = itemsToExport.filter(it => {
+        const s3 = s3Map.get(String(it.isbn).trim());
+        return s3 && s3.date === targetDate;
+      });
+    }
   } else {
-    itemsToExport = manifestItems.filter(it => s3Map.has(String(it.isbn).trim()));
-    const manifestIsbns = new Set(manifestItems.map(it => String(it.isbn).trim()));
+    // Only captured items
+    const manifestByIsbn = new Map(manifestItems.map(it => [String(it.isbn).trim(), it]));
     for (const [isbn, s3Data] of s3Map.entries()) {
-      if (!manifestIsbns.has(isbn)) {
+      if (targetDate && targetDate !== 'all' && s3Data.date !== targetDate) continue;
+      const mItem = manifestByIsbn.get(isbn);
+      if (mItem) {
+        itemsToExport.push({ ...mItem, _s3Data: s3Data });
+      } else {
         itemsToExport.push({
           sNo: String(itemsToExport.length + 1),
           isbn: isbn,
           lotNumber: cleanTargetLot,
           boxNumber: '',
-          title: 'Additional Captured Journal',
+          title: 'Verified Captured Journal',
           publisher: '',
           printIssn: '',
           publicationYear: '',
           volume: '',
-          issues: ''
+          issues: '',
+          _s3Data: s3Data
         });
       }
     }
   }
+
+  // Sort by numeric sNo
+  itemsToExport.sort((a, b) => (parseInt(a.sNo, 10) || 0) - (parseInt(b.sNo, 10) || 0));
 
   const rows = [HEADERS];
   let okCount = 0;
@@ -3632,8 +3873,8 @@ async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'capture
 
   itemsToExport.forEach((it, idx) => {
     const sNoVal = (scope === 'all' || scope === 'full') ? (parseInt(it.sNo, 10) || idx + 1) : (idx + 1);
-    const row = buildRow(it, sNoVal);
-    if (row[16] === 'Ok For Scanning') {
+    const row = buildRow(it, sNoVal, it._s3Data);
+    if (row[14] === 'Ok For Scanning') {
       okCount++;
     } else {
       missingCount++;
@@ -3682,9 +3923,10 @@ async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'capture
   ]);
   XLSX.utils.book_append_sheet(wb, wsDropdown, 'Drop down');
 
+  const dateSuffix = targetDate && targetDate !== 'all' ? `_${targetDate}` : '';
   const filenameBase = (scope === 'all' || scope === 'full')
-    ? `${cleanTargetLot}_Book_Confirmation_and_Verification`
-    : `${cleanTargetLot}_Captured_Journals_QC_Verification`;
+    ? `${cleanTargetLot}_Book_Confirmation_and_Verification${dateSuffix}`
+    : `${cleanTargetLot}_Captured_Journals_QC_Verification${dateSuffix}`;
 
   return {
     wb,
@@ -3696,23 +3938,248 @@ async function generateJaguarQcExport({ targetLot = 'Lot-159J', scope = 'capture
   };
 }
 
-// 1-Click Export S3 Delivery Certificate & QC Verification (XLSX & CSV)
+// -------------------------------------------------------------
+// S3 Cloud Explorer API Endpoints
+// -------------------------------------------------------------
+
+// 1. Bucket and Folder Tree
+app.get('/api/s3/explorer/tree', async (req, res) => {
+  try {
+    const bucket = req.query.bucket || 'innoscanjagjx1-s3';
+    const isMustang = bucket.includes('mussgp') || bucket.includes('mustang');
+    const client = isMustang ? 'Mustang' : 'Jaguar';
+    const eff = getEffectiveS3Config({}, client);
+    const s3 = getS3Client(eff);
+
+    // Dynamically query actual folders from S3 under Phase-09/
+    let availableLots = [];
+    if (isMustang) {
+      availableLots = ['JournalVerificationImages'];
+    } else {
+      if (eff.isConfigured && s3) {
+        try {
+          const lotRes = await s3.send(new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: 'Phase-09/',
+            Delimiter: '/'
+          }));
+          if (lotRes.CommonPrefixes && lotRes.CommonPrefixes.length > 0) {
+            availableLots = lotRes.CommonPrefixes.map(cp => {
+              return cp.Prefix.replace(/^Phase-09\//, '').replace(/\/$/, '').trim();
+            }).filter(Boolean);
+          }
+        } catch (err) {
+          console.warn('[S3 Explorer Tree] Error discovering lots from S3:', err.message);
+        }
+      }
+      if (availableLots.length === 0) {
+        availableLots = ['Lot-159J', 'Lot-156J'];
+      }
+      availableLots.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+    }
+
+    const defaultLot = isMustang ? 'JournalVerificationImages' : (availableLots[0] || 'Lot-159J');
+    const lotNumber = req.query.lotNumber !== undefined && req.query.lotNumber !== '' ? req.query.lotNumber : defaultLot;
+    const prefix = isMustang
+      ? 'innoscanmussgp1/JournalVerificationImages/'
+      : (lotNumber ? `Phase-09/${lotNumber}/` : 'Phase-09/Lot-159J/');
+
+    const data = await loadS3ExplorerData({ targetBucket: bucket, basePrefix: prefix, forceRefresh: false, client });
+
+    res.json({
+      activeBucket: data.bucket,
+      activePrefix: data.prefix,
+      phase: isMustang ? 'innoscanmussgp1' : 'Phase-09',
+      lot: isMustang ? 'JournalVerificationImages' : lotNumber,
+      availableLots,
+      buckets: KNOWN_S3_BUCKETS,
+      dates: data.dates,
+      stats: data.stats
+    });
+  } catch (err) {
+    console.error('[S3 Explorer Tree Error]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Folder Items & 7-Shot Automated Verification
+app.get('/api/s3/explorer/items', async (req, res) => {
+  try {
+    const bucket = req.query.bucket || 'innoscanjagjx1-s3';
+    const isMustang = bucket.includes('mussgp') || bucket.includes('mustang');
+    const defaultLot = isMustang ? 'JournalVerificationImages' : 'Lot-159J';
+    const lotNumber = req.query.lotNumber !== undefined && req.query.lotNumber !== '' ? req.query.lotNumber : defaultLot;
+    const targetDate = req.query.date || 'all';
+    const search = (req.query.search || '').toLowerCase().trim();
+    const filter = req.query.filter || 'all'; // 'all', 'complete', 'incomplete', 'multipart'
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 50;
+
+    const client = isMustang ? 'Mustang' : 'Jaguar';
+    const prefix = isMustang
+      ? 'innoscanmussgp1/JournalVerificationImages/'
+      : (lotNumber ? `Phase-09/${lotNumber}/` : 'Phase-09/Lot-159J/');
+    const data = await loadS3ExplorerData({ targetBucket: bucket, basePrefix: prefix, forceRefresh: false, client });
+
+    // Build manifest lookup map
+    const manifestMap = new Map();
+    if (isMustang) {
+      for (const item of (manifestData.items || [])) {
+        if ((item.client || '').toLowerCase() === 'mustang' || (item.reason || '').toLowerCase().includes('mustang') || (item.notes || '').toLowerCase().includes('mustang')) {
+          manifestMap.set(String(item.isbn).trim(), item);
+        }
+      }
+    } else {
+      const manifestItems = (manifestData.items || []).filter(it => isMatchingBoxNumber(it.lotNumber || '', lotNumber));
+      for (const item of manifestItems) {
+        manifestMap.set(String(item.isbn).trim(), item);
+      }
+    }
+
+    const items = [];
+    let counter = 1;
+
+    for (const [isbn, s3Data] of data.isbns.entries()) {
+      if (targetDate && targetDate !== 'all' && s3Data.date !== targetDate) continue;
+
+      const m = manifestMap.get(isbn) || {};
+      const expectedParts = parseInt(m.parts, 10) || s3Data.partsCount || 1;
+      const shots = s3Data.shots || verifyJournalShots(s3Data.files, expectedParts);
+      const isComplete = Boolean(shots.allComplete);
+      const isMultiPart = Boolean((s3Data.partsCount && s3Data.partsCount > 1) || (shots.actualParts && shots.actualParts > 1));
+
+      if (filter === 'complete' && !isComplete) continue;
+      if (filter === 'incomplete' && isComplete) continue;
+      if (filter === 'multipart' && !isMultiPart) continue;
+
+      const title = m.title || m.journalName || (isMustang ? 'Mustang Journal Proofs' : 'Unknown Title');
+      const boxNo = m.boxNumber || '';
+      const publisher = m.publisher || '';
+
+      if (search) {
+        const matchIsbn = isbn.toLowerCase().includes(search);
+        const matchTitle = title.toLowerCase().includes(search);
+        const matchBox = boxNo.toLowerCase().includes(search);
+        const matchPub = publisher.toLowerCase().includes(search);
+        if (!matchIsbn && !matchTitle && !matchBox && !matchPub) continue;
+      }
+
+      items.push({
+        sNo: m.sNo ? parseInt(m.sNo, 10) : counter++,
+        isbn,
+        lotNo: isMustang ? (m.lotNumber || 'Mustang') : lotNumber,
+        boxNo: boxNo || 'N/A',
+        order: m.order || (isMustang ? 'Mustang Order' : 'Jag Journals Order 2'),
+        printIssn: m.printIssn || '',
+        journalName: title,
+        publisher,
+        publicationYear: m.publicationYear || '',
+        volume: m.volume || '',
+        issues: m.issues || '',
+        parts: s3Data.partsCount || shots.actualParts || 1,
+        noidaRemarks: isMustang ? 'Mustang Verification' : 'Jaguar Phase-09',
+        inventoryStatus: isComplete ? 'Ok For Scanning' : 'Incomplete',
+        shots: {
+          frontCover: Boolean(shots.frontCover),
+          backCover: Boolean(shots.backCover),
+          titlePage: Boolean(shots.titlePage),
+          spine: Boolean(shots.spine),
+          editionNotice: Boolean(shots.editionNotice),
+          boxA: Boolean(shots.boxA),
+          boxB: Boolean(shots.boxB)
+        },
+        allImagesComplete: isComplete,
+        allPartsComplete: Boolean(shots.allPartsComplete),
+        fileCount: s3Data.files.length,
+        s3Path: s3Data.s3Path,
+        captureDate: s3Data.date,
+        files: s3Data.files
+      });
+    }
+
+    // Sort by S.No
+    items.sort((a, b) => a.sNo - b.sNo);
+
+    const total = items.length;
+    const startIndex = (page - 1) * limit;
+    const paginatedItems = items.slice(startIndex, startIndex + limit);
+
+    res.json({
+      items: paginatedItems,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit) || 1,
+      stats: data.stats
+    });
+  } catch (err) {
+    console.error('[S3 Explorer Items Error]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Force Refresh S3 Cache
+app.post('/api/s3/explorer/refresh', async (req, res) => {
+  try {
+    const bucket = req.body?.bucket || 'innoscanjagjx1-s3';
+    const isMustang = bucket.includes('mussgp') || bucket.includes('mustang');
+    const lotNumber = req.body?.lotNumber || (isMustang ? 'JournalVerificationImages' : 'Lot-159J');
+    const prefix = isMustang
+      ? 'innoscanmussgp1/JournalVerificationImages/'
+      : `Phase-09/${lotNumber}/`;
+
+    const data = await loadS3ExplorerData({ targetBucket: bucket, basePrefix: prefix, forceRefresh: true });
+    res.json({ success: true, stats: data.stats, totalDates: data.dates.length });
+  } catch (err) {
+    console.error('[S3 Explorer Refresh Error]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. Image Proxy & Presigned Streamer
+app.get('/api/s3/image-proxy', async (req, res) => {
+  try {
+    const key = req.query.key;
+    const bucket = req.query.bucket || 'innoscanjagjx1-s3';
+    const isMustang = bucket.includes('mussgp') || bucket.includes('mustang');
+    const client = req.query.client || (isMustang ? 'Mustang' : 'Jaguar');
+
+    if (!key) return res.status(400).send('Missing key parameter');
+
+    const eff = getEffectiveS3Config({}, client);
+    const s3 = getS3Client(eff);
+
+    const presigned = await getSignedUrl(s3, new GetObjectCommand({
+      Bucket: bucket,
+      Key: key
+    }), { expiresIn: 3600 });
+
+    res.redirect(presigned);
+  } catch (err) {
+    res.status(500).send('Could not fetch S3 image: ' + err.message);
+  }
+});
+
+// 5. 1-Click Export S3 Delivery Certificate & QC Verification (Exact 25-Column Format)
 app.get(['/api/s3/export-delivery-certificate', '/api/s3/export-qc-report'], async (req, res) => {
   try {
     const client = req.query.client || config.activeClient || 'Jaguar';
     const targetLot = req.query.lotNumber || 'Lot-159J';
     const targetBox = req.query.boxNumber || '';
+    const targetDate = req.query.date || '';
     const scope = (req.query.scope || 'captured').toLowerCase();
     const isJaguar = client.toLowerCase() === 'jaguar' || targetLot.toLowerCase().includes('159') || targetLot.toLowerCase().includes('156');
-    const requestedFormat = (req.query.format || (isJaguar ? 'xlsx' : 'csv')).toLowerCase();
+    const isMustang = client.toLowerCase() === 'mustang' || targetLot.toLowerCase().includes('journalverificationimages');
+    const requestedFormat = (req.query.format || 'xlsx').toLowerCase();
 
-    // If Jaguar client or Jaguar lot, export the official 21-column Book Confirmation and Verification document
-    if (isJaguar) {
+    // Export the official 25-column Book Confirmation and QC Verification document
+    if (isJaguar || isMustang || req.path.includes('export-qc-report') || scope === 'captured') {
       const qcResult = await generateJaguarQcExport({
         targetLot,
         scope,
         targetBox,
-        client: 'Jaguar'
+        targetDate,
+        client: isMustang ? 'Mustang' : 'Jaguar'
       });
 
       if (requestedFormat === 'xlsx') {

@@ -27,6 +27,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { MobilePairingModal } from './components/MobilePairingModal';
 import { ManifestImportModal } from './components/ManifestImportModal';
 import { SearchViewCatalog } from './components/SearchViewCatalog';
+import { S3CloudExplorer } from './components/S3CloudExplorer';
 
 import { useCamera } from './hooks/useCamera';
 import { useBarcodeScanner } from './hooks/useBarcodeScanner';
@@ -1482,7 +1483,9 @@ export function App() {
   }
 
   return (
-    <div className="min-h-screen ambient-bg flex flex-col font-sans transition-colors duration-300">
+    <div className={`ambient-bg flex flex-col font-sans transition-colors duration-300 ${
+      viewMode === 'S3_EXPLORER' ? 'h-screen overflow-hidden' : 'min-h-screen'
+    }`}>
       
       {/* Top Navbar with LAN Peer & S3 Cloud Sync Status Indicators */}
       <Navbar
@@ -1502,7 +1505,11 @@ export function App() {
       />
 
       {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col gap-6 relative">
+      <main className={`flex-1 w-full mx-auto relative ${
+        viewMode === 'S3_EXPLORER'
+          ? 'max-w-full px-2 sm:px-4 py-2 min-h-0 h-[calc(100vh-4rem)] overflow-hidden flex flex-col'
+          : 'max-w-[1700px] px-4 sm:px-6 lg:px-8 py-6 flex flex-col gap-6'
+      }`}>
         
         {/* Floating Toast Notification (Bottom Right) */}
         {toastAlert && (
@@ -1533,8 +1540,18 @@ export function App() {
           </div>
         )}
 
-        {/* Conditional Rendering: Capture Mode vs Search & View Catalog */}
-        {viewMode === 'SEARCH_VIEW' ? (
+        {/* Conditional Rendering: Capture Mode vs Search & View vs S3 Cloud Explorer */}
+        {viewMode === 'S3_EXPLORER' ? (
+          <div key="s3-explorer-panel" className="w-full flex-1 flex flex-col min-h-0 h-full overflow-hidden animate-page-transition">
+            <S3CloudExplorer
+              activeClient={activeClient}
+              onOpenCaptureForIsbn={(isbn) => {
+                setViewMode('CAPTURE');
+                handleProcessIsbn(isbn);
+              }}
+            />
+          </div>
+        ) : viewMode === 'SEARCH_VIEW' ? (
           <div key="search-view-panel" className="w-full animate-page-transition">
             <SearchViewCatalog
               onSelectIsbnForCapture={(isbn) => {

@@ -13,7 +13,8 @@ import {
   Sun,
   Moon,
   Network,
-  RefreshCw
+  RefreshCw,
+  Cloud
 } from 'lucide-react';
 import { StationRole, SystemStatus, ViewMode } from '../types';
 
@@ -331,11 +332,11 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           )}
 
-          {/* View Mode Toggle: Capture vs Search & View */}
+          {/* View Mode Toggle: Capture vs Search & View vs S3 Cloud Explorer */}
           <div className="flex items-center bg-gradient-to-r from-blue-50/80 to-indigo-50/60 dark:from-slate-800 dark:to-slate-800/80 p-1 rounded-xl border border-blue-100 dark:border-slate-700 shadow-xs">
             <button
               onClick={() => setViewMode('CAPTURE')}
-              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
                 viewMode === 'CAPTURE'
                   ? 'btn-primary-gradient text-white shadow-md shadow-brand-500/25 scale-[1.02]'
                   : 'text-slate-600 dark:text-slate-300 hover:text-brand-700 dark:hover:text-white hover:bg-white/60 dark:hover:bg-slate-700/60'
@@ -346,7 +347,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
             <button
               onClick={() => setViewMode('SEARCH_VIEW')}
-              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
                 viewMode === 'SEARCH_VIEW'
                   ? 'btn-primary-gradient text-white shadow-md shadow-brand-500/25 scale-[1.02]'
                   : 'text-slate-600 dark:text-slate-300 hover:text-brand-700 dark:hover:text-white hover:bg-white/60 dark:hover:bg-slate-700/60'
@@ -354,6 +355,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               <Table className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Search & View</span>
+            </button>
+            <button
+              onClick={() => setViewMode('S3_EXPLORER')}
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 transform active:scale-95 cursor-pointer ${
+                viewMode === 'S3_EXPLORER'
+                  ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md shadow-purple-500/25 scale-[1.02]'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-purple-700 dark:hover:text-white hover:bg-white/60 dark:hover:bg-slate-700/60'
+              }`}
+              title="AWS S3 Cloud Explorer with 7-Shot Quality Verification & 25-Column Client Export"
+            >
+              <Cloud className="w-3.5 h-3.5 text-purple-400" />
+              <span className="hidden sm:inline">S3 Explorer</span>
             </button>
           </div>
 

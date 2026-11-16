@@ -9,7 +9,7 @@ export type CaptureStep =
   | 'CAPTURE_SHOT_7' 
   | 'COMPLETE';
 
-export type ViewMode = 'CAPTURE' | 'SEARCH_VIEW';
+export type ViewMode = 'CAPTURE' | 'SEARCH_VIEW' | 'S3_EXPLORER';
 
 export type StationRole = 'box_level' | 'book_level' | 'all_in_one' | 'box_spine';
 
